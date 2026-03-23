@@ -255,21 +255,208 @@ sleeping 이 있다면 sleeping을 "sleeping, 2::closed eyes ::, nightgown" 로 
 <br />
 
 이정도가 있음. 어차피 (e|q):suffix=nsfw 같은거 아니면 쓸사람만 쓰는 기능임
-
 </details>
-
 <br />
 <br />
 
 ---
+
 ## 상세 환경
 
 <img width="375" height="431" alt="image" src="https://github.com/user-attachments/assets/c1965fdf-6480-4c3c-9074-8cefc4ab3bf4" />
 
 잘 아는 그거임
-
 <br />
 <br />
 
 ---
+
+## 이미지 상호작용
+
+<img width="378" height="256" alt="image" src="https://github.com/user-attachments/assets/9ab739c4-34ba-489b-b07d-9535f6a7227b" />
+
+화면에 있는 생성된 큰 이미지를 꾹 누르면 이런 옵션이 나옴
+
+3가지 다 뭐 딱보면 아는 항목일것이고 3번째껄 누르면
+
+<img width="263" height="444" alt="image" src="https://github.com/user-attachments/assets/397d42d5-cc6b-462f-aa8f-14208af340ad" />
+
+이렇게 나옴 이것도 그냥 딱 알만한 기능
+<br />
+<br />
+
+---
+
+# 히스토리 탭
+
+<img width="379" height="664" alt="image" src="https://github.com/user-attachments/assets/4a2cbd14-ed5b-4c47-b4cc-2f7448c5e27f" />
+
+그냥 보면 알만한 것들 뿐이지만 (1)에 굳이 화살표가 있는 이유는 
+
+바로 아래 (2)섬네일 미리보기가 만들어지기 전에 옆 이미지를 보기위해 만들어진거뿐임
+
+참고로 (2)섬네일을 꾹 누르면 지우기가 뜹니다.
+<br />
+<br />
+
+---
+
+## 프롬프트 확인
+
+![22](https://github.com/user-attachments/assets/b9ed44bb-8939-4e9e-8acc-a4387913dba7)
+
+을 누르면 4가지 항목이 나오고 각각 이미지가 가진 프롬프트를 보여줌
+
+이게 다임
+<br />
+<br />
+
+---
+
+## 이미지 불러오기
+
+스마트폰의 갤러리를 열어서 이미지를 골라 히스토리탭 목록 끝에 추가함
+
+생성한 이미지랑 똑같이 꾹 눌러서 상호작용도 가능하고 프롬프트 확인으로 뭐가 들었나 볼 수도 있음
+<br />
+<br />
+
+---
+
+# img2img 탭
+
+<img width="380" height="630" alt="image" src="https://github.com/user-attachments/assets/cbb45243-d957-4ccc-a533-2481e6de83f1" />
+
+이미지를 꾹 눌러서 나오는 창 중에 '이미지 수정하기(i2i)' 를 누르면
+
+자동으로 이 i2i탭으로 오면서 이미지가 놓여짐
+
+맨 위 왼쪽에 "인페인트"을 누르면 마스킹 씌운 영역이 프롬프트따라 우리가 아는 그 inpaint기능을 실행하고
+
+맨 위 오른쪽에 "업스케일"을 누르면 지금 i2i탭에 올라온 이미지를 4배 확대해서 저장함
+
+둘 다 실행후에 자동으로 "히스토리 탭"으로 가지면서 올라감. 단, 업스케일은 자동으로 폴더에 저장되게 해뒀음. anals 쓴게 아까워서
+
+<br />
+
+아래 버튼은 순서대로
+
+ - 브러시(누르면 크기 변경 가능)
+ - 브러시 색 바꾸기
+ - 지우개(누르면 크기 변경 가능, 마스크 전체 지우기 있음)
+ - 돋보기(+일때 누르면 확대, 돋보기를 한번 더 터치하면 -로)
+ - 화면이동(돋보기로 확대됐을때 사용)
+ - inpaint strength 수치 조절
+
+전부 인페인트를 하려고 만든 버튼이고 그 아래로 가면 
+
+<br />
+
+<img width="379" height="506" alt="image" src="https://github.com/user-attachments/assets/26a4ae26-9890-4b41-ae44-fd92b957074c" />
+
+4개는 딱보면 알거고 상세환경도 보면 알꺼고 
+
+"프롬값 가져오기"를 하면 지금 "프롬프트 탭"에 있는 4가지 프롬프트를 "i2i탭"에 적용함
+<br />
+<br />
+
+아 여기서 *중요한 포인트*가 있는데
+
+<img width="380" height="313" alt="image" src="https://github.com/user-attachments/assets/3709a0e4-1110-4961-b4a6-1747b5605b63" />
+
+빨강색 영역을 터치하면 드래그로 스크롤이 안되고
+
+노란색 영역을 한번 터치해야 드래그로 스크롤이 됨
+
+이걸 안하니까 마스크 그리는 중간에 자꾸 스크롤되길래
+
+ai랑 둘이 한참 뭐가좋을지 토론하다가 결국 이렇게 만들어졌음. 
+
+살짝 불편한감은 있는데 양해바랍니다 ㅎ
+<br />
+<br />
+
+---
+
+# 캐릭터 탭
+
+<img width="371" height="578" alt="image" src="https://github.com/user-attachments/assets/5460c966-977d-4567-8f36-e718f3116260" />
+
+아마 처음 켰으면 위에 생성했던 이미지가 대문짝만하게 있을 텐데 
+
+설정에 끄는곳이 있음 자세한건 설정 탭 설명에서
+
+<br />
+<br />
+
+일단 (1)은 말 그대로 캐릭터 갯수고 +를 누르면 계속 추가됨
+
+이쪽 UI는 NaiApp을 배꼈습니다. 매번 감사합니다.
+
+<br />
+<br />
+
+그리고 (2)눈깔모양을 누르면 왼쪽 (1)이 보라색/회색 되면서 ON/OFF가 됨
+
+캐릭터를 여러개 만들어두고 껐다켰다로 조절하면 이미지 뽑을때 편하더라고. 이건 NAIA 선생님에게 배웠습니다.
+
+<br />
+<br />
+
+마지막 (3)은 다들 아는 캐릭터 배치. 
+
+ai한테 시켰는지 기억안나는데 캐릭터 1개면 아마 어딜 옮겨도 의미없을것
+<br />
+<br />
+
+---
+
+# 와일드 카드 탭
+
+<img width="377" height="470" alt="image" src="https://github.com/user-attachments/assets/bd14c22d-a93a-4e61-8d46-e458f487d818" />
+
+말해서 뭐하겠습니까 "그 기능"
+
+NAIA에서 있던 방식중 하나로 문법은 다르지만 예시문을 기준으로 
+
+전체 합은 450이고 skrit는 약 44%로 뽑히며 pants는 약 11%로 뽑히게 된다는 뜻
+
+굳이 안쓰고 그냥 프롬프트만 3개 넣으면 각각 33%로 뽑힘
+
+나머진 건드려보면 바로바로 보일거임. 특이사항으로는 
+
+<img width="376" height="307" alt="image" src="https://github.com/user-attachments/assets/69216756-c04a-4aac-9aa8-b2a5f9d58abe" />
+
+이런식으로 적는중에 위에 프롬프트 작성때처럼 미리보기가 나온다는 것
+<br />
+<br />
+
+---
+
+# 설정 탭
+
+<img width="374" height="746" alt="image" src="https://github.com/user-attachments/assets/899e66d2-6d33-42ce-993a-7573cbaeb067" />
+
+대부분 보면 아는거라 특이한거만 적으면
+<br />
+
+(1)은 이번에 뽑은(정확힌 저장한) 이미지 갯수. 그냥 있어야될 것 같아서...
+<br />
+
+(2)는 끄면 "캐릭터 탭"이랑 "와일드카드 탭" 위에 큰 이미지가 안보이게됨
+<br />
+
+저장 경로는 옆에 버튼누르면 어디 저장할지 뜨고 수동으로도 작성 가능함
+<br />
+
+파일 이름은 연도={yy} 월={mm} 일={dd} 시간={time} 번호={count} 가 규칙이고
+
+나머지는 적는 그대로 이름으로 적혀서 알기 편할거임
+
+여기서 번호가 뭐냐면 (1) 숫자인데 솔직히 필요 없는데 지우기도 굳이라서 놔둔 기능
+<br />
+<br />
+
+---
+
 
