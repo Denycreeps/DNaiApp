@@ -251,8 +251,25 @@ white panties 랑 skirt 가 있다면 긍정적 프롬프트 맨 뒤에 windlift
 
 sleeping 이 있다면 sleeping을 "sleeping, 2::closed eyes ::, nightgown" 로 통째로 바꿈 (맨 뒤 쉼표는 알아서 붙음)
 <br />
-</details>
 <br />
 <br />
 
 이정도가 있음. 어차피 (e|q):suffix=nsfw 같은거 아니면 쓸사람만 쓰는 기능임
+
+</details>
+
+<br />
+<br />
+
+---
+## 상세 환경
+
+<img width="375" height="431" alt="image" src="https://github.com/user-attachments/assets/c1965fdf-6480-4c3c-9074-8cefc4ab3bf4" />
+
+잘 아는 그거임
+
+<br />
+<br />
+
+---
+
