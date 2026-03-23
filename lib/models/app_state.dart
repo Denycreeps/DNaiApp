@@ -728,6 +728,11 @@ class AppState extends ChangeNotifier {
       currentImageWidth = parsed['width'] ?? 0;
       currentImageHeight = parsed['height'] ?? 0;
       rating = parsed['rating']?.toString() ?? "g";
+      // Gelbooru는 "general", "sensitive", "questionable", "explicit" 풀 단어를 반환
+      // 조건부 트리거에서 g/s/q/e 단일 문자로 비교하므로 정규화
+      if (rating.length > 1) {
+        rating = rating.substring(0, 1);
+      }
     } catch (e) {
       tagString = nextRawData;
       currentImageWidth = 0;

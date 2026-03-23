@@ -101,6 +101,7 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                 Text("${tempSize.toInt()} px", style: const TextStyle(color: Colors.white)),
               ],
             ),
+            actionsAlignment: MainAxisAlignment.spaceBetween,
             actions: [
               TextButton.icon(
                 onPressed: () {
@@ -113,7 +114,6 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                   style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
                 ),
               ),
-              const Spacer(),
               TextButton(
                 onPressed: () {
                   setState(() {
@@ -1149,18 +1149,46 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                 ),
                 const SizedBox(height: 16),
 
-                OutlinedButton.icon(
-                  onPressed: () => showDetailSettingsModal(context),
-                  icon: const Icon(Icons.tune, color: Colors.white70, size: 18),
-                  label: const Text(
-                    "상세 환경",
-                    style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    side: const BorderSide(color: Colors.white24),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  ),
+                Row(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          state.inpaintPositiveController.text = state.positiveController.text;
+                          state.inpaintPrefixController.text = state.prefixController.text;
+                          state.inpaintSuffixController.text = state.suffixController.text;
+                          state.inpaintNegativeController.text = state.negativeController.text;
+                        });
+                        ScaffoldMessenger.of(
+                          context,
+                        ).showSnackBar(const SnackBar(content: Text("프롬프트 탭의 값을 가져왔습니다!")));
+                      },
+                      icon: const Icon(Icons.content_copy, color: Colors.white70, size: 18),
+                      label: const Text(
+                        "프롬값 가져오기",
+                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        side: const BorderSide(color: Colors.white24),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => showDetailSettingsModal(context),
+                      icon: const Icon(Icons.tune, color: Colors.white70, size: 18),
+                      label: const Text(
+                        "상세 환경",
+                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                        side: const BorderSide(color: Colors.white24),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 80),
               ],

@@ -112,6 +112,12 @@ class NovelAiService {
     return input.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).join(', ');
   }
 
+  // Gelbooru rating 정규화: "explicit" → "e", "questionable" → "q" 등
+  static String _normalizeRating(String? raw) {
+    if (raw == null || raw.isEmpty) return "g";
+    return raw.substring(0, 1).toLowerCase();
+  }
+
   // ============================================================================
   // 프롬프트 태그 우선순위 정렬
   // 순서: 인원수 → solo → 시점/앵글 → 시선 방향 → 나머지(셔플)
@@ -454,7 +460,7 @@ class NovelAiService {
           "tags": prioritized.join(', '),
           "width": int.tryParse(post['width'].toString()) ?? 0,
           "height": int.tryParse(post['height'].toString()) ?? 0,
-          "rating": post['rating']?.toString() ?? "g",
+          "rating": _normalizeRating(post['rating']?.toString()),
         });
         newPrompts.add(jsonCapsule);
       }
