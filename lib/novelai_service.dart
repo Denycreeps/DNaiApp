@@ -337,9 +337,9 @@ class NovelAiService {
     if (!rQ) apiTags.add("-rating:questionable");
     if (!rE) apiTags.add("-rating:explicit");
 
-    const String fallbackUserId = "1939806";
+    const String fallbackUserId = "1939815";
     const String fallbackApiKey =
-        "a5ddad62a5307a6f6b1648b2b42da9d8b8c9252dea1e8245cdfa0843cf6d172143a0101bc825bd94c322e08e86843c7130b634dc91a1f9c1bde48a51954797af";
+        "cffc455dd65a8733c0524ea230cb259a03b246c3f2fb00086199a71a8acc6b22e134ea32e229af0eb655bde67a43cacf7380073201af688ba50b5ff0f1df738e";
 
     bool hasCredentials = gelbooruUserId.isNotEmpty && gelbooruApiKey.isNotEmpty;
     String effectiveUserId = hasCredentials ? gelbooruUserId : fallbackUserId;
