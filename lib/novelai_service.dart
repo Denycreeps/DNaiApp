@@ -337,8 +337,15 @@ class NovelAiService {
     if (!rQ) apiTags.add("-rating:questionable");
     if (!rE) apiTags.add("-rating:explicit");
 
+    const String fallbackUserId = "1939806";
+    const String fallbackApiKey =
+        "a5ddad62a5307a6f6b1648b2b42da9d8b8c9252dea1e8245cdfa0843cf6d172143a0101bc825bd94c322e08e86843c7130b634dc91a1f9c1bde48a51954797af";
+
     bool hasCredentials = gelbooruUserId.isNotEmpty && gelbooruApiKey.isNotEmpty;
-    if (hasCredentials && !apiTags.contains("sort:random")) {
+    String effectiveUserId = hasCredentials ? gelbooruUserId : fallbackUserId;
+    String effectiveApiKey = hasCredentials ? gelbooruApiKey : fallbackApiKey;
+
+    if (!apiTags.contains("sort:random")) {
       apiTags.add("sort:random");
     }
 
@@ -354,7 +361,7 @@ class NovelAiService {
       List.generate(maxPagesToFetch, (page) async {
         String gelbooruUrl =
             "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
-        if (hasCredentials) gelbooruUrl += "&user_id=$gelbooruUserId&api_key=$gelbooruApiKey";
+        gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
         try {
           return await http
               .get(

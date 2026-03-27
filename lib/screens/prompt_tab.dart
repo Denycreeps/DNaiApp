@@ -92,10 +92,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
       return;
     }
 
-    List<String> matches = widget.state.danbooruTags
-        .where((t) => t.toLowerCase().startsWith(currentWord.toLowerCase()))
-        .take(15)
-        .toList();
+    List<String> matches = smartMatchTags(widget.state.danbooruTags, currentWord);
 
     setState(() {
       suggestions = matches;
@@ -607,10 +604,7 @@ class PromptTab extends StatelessWidget {
                 return;
               }
 
-              List<String> matches = state.danbooruTags
-                  .where((t) => t.toLowerCase().startsWith(currentWord.toLowerCase()))
-                  .take(15)
-                  .toList();
+              List<String> matches = smartMatchTags(state.danbooruTags, currentWord);
 
               setModalState(() {
                 suggestions = matches;

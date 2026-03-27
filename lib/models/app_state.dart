@@ -15,6 +15,51 @@ import '../novelai_service.dart';
 import '../tag_filters.dart';
 import 'nai_character.dart';
 
+// ============================================================================
+// 스마트 태그 매칭: 공백으로 단어 조각을 구분하여 검색
+// "ca t" → cat_tail (ca→cat, t→tail) 매칭, cat_ears 제외
+// 단일 단어면 기존 startsWith 동작과 동일
+// ============================================================================
+List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
+  final lower = query.toLowerCase().trim();
+  if (lower.isEmpty) return [];
+
+  final fragments = lower.split(RegExp(r'\s+'));
+
+  // 단일 조각: 기존 startsWith 동작
+  if (fragments.length <= 1) {
+    return tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
+  }
+
+  // 다중 조각: 첫 조각은 태그 시작 매칭, 나머지는 단어 시작(prefix) 순서 매칭
+  final first = fragments.first;
+  final rest = fragments.sublist(1);
+
+  return tags
+      .where((tag) {
+        final tagLower = tag.toLowerCase();
+        if (!tagLower.startsWith(first)) return false;
+
+        final words = tagLower.split(RegExp(r'[_ ]'));
+        int wordIdx = 1;
+        for (final frag in rest) {
+          bool found = false;
+          while (wordIdx < words.length) {
+            if (words[wordIdx].startsWith(frag)) {
+              wordIdx++;
+              found = true;
+              break;
+            }
+            wordIdx++;
+          }
+          if (!found) return false;
+        }
+        return true;
+      })
+      .take(limit)
+      .toList();
+}
+
 class NaiMetadata {
   final String positive;
   final String negative;
@@ -847,8 +892,23 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  String _processPipeOptions(String prompt) {
+    // "a|b|c," → 셋 중 하나를 랜덤 선택. 쉼표 또는 줄끝 앞의 word|word 패턴 처리
+    final RegExp pipeRegex = RegExp(r'([\w \t][^\n,|]*(?:\|[^\n,|]+)+)(?=[,\n]|$)');
+    return prompt.replaceAllMapped(pipeRegex, (match) {
+      final List<String> options = match
+          .group(0)!
+          .split('|')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (options.length < 2) return match.group(0)!;
+      return options[Random().nextInt(options.length)];
+    });
+  }
+
   String _processWildcards(String prompt) {
-    String result = prompt;
+    String result = _processPipeOptions(prompt);
     final RegExp regex = RegExp(r'__(.+?)__');
     int depth = 0;
     while (regex.hasMatch(result) && depth < 5) {
@@ -901,6 +961,7 @@ class AppState extends ChangeNotifier {
         }
         return weightedOptions.last['text'] as String;
       });
+      result = _processPipeOptions(result);
       depth++;
     }
     return result;
