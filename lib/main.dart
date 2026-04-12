@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'models/app_state.dart';
@@ -39,6 +40,7 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
   late TabController _tabController;
   late PageController _pageController;
   final ScrollController _historyScrollController = ScrollController();
+  bool _updateDialogShown = false;
 
   @override
   void initState() {
@@ -67,6 +69,80 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
     _pageController.dispose();
     _historyScrollController.dispose();
     super.dispose();
+  }
+
+  void _showUpdateDialog(BuildContext context, AppState state) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.system_update, color: Colors.deepPurpleAccent),
+            SizedBox(width: 8),
+            Text(
+              "새 버전이 있어요!",
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "v${AppState.currentVersion} → v${state.latestVersion}",
+              style: const TextStyle(
+                color: Colors.deepPurpleAccent,
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            if (state.updateNotes != null && state.updateNotes!.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF121212),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                constraints: const BoxConstraints(maxHeight: 200),
+                child: SingleChildScrollView(
+                  child: Text(
+                    state.updateNotes!,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("나중에", style: TextStyle(color: Colors.grey)),
+          ),
+          if (state.updateUrl != null)
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Clipboard.setData(ClipboardData(text: state.updateUrl!));
+                ScaffoldMessenger.of(
+                  context,
+                ).showSnackBar(const SnackBar(content: Text("다운로드 링크가 클립보드에 복사되었습니다!")));
+              },
+              icon: const Icon(Icons.copy, size: 16),
+              label: const Text("링크 복사", style: TextStyle(fontWeight: FontWeight.bold)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurpleAccent,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildImageArea(AppState state) {
@@ -135,6 +211,15 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+
+    // 업데이트 알림 (앱 실행 후 1회만)
+    if (state.hasUpdate && !_updateDialogShown) {
+      _updateDialogShown = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _showUpdateDialog(context, state);
+      });
+    }
 
     if (state.requestedTabIndex != null) {
       int targetTab = state.requestedTabIndex!;

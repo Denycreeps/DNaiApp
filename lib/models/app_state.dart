@@ -10,6 +10,10 @@ import 'package:intl/intl.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_background/flutter_background.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
+import 'package:http/http.dart' as http;
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../novelai_service.dart';
 import '../tag_filters.dart';
@@ -20,18 +24,86 @@ import 'nai_character.dart';
 // "ca t" → cat_tail (ca→cat, t→tail) 매칭, cat_ears 제외
 // 단일 단어면 기존 startsWith 동작과 동일
 // ============================================================================
+// † 접두어 = 보조 매칭 결과 (UI에서 연한 스타일로 구분)
+// ============================================================================
+const String kContainsMarker = '†';
+
+// ============================================================================
+// 프롬프트 토큰 추정기 (NAI V4/V4.5 T5 토크나이저 기준 ~512 토큰 제한)
+// T5 토크나이저는 서브워드 기반으로, 평균 ~3.2글자당 1토큰
+// (콤마·괄호·가중치 구문 모두 토큰으로 소비됨)
+// ============================================================================
+int estimateTokenCount(String prompt) {
+  if (prompt.trim().isEmpty) return 0;
+  return (prompt.trim().length / 3.1).round();
+}
+
 List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
+  // 트레일링 스페이스 감지 (trim 전에!)
+  final hasTrailingSpace = query.endsWith(' ');
   final lower = query.toLowerCase().trim();
   if (lower.isEmpty) return [];
 
   final fragments = lower.split(RegExp(r'\s+'));
 
-  // 단일 조각: 기존 startsWith 동작
-  if (fragments.length <= 1) {
+  // 다중 조각 ("ca t", "lo a v" 등): 스마트 단어 매칭
+  if (fragments.length > 1) {
+    return _multiWordMatch(tags, fragments, limit);
+  }
+
+  // ======================================================================
+  // 단일 조각
+  // ======================================================================
+
+  // 🔒 트레일링 스페이스 = "확정 모드": startsWith만 → 없으면 contains fallback
+  if (hasTrailingSpace) {
+    final startsResults = tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
+    if (startsResults.isNotEmpty) return startsResults;
+    // startsWith 결과 없음 → contains fallback (연한 스타일)
+    return tags
+        .where((t) => t.toLowerCase().contains(lower))
+        .take(limit)
+        .map((t) => '$kContainsMarker$t')
+        .toList();
+  }
+
+  // 1~2글자: startsWith만 (contains는 노이즈 너무 많음)
+  if (lower.length <= 2) {
     return tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
   }
 
-  // 다중 조각: 첫 조각은 태그 시작 매칭, 나머지는 단어 시작(prefix) 순서 매칭
+  // 3글자+, 스페이스 없음: 단어경계 우선 + 중간매칭 후순위
+  final wordBoundaryResults = <String>[];
+  final midWordResults = <String>[];
+
+  for (final tag in tags) {
+    final tagLower = tag.toLowerCase();
+    if (tagLower.startsWith(lower)) {
+      // 태그 자체가 쿼리로 시작 (최우선)
+      wordBoundaryResults.add(tag);
+    } else if (tagLower.split(' ').any((w) => w.startsWith(lower))) {
+      // 태그 안의 단어가 쿼리로 시작 (단어 경계 매칭)
+      wordBoundaryResults.add(tag);
+    } else if (tagLower.contains(lower)) {
+      // 단어 중간에 포함 (최후순위)
+      midWordResults.add(tag);
+    }
+    if (wordBoundaryResults.length >= limit && midWordResults.length >= limit) break;
+  }
+
+  // 점진적 할당: 쿼리가 길수록 midWord 비중 증가
+  final wordSlots = (wordBoundaryResults.length < limit - 3)
+      ? wordBoundaryResults.length
+      : max<int>(limit - lower.length, 5).clamp(0, limit);
+  final midSlots = limit - min<int>(wordBoundaryResults.length, wordSlots);
+
+  return [
+    ...wordBoundaryResults.take(wordSlots),
+    ...midWordResults.take(midSlots).map((t) => '$kContainsMarker$t'),
+  ];
+}
+
+List<String> _multiWordMatch(List<String> tags, List<String> fragments, int limit) {
   final first = fragments.first;
   final rest = fragments.sublist(1);
 
@@ -92,6 +164,40 @@ class NaiMetadata {
     required this.source,
     this.extraParams = const {},
   });
+
+  Map<String, dynamic> toJson() => {
+    'positive': positive,
+    'negative': negative,
+    'characterPrompts': characterPrompts,
+    'characterUndesiredContents': characterUndesiredContents,
+    'width': width,
+    'height': height,
+    'seed': seed,
+    'steps': steps,
+    'sampler': sampler,
+    'promptGuidance': promptGuidance,
+    'promptGuidanceRescale': promptGuidanceRescale,
+    'undesiredContentStrength': undesiredContentStrength,
+    'source': source,
+    'extraParams': extraParams,
+  };
+
+  factory NaiMetadata.fromJson(Map<String, dynamic> json) => NaiMetadata(
+    positive: json['positive'] ?? '',
+    negative: json['negative'] ?? '',
+    characterPrompts: List<String>.from(json['characterPrompts'] ?? []),
+    characterUndesiredContents: List<String>.from(json['characterUndesiredContents'] ?? []),
+    width: json['width'] ?? 0,
+    height: json['height'] ?? 0,
+    seed: json['seed'] ?? 0,
+    steps: json['steps'] ?? 0,
+    sampler: json['sampler'] ?? '',
+    promptGuidance: (json['promptGuidance'] ?? 0).toDouble(),
+    promptGuidanceRescale: (json['promptGuidanceRescale'] ?? 0).toDouble(),
+    undesiredContentStrength: (json['undesiredContentStrength'] ?? 0).toDouble(),
+    source: json['source'] ?? '',
+    extraParams: Map<String, dynamic>.from(json['extraParams'] ?? {}),
+  );
 
   // extraParams에 값을 추가한 새 인스턴스를 반환 (서버가 메타데이터에 기록하지 않는 값 보완용)
   NaiMetadata copyWithExtra(Map<String, dynamic> extra) {
@@ -375,6 +481,55 @@ class SyntaxHighlightController extends TextEditingController {
 }
 
 class AppState extends ChangeNotifier {
+  // ============================================================================
+  // 앱 버전 & 업데이트 체크
+  // ============================================================================
+  static String currentVersion = "0.0.0"; // pubspec.yaml에서 자동 로드됨
+  // 🚀 GitHub 저장소 주소 (본인 리포로 변경!)
+  static const String githubRepo = "YOUR_USERNAME/YOUR_REPO";
+
+  String? latestVersion;
+  String? updateUrl;
+  String? updateNotes;
+  bool get hasUpdate =>
+      latestVersion != null && _compareVersions(latestVersion!, currentVersion) > 0;
+
+  static int _compareVersions(String a, String b) {
+    final pa = a.replaceFirst('v', '').split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final pb = b.replaceFirst('v', '').split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    for (int i = 0; i < 3; i++) {
+      final va = i < pa.length ? pa[i] : 0;
+      final vb = i < pb.length ? pb[i] : 0;
+      if (va != vb) return va.compareTo(vb);
+    }
+    return 0;
+  }
+
+  Future<void> checkForUpdate() async {
+    try {
+      final resp = await http
+          .get(
+            Uri.parse('https://api.github.com/repos/$githubRepo/releases/latest'),
+            headers: {'Accept': 'application/vnd.github.v3+json'},
+          )
+          .timeout(const Duration(seconds: 5));
+      if (resp.statusCode == 200) {
+        final data = jsonDecode(resp.body);
+        final tag = data['tag_name']?.toString() ?? "";
+        if (tag.isNotEmpty && _compareVersions(tag, currentVersion) > 0) {
+          latestVersion = tag.replaceFirst('v', '');
+          updateUrl = data['html_url']?.toString();
+          updateNotes = data['body']?.toString();
+          notifyListeners();
+        }
+      }
+    } catch (_) {
+      // 네트워크 실패 시 무시 (업데이트 체크는 부가 기능)
+    }
+  }
+
+  // ============================================================================
+
   final TextEditingController positiveController = TextEditingController();
   final TextEditingController negativeController = TextEditingController();
   final TextEditingController prefixController = TextEditingController();
@@ -415,14 +570,29 @@ class AppState extends ChangeNotifier {
   bool ratingG = true;
   bool removeCharacteristics = false;
   bool removeClothes = false;
+  bool removeColors = false;
   bool isAutoSave = true;
   bool isRandomLocked = false;
   bool isFurryMode = false;
   bool isSeedLocked = false;
   double infillStrength = 0.7;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
-  bool showImageInOtherTabs = true;
+  bool showImageInOtherTabs = false;
   bool useGelbooruApiKey = true;
+
+  // 프롬프트 섹션 순서 (드래그로 재배치 가능)
+  List<String> promptSectionOrder = [
+    'positive',
+    'prefix',
+    'suffix',
+    'negative',
+    'removeChips',
+    'customRemove',
+    'conditional',
+  ];
+
+  // 프롬프트 섹션 접기 상태
+  Set<String> collapsedSections = {};
 
   bool isI2iScrollDisabled = false;
   void setI2iScrollDisabled(bool disabled) {
@@ -438,6 +608,7 @@ class AppState extends ChangeNotifier {
   String apiToken = "";
   bool isApiConnected = false;
   int sessionSaveCount = 0;
+  int sessionGenerateCount = 0;
   String? sessionFolderName;
   String selectedModel = "nai-diffusion-4-5-full";
   String selectedSampler = "k_euler_ancestral";
@@ -474,6 +645,8 @@ class AppState extends ChangeNotifier {
 
   List<Uint8List> historyImages = [];
   List<NaiMetadata?> historyMetadata = [];
+  List<bool> historyFavorites = [];
+  List<String?> historyFilePaths = []; // 자동저장된 파일 경로 추적
   int selectedHistoryIndex = -1;
 
   List<Uint8List> i2iHistoryImages = [];
@@ -487,6 +660,7 @@ class AppState extends ChangeNotifier {
 
   double historyThumbnailScrollOffset = 0.0;
   bool scrollToThumbnailEnd = false;
+  bool isHistoryGridView = false;
 
   int? requestedTabIndex;
 
@@ -508,6 +682,12 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> loadInitialData() async {
+    // pubspec.yaml의 version을 자동으로 읽어옴
+    try {
+      final info = await PackageInfo.fromPlatform();
+      currentVersion = info.version;
+    } catch (_) {}
+
     await [Permission.storage, Permission.manageExternalStorage].request();
     await _loadTagsFromJson();
     final prefs = await SharedPreferences.getInstance();
@@ -548,6 +728,7 @@ class AppState extends ChangeNotifier {
     ratingG = prefs.getBool('rating_g') ?? true;
     removeCharacteristics = prefs.getBool('remove_char_traits') ?? false;
     removeClothes = prefs.getBool('remove_clothes') ?? false;
+    removeColors = prefs.getBool('remove_colors') ?? false;
     customRemoveController.text = prefs.getString('custom_remove') ?? "";
     isAutoSave = prefs.getBool('auto_save') ?? true;
     isRandomLocked = prefs.getBool('random_lock') ?? false;
@@ -555,9 +736,17 @@ class AppState extends ChangeNotifier {
     isSeedLocked = prefs.getBool('seedLocked') ?? false;
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
-    showImageInOtherTabs = prefs.getBool('showImageInOtherTabs') ?? true;
+    showImageInOtherTabs = prefs.getBool('showImageInOtherTabs') ?? false;
     useGelbooruApiKey = prefs.getBool('useGelbooruApiKey') ?? true;
     resolutionMode = prefs.getString('resolutionMode') ?? "수동";
+    final sectionOrderJson = prefs.getStringList('promptSectionOrder');
+    if (sectionOrderJson != null && sectionOrderJson.length == 7) {
+      promptSectionOrder = sectionOrderJson;
+    }
+    final collapsedJson = prefs.getStringList('collapsedSections');
+    if (collapsedJson != null) {
+      collapsedSections = collapsedJson.toSet();
+    }
     selectedModel = prefs.getString('model') ?? "nai-diffusion-4-5-full";
     selectedSampler = prefs.getString('sampler') ?? "k_euler_ancestral";
     selectedScheduler = prefs.getString('scheduler') ?? "karras";
@@ -594,7 +783,11 @@ class AppState extends ChangeNotifier {
     }
 
     await fetchAnlas();
+    await _loadHistoryFromLocal();
     notifyListeners();
+
+    // 업데이트 체크 (비동기, 앱 시작을 블로킹하지 않음)
+    checkForUpdate();
   }
 
   Future<void> _loadTagsFromJson() async {
@@ -608,6 +801,113 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint("❌ 태그 파일 읽기 실패: $e");
     }
+  }
+
+  // ============================================================================
+  // 설정 내보내기/가져오기
+  // ============================================================================
+  Map<String, dynamic> exportSettings() {
+    return {
+      'version': currentVersion,
+      'positive': positiveController.text,
+      'negative': negativeController.text,
+      'prefix': prefixController.text,
+      'suffix': suffixController.text,
+      'inpaint_pos': inpaintPositiveController.text,
+      'inpaint_neg': inpaintNegativeController.text,
+      'inpaint_prefix': inpaintPrefixController.text,
+      'inpaint_suffix': inpaintSuffixController.text,
+      'steps': stepsController.text,
+      'cfgScale': cfgScaleController.text,
+      'cfgRescale': cfgRescaleController.text,
+      'seed': seedController.text,
+      'conditional_rules': conditionalRuleController.text,
+      'gelbooru_inc': gelbooruIncludeController.text,
+      'gelbooru_exc': gelbooruExcludeController.text,
+      'custom_save_path': customSavePathController.text,
+      'custom_file_name': customFileNameController.text,
+      'custom_width': customWidthController.text,
+      'custom_height': customHeightController.text,
+      'custom_remove': customRemoveController.text,
+      'model': selectedModel,
+      'sampler': selectedSampler,
+      'scheduler': selectedScheduler,
+      'resolutionMode': resolutionMode,
+      'promptSectionOrder': promptSectionOrder,
+      'rating_e': ratingE,
+      'rating_q': ratingQ,
+      'rating_s': ratingS,
+      'rating_g': ratingG,
+      'remove_char_traits': removeCharacteristics,
+      'remove_clothes': removeClothes,
+      'remove_colors': removeColors,
+      'auto_save': isAutoSave,
+      'random_lock': isRandomLocked,
+      'furry': isFurryMode,
+      'seedLocked': isSeedLocked,
+      'infillStrength': infillStrength,
+      'variancePlus': isVariancePlus,
+      'showImageInOtherTabs': showImageInOtherTabs,
+      'useGelbooruApiKey': useGelbooruApiKey,
+      'characters': characters.map((c) => c.toJson()).toList(),
+      'wildcards': wildcards.map((w) => w.toJson()).toList(),
+    };
+  }
+
+  void importSettings(Map<String, dynamic> data) {
+    positiveController.text = data['positive'] ?? '';
+    negativeController.text = data['negative'] ?? '';
+    prefixController.text = data['prefix'] ?? '';
+    suffixController.text = data['suffix'] ?? '';
+    inpaintPositiveController.text = data['inpaint_pos'] ?? '';
+    inpaintNegativeController.text = data['inpaint_neg'] ?? '';
+    inpaintPrefixController.text = data['inpaint_prefix'] ?? '';
+    inpaintSuffixController.text = data['inpaint_suffix'] ?? '';
+    stepsController.text = data['steps'] ?? '28';
+    cfgScaleController.text = data['cfgScale'] ?? '6.0';
+    cfgRescaleController.text = data['cfgRescale'] ?? '0.00';
+    seedController.text = data['seed'] ?? '';
+    conditionalRuleController.text = data['conditional_rules'] ?? '';
+    gelbooruIncludeController.text = data['gelbooru_inc'] ?? '';
+    gelbooruExcludeController.text = data['gelbooru_exc'] ?? '';
+    customSavePathController.text = data['custom_save_path'] ?? '/storage/emulated/0/Download';
+    customFileNameController.text = data['custom_file_name'] ?? 'Nai-{yy}{mm}{dd}-{time}-{count}';
+    customWidthController.text = data['custom_width'] ?? '832';
+    customHeightController.text = data['custom_height'] ?? '1216';
+    customRemoveController.text = data['custom_remove'] ?? '';
+    selectedModel = data['model'] ?? 'nai-diffusion-4-5-full';
+    selectedSampler = data['sampler'] ?? 'k_euler_ancestral';
+    selectedScheduler = data['scheduler'] ?? 'karras';
+    resolutionMode = data['resolutionMode'] ?? '수동';
+    if (data['promptSectionOrder'] != null) {
+      promptSectionOrder = List<String>.from(data['promptSectionOrder']);
+    }
+    ratingE = data['rating_e'] ?? false;
+    ratingQ = data['rating_q'] ?? false;
+    ratingS = data['rating_s'] ?? false;
+    ratingG = data['rating_g'] ?? true;
+    removeCharacteristics = data['remove_char_traits'] ?? false;
+    removeClothes = data['remove_clothes'] ?? false;
+    removeColors = data['remove_colors'] ?? false;
+    isAutoSave = data['auto_save'] ?? true;
+    isRandomLocked = data['random_lock'] ?? false;
+    isFurryMode = data['furry'] ?? false;
+    isSeedLocked = data['seedLocked'] ?? false;
+    infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
+    isVariancePlus = data['variancePlus'] ?? false;
+    showImageInOtherTabs = data['showImageInOtherTabs'] ?? false;
+    useGelbooruApiKey = data['useGelbooruApiKey'] ?? true;
+
+    if (data['characters'] != null) {
+      characters = (data['characters'] as List).map((e) => NaiCharacter.fromJson(e)).toList();
+      if (characters.isEmpty) characters.add(NaiCharacter());
+    }
+    if (data['wildcards'] != null) {
+      wildcards = (data['wildcards'] as List).map((e) => NaiWildcard.fromJson(e)).toList();
+    }
+
+    saveAllSettings();
+    notifyListeners();
   }
 
   Future<void> saveAllSettings() async {
@@ -642,6 +942,7 @@ class AppState extends ChangeNotifier {
     await prefs.setBool('rating_g', ratingG);
     await prefs.setBool('remove_char_traits', removeCharacteristics);
     await prefs.setBool('remove_clothes', removeClothes);
+    await prefs.setBool('remove_colors', removeColors);
     await prefs.setString('custom_remove', customRemoveController.text);
     await prefs.setBool('auto_save', isAutoSave);
     await prefs.setBool('random_lock', isRandomLocked);
@@ -650,6 +951,8 @@ class AppState extends ChangeNotifier {
     await prefs.setDouble('infillStrength', infillStrength);
     await prefs.setBool('variancePlus', isVariancePlus);
     await prefs.setBool('showImageInOtherTabs', showImageInOtherTabs);
+    await prefs.setStringList('promptSectionOrder', promptSectionOrder);
+    await prefs.setStringList('collapsedSections', collapsedSections.toList());
     await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
     await prefs.setString('resolutionMode', resolutionMode);
     await prefs.setString('model', selectedModel);
@@ -719,9 +1022,9 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("검색 실패: $e"), backgroundColor: Colors.redAccent));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("검색에 실패했습니다. 다시 시도해주세요."), backgroundColor: Colors.redAccent),
+      );
     }
     notifyListeners();
   }
@@ -817,6 +1120,16 @@ class AppState extends ChangeNotifier {
       if (removeClothes &&
           (TagFilters.clothesTags.contains(t) || TagFilters.clothesTags.contains(cleanTag))) {
         continue;
+      }
+      if (removeColors) {
+        bool hasColor = false;
+        for (final keyword in TagFilters.colorKeywords) {
+          if (cleanTag.contains(keyword) || t.contains(keyword)) {
+            hasColor = true;
+            break;
+          }
+        }
+        if (hasColor) continue;
       }
 
       bool shouldRemove = false;
@@ -1206,13 +1519,22 @@ class AppState extends ChangeNotifier {
       lastErrorMessage = result.error;
 
       if (result.image != null) {
-        if (historyImages.length >= 30) {
-          historyImages.removeAt(0);
-          if (historyMetadata.isNotEmpty) {
-            historyMetadata.removeAt(0);
-          }
+        sessionGenerateCount++;
+        if (historyImages.length >= 100) {
+          _removeOldestNonFavorite();
         }
         historyImages.add(result.image!);
+        historyFavorites.add(false);
+
+        String? savedPath;
+        if (isAutoSave) {
+          if (context.mounted) {
+            savedPath = await autoSaveImage(context, result.image!);
+          } else {
+            savedPath = await autoSaveImage(null, result.image!);
+          }
+        }
+        historyFilePaths.add(savedPath);
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
         // 서버가 PNG 메타데이터에 variety_plus를 기록하지 않으므로 앱에서 직접 주입
@@ -1223,15 +1545,9 @@ class AppState extends ChangeNotifier {
 
         selectedHistoryIndex = historyImages.length - 1;
         scrollToThumbnailEnd = true;
+        saveHistoryToLocal();
 
         onScrollToHistoryEnd();
-        if (isAutoSave) {
-          if (context.mounted) {
-            await autoSaveImage(context, result.image!);
-          } else {
-            await autoSaveImage(null, result.image!);
-          }
-        }
       }
 
       await fetchAnlas();
@@ -1343,7 +1659,6 @@ class AppState extends ChangeNotifier {
         },
       );
 
-      currentImageBytes = result.image ?? currentImageBytes;
       lastErrorMessage = result.error;
 
       if (result.error != null) {
@@ -1374,21 +1689,24 @@ class AppState extends ChangeNotifier {
           );
         }
       } else if (result.image != null) {
-        if (historyImages.length >= 30) {
-          historyImages.removeAt(0);
-          if (historyMetadata.isNotEmpty) historyMetadata.removeAt(0);
+        if (historyImages.length >= 100) {
+          _removeOldestNonFavorite();
         }
         historyImages.add(result.image!);
+        historyFavorites.add(false);
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
         historyMetadata.add(parsedMeta);
 
+        String? savedPath;
+        if (isAutoSave) {
+          savedPath = await autoSaveImage(context.mounted ? context : null, result.image!);
+        }
+        historyFilePaths.add(savedPath);
+
         selectedHistoryIndex = historyImages.length - 1;
         scrollToThumbnailEnd = true;
-
-        if (isAutoSave) {
-          await autoSaveImage(context.mounted ? context : null, result.image!);
-        }
+        saveHistoryToLocal();
         navigateToTab(1);
       }
 
@@ -1557,16 +1875,12 @@ class AppState extends ChangeNotifier {
           ),
         );
       } else if (result.image != null) {
-        if (historyImages.length >= 30) {
-          historyImages.removeAt(0);
-          if (historyMetadata.isNotEmpty) {
-            historyMetadata.removeAt(0);
-          }
+        if (historyImages.length >= 100) {
+          _removeOldestNonFavorite();
         }
         historyImages.add(result.image!);
+        historyFavorites.add(false);
 
-        // 업스케일된 PNG의 IHDR 파싱은 신뢰할 수 없으므로 (쓰레기 값이 나올 수 있음)
-        // 항상 원본 메타데이터 기반으로 올바른 업스케일 치수를 직접 계산해서 구성
         NaiMetadata? parsedMeta;
         if (targetI2iMetadata != null) {
           parsedMeta = NaiMetadata(
@@ -1574,7 +1888,7 @@ class AppState extends ChangeNotifier {
             negative: targetI2iMetadata!.negative,
             characterPrompts: targetI2iMetadata!.characterPrompts,
             characterUndesiredContents: targetI2iMetadata!.characterUndesiredContents,
-            width: width * 4, // scale: 4 기준 (novelai_service의 scale 값과 일치)
+            width: width * 4,
             height: height * 4,
             seed: targetI2iMetadata!.seed,
             steps: targetI2iMetadata!.steps,
@@ -1586,22 +1900,23 @@ class AppState extends ChangeNotifier {
             extraParams: targetI2iMetadata!.extraParams,
           );
         } else {
-          // targetI2iMetadata도 없으면 PNG에서 파싱 시도 (마지막 수단)
           parsedMeta = extractNovelAIMetadata(result.image!);
         }
 
         historyMetadata.add(parsedMeta);
 
+        // 업스케일 결과는 항상 저장
+        String? savedPath;
+        if (context.mounted) {
+          savedPath = await autoSaveImage(context, result.image!);
+        } else {
+          savedPath = await autoSaveImage(null, result.image!);
+        }
+        historyFilePaths.add(savedPath);
+
         selectedHistoryIndex = historyImages.length - 1;
         scrollToThumbnailEnd = true;
-
-        // 업스케일 결과는 isAutoSave 설정과 무관하게 항상 저장
-        if (context.mounted) {
-          await autoSaveImage(context, result.image!);
-        } else {
-          await autoSaveImage(null, result.image!);
-        }
-
+        saveHistoryToLocal();
         navigateToTab(1);
       }
 
@@ -1621,19 +1936,19 @@ class AppState extends ChangeNotifier {
         final Uint8List bytes = await image.readAsBytes();
 
         historyImages.add(bytes);
+        historyFavorites.add(false);
+        historyFilePaths.add(null); // 불러온 이미지는 저장 경로 없음
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(bytes);
         historyMetadata.add(parsedMeta);
 
-        if (historyImages.length > 30) {
-          historyImages.removeAt(0);
-          if (historyMetadata.length > 30) {
-            historyMetadata.removeAt(0);
-          }
+        if (historyImages.length > 100) {
+          _removeOldestNonFavorite();
         }
 
         selectedHistoryIndex = historyImages.length - 1;
         scrollToThumbnailEnd = true;
+        saveHistoryToLocal();
         notifyListeners();
 
         if (!context.mounted) {
@@ -1648,7 +1963,42 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("이미지 불러오기 실패: $e")));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("이미지를 불러오는 데 실패했습니다.")));
+    }
+  }
+
+  void toggleHistoryFavorite(int index) {
+    if (index < 0 || index >= historyFavorites.length) return;
+    historyFavorites[index] = !historyFavorites[index];
+    saveHistoryToLocal();
+    notifyListeners();
+  }
+
+  // ============================================================================
+  // 즐겨찾기가 아닌 가장 오래된 이미지 제거 (즐겨찾기 보호)
+  // ============================================================================
+  void _removeOldestNonFavorite() {
+    // 즐겨찾기가 아닌 가장 오래된 인덱스 찾기
+    int targetIndex = -1;
+    for (int i = 0; i < historyImages.length; i++) {
+      if (i >= historyFavorites.length || !historyFavorites[i]) {
+        targetIndex = i;
+        break;
+      }
+    }
+
+    // 전부 즐겨찾기면 삭제하지 않음 (100개 초과 허용)
+    if (targetIndex == -1) return;
+
+    historyImages.removeAt(targetIndex);
+    if (targetIndex < historyMetadata.length) historyMetadata.removeAt(targetIndex);
+    if (targetIndex < historyFavorites.length) historyFavorites.removeAt(targetIndex);
+    if (targetIndex < historyFilePaths.length) historyFilePaths.removeAt(targetIndex);
+
+    // selectedHistoryIndex 보정
+    if (targetIndex <= selectedHistoryIndex) {
+      selectedHistoryIndex--;
+      if (selectedHistoryIndex < 0) selectedHistoryIndex = 0;
     }
   }
 
@@ -1658,9 +2008,9 @@ class AppState extends ChangeNotifier {
     }
 
     historyImages.removeAt(index);
-    if (index < historyMetadata.length) {
-      historyMetadata.removeAt(index);
-    }
+    if (index < historyMetadata.length) historyMetadata.removeAt(index);
+    if (index < historyFavorites.length) historyFavorites.removeAt(index);
+    if (index < historyFilePaths.length) historyFilePaths.removeAt(index);
 
     if (historyImages.isEmpty) {
       selectedHistoryIndex = -1;
@@ -1672,7 +2022,260 @@ class AppState extends ChangeNotifier {
         selectedHistoryIndex = 0;
       }
     }
+    saveHistoryToLocal();
     notifyListeners();
+  }
+
+  // ============================================================================
+  // 히스토리 로컬 저장/불러오기 (앱 종료 후에도 유지)
+  // ============================================================================
+  Future<Directory> _getHistoryDir() async {
+    final appDir = await getApplicationDocumentsDirectory();
+    final historyDir = Directory('${appDir.path}/history');
+    if (!await historyDir.exists()) {
+      await historyDir.create(recursive: true);
+    }
+    return historyDir;
+  }
+
+  Future<void> saveHistoryToLocal() async {
+    try {
+      final dir = await _getHistoryDir();
+
+      // 기존 파일 전부 삭제 후 새로 저장
+      final existing = dir.listSync().whereType<File>();
+      for (final f in existing) {
+        await f.delete();
+      }
+
+      // 이미지 저장 (최신 30개: 원본 PNG, 나머지: 썸네일 JPEG)
+      final int total = historyImages.length;
+      for (int i = 0; i < total; i++) {
+        final bool isRecent = (total - i) <= 30;
+        final bool hasFileOnDevice = await _checkFileExists(i);
+
+        if (isRecent || hasFileOnDevice) {
+          final file = File('${dir.path}/img_$i.png');
+          await file.writeAsBytes(historyImages[i]);
+        } else {
+          try {
+            final decoded = img.decodeImage(historyImages[i]);
+            if (decoded != null) {
+              final thumbnail = img.copyResize(decoded, width: 200);
+              final jpegBytes = img.encodeJpg(thumbnail, quality: 70);
+              final file = File('${dir.path}/thumb_$i.jpg');
+              await file.writeAsBytes(jpegBytes);
+            } else {
+              final file = File('${dir.path}/img_$i.png');
+              await file.writeAsBytes(historyImages[i]);
+            }
+          } catch (_) {
+            final file = File('${dir.path}/img_$i.png');
+            await file.writeAsBytes(historyImages[i]);
+          }
+        }
+      }
+
+      // 메타데이터 저장
+      final metaList = historyMetadata.map((m) => m?.toJson()).toList();
+      final metaFile = File('${dir.path}/metadata.json');
+      await metaFile.writeAsString(jsonEncode(metaList));
+
+      // 즐겨찾기 저장
+      final favFile = File('${dir.path}/favorites.json');
+      await favFile.writeAsString(jsonEncode(historyFavorites));
+
+      // 파일 경로 저장
+      final pathsFile = File('${dir.path}/paths.json');
+      await pathsFile.writeAsString(jsonEncode(historyFilePaths));
+
+      debugPrint("✅ 히스토리 ${historyImages.length}개 로컬 저장 완료");
+    } catch (e) {
+      debugPrint("❌ 히스토리 저장 실패: $e");
+    }
+  }
+
+  Future<void> _loadHistoryFromLocal() async {
+    try {
+      final dir = await _getHistoryDir();
+      final metaFile = File('${dir.path}/metadata.json');
+      if (!await metaFile.exists()) return;
+
+      final metaJson = jsonDecode(await metaFile.readAsString()) as List;
+
+      List<Uint8List> loadedImages = [];
+      List<NaiMetadata?> loadedMeta = [];
+
+      for (int i = 0; i < metaJson.length; i++) {
+        final imgFile = File('${dir.path}/img_$i.png');
+        final thumbFile = File('${dir.path}/thumb_$i.jpg');
+
+        if (await imgFile.exists()) {
+          loadedImages.add(await imgFile.readAsBytes());
+          loadedMeta.add(metaJson[i] != null ? NaiMetadata.fromJson(metaJson[i]) : null);
+        } else if (await thumbFile.exists()) {
+          loadedImages.add(await thumbFile.readAsBytes());
+          loadedMeta.add(metaJson[i] != null ? NaiMetadata.fromJson(metaJson[i]) : null);
+        }
+      }
+
+      historyImages = loadedImages;
+      historyMetadata = loadedMeta;
+
+      // 즐겨찾기 불러오기
+      final favFile = File('${dir.path}/favorites.json');
+      if (await favFile.exists()) {
+        final favJson = jsonDecode(await favFile.readAsString()) as List;
+        historyFavorites = favJson.map((e) => e as bool).toList();
+      }
+
+      // 파일 경로 불러오기
+      final pathsFile = File('${dir.path}/paths.json');
+      if (await pathsFile.exists()) {
+        final pathsJson = jsonDecode(await pathsFile.readAsString()) as List;
+        historyFilePaths = pathsJson.map((e) => e as String?).toList();
+      }
+
+      // 길이 보정
+      while (historyFavorites.length < historyImages.length) {
+        historyFavorites.add(false);
+      }
+      while (historyFilePaths.length < historyImages.length) {
+        historyFilePaths.add(null);
+      }
+
+      if (historyImages.isNotEmpty) {
+        selectedHistoryIndex = historyImages.length - 1;
+      }
+      debugPrint("✅ 히스토리 ${historyImages.length}개 로컬에서 불러오기 완료");
+    } catch (e) {
+      debugPrint("❌ 히스토리 불러오기 실패: $e");
+    }
+  }
+
+  // ============================================================================
+  // 파일 존재 여부 확인
+  // ============================================================================
+  Future<bool> _checkFileExists(int index) async {
+    if (index < 0 || index >= historyFilePaths.length) return false;
+    final path = historyFilePaths[index];
+    if (path == null || path.isEmpty) return false;
+    return File(path).exists();
+  }
+
+  bool checkFileExistsSync(int index) {
+    if (index < 0 || index >= historyFilePaths.length) return false;
+    final path = historyFilePaths[index];
+    if (path == null || path.isEmpty) return false;
+    return File(path).existsSync();
+  }
+
+  // ============================================================================
+  // 히스토리 이미지가 썸네일(경량)인지 확인
+  // ============================================================================
+  bool isHistoryThumbnail(int index) {
+    if (index < 0 || index >= historyImages.length) return false;
+    final bytes = historyImages[index];
+    if (bytes.length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
+      return true; // JPEG = 썸네일
+    }
+    return false; // PNG = 원본
+  }
+
+  // ============================================================================
+  // 메타데이터로 이미지 재생성 (썸네일만 있는 경우)
+  // ============================================================================
+  Future<void> regenerateFromMetadata(BuildContext context, int index) async {
+    if (index < 0 || index >= historyMetadata.length) return;
+    final meta = historyMetadata[index];
+    if (meta == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("메타데이터가 없어 재생성할 수 없습니다.")));
+      }
+      return;
+    }
+
+    if (apiToken.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("API 토큰이 설정되지 않았습니다.")));
+      }
+      return;
+    }
+
+    isLoading = true;
+    notifyListeners();
+
+    try {
+      List<Map<String, dynamic>> characters = [];
+      for (int i = 0; i < meta.characterPrompts.length; i++) {
+        characters.add({
+          'positive': meta.characterPrompts[i],
+          'negative': i < meta.characterUndesiredContents.length
+              ? meta.characterUndesiredContents[i]
+              : '',
+          'gridX': 2,
+          'gridY': 2,
+        });
+      }
+
+      final result = await _service.generateImage(
+        positive: meta.positive,
+        negative: meta.negative,
+        token: apiToken,
+        model: meta.source.isNotEmpty ? meta.source : selectedModel,
+        steps: meta.steps > 0 ? meta.steps : 28,
+        sampler: meta.sampler.isNotEmpty ? meta.sampler : selectedSampler,
+        scheduler: meta.extraParams['noise_schedule']?.toString() ?? selectedScheduler,
+        isFurry: isFurryMode,
+        width: meta.width > 0 ? meta.width : 832,
+        height: meta.height > 0 ? meta.height : 1216,
+        cfgScale: meta.promptGuidance > 0 ? meta.promptGuidance : 6.0,
+        cfgRescale: meta.promptGuidanceRescale,
+        seed: meta.seed,
+        characters: characters,
+        variancePlus: meta.extraParams['variety_plus'] == true,
+      );
+
+      if (result.image != null) {
+        historyImages[index] = result.image!;
+
+        String? savedPath;
+        if (context.mounted) {
+          savedPath = await autoSaveImage(context, result.image!);
+        } else {
+          savedPath = await autoSaveImage(null, result.image!);
+        }
+        if (index < historyFilePaths.length) {
+          historyFilePaths[index] = savedPath;
+        }
+        saveHistoryToLocal();
+
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text("이미지 재생성 및 저장 완료!")));
+        }
+      } else if (result.error != null && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("재생성 실패: ${result.error}")));
+      }
+      await fetchAnlas();
+    } catch (e) {
+      debugPrint("재생성 오류: $e");
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("재생성 중 오류가 발생했습니다.")));
+      }
+    } finally {
+      isLoading = false;
+      notifyListeners();
+    }
   }
 
   String _getFormattedFileName(String suffix) {
@@ -1694,7 +2297,7 @@ class AppState extends ChangeNotifier {
     return suffix.isEmpty ? parsed : "${parsed}_$suffix";
   }
 
-  Future<void> autoSaveImage(BuildContext? context, Uint8List bytes) async {
+  Future<String?> autoSaveImage(BuildContext? context, Uint8List bytes) async {
     sessionSaveCount++;
     sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
     try {
@@ -1720,16 +2323,18 @@ class AppState extends ChangeNotifier {
 
       if (context != null) {
         if (!context.mounted) {
-          return;
+          return file.path;
         }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
         );
       }
+      return file.path;
     } catch (e) {
       debugPrint("자동 저장 오류: $e");
     }
     notifyListeners();
+    return null;
   }
 
   Future<void> manualSaveImage(BuildContext context, Uint8List bytes) async {
@@ -1766,7 +2371,9 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("저장 실패: $e")));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요.")));
     }
     notifyListeners();
   }

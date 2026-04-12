@@ -215,10 +215,15 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
   }
 }
 
-class PromptTab extends StatelessWidget {
+class PromptTab extends StatefulWidget {
   final VoidCallback? onScrollToHistoryEnd;
   const PromptTab({super.key, this.onScrollToHistoryEnd});
 
+  @override
+  State<PromptTab> createState() => _PromptTabState();
+}
+
+class _PromptTabState extends State<PromptTab> {
   void _showPresetBottomSheet(BuildContext context, AppState state) {
     showModalBottomSheet(
       context: context,
@@ -867,6 +872,316 @@ class PromptTab extends StatelessWidget {
     );
   }
 
+  // ============================================================================
+  // 섹션 메타정보 (ID → 제목, 아이콘, 색상)
+  // ============================================================================
+  static const Map<String, Map<String, dynamic>> _sectionMeta = {
+    'positive': {'title': '긍정적 프롬프트', 'icon': Icons.add_circle_outline, 'color': 0xFF00BFA5},
+    'prefix': {'title': '선행 프롬프트', 'icon': Icons.arrow_right_alt, 'color': 0xFF29B6F6},
+    'suffix': {'title': '후행 프롬프트', 'icon': Icons.keyboard_double_arrow_right, 'color': 0xFFFFA000},
+    'negative': {'title': '부정적 프롬프트', 'icon': Icons.remove_circle_outline, 'color': 0xFFFF5252},
+    'removeChips': {'title': '태그 제거', 'icon': Icons.auto_fix_high, 'color': 0xFF8B5CF6},
+    'customRemove': {'title': '개별 제거 프롬프트', 'icon': Icons.delete_outline, 'color': 0xFF9E9E9E},
+    'conditional': {'title': '조건부 트리거', 'icon': Icons.bolt, 'color': 0xFF29B6F6},
+  };
+
+  // ============================================================================
+  // 섹션 헤더 (접기/펴기 토글 + 드래그 핸들)
+  // ============================================================================
+  Widget _buildSectionHeader({
+    required AppState state,
+    required String sectionId,
+    required bool isCollapsed,
+    required int index,
+  }) {
+    final meta = _sectionMeta[sectionId]!;
+    final color = Color(meta['color'] as int);
+    final icon = meta['icon'] as IconData;
+    final title = meta['title'] as String;
+
+    return GestureDetector(
+      onTap: () {
+        if (state.collapsedSections.contains(sectionId)) {
+          state.collapsedSections.remove(sectionId);
+        } else {
+          state.collapsedSections.add(sectionId);
+        }
+        state.saveAllSettings();
+        state.refreshUI();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isCollapsed ? color.withValues(alpha: 0.08) : color.withValues(alpha: 0.15),
+          borderRadius: isCollapsed
+              ? BorderRadius.circular(12)
+              : const BorderRadius.vertical(top: Radius.circular(12)),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            // 접기/펴기 화살표
+            Icon(isCollapsed ? Icons.chevron_right : Icons.expand_more, color: color, size: 22),
+            const SizedBox(width: 4),
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+            // 드래그 핸들 (접혔을 때만 표시, 잡고 드래그로 순서 변경)
+            if (isCollapsed)
+              ReorderableDragStartListener(
+                index: index,
+                child: Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Icon(Icons.drag_handle, color: color.withValues(alpha: 0.8), size: 20),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ============================================================================
+  // 섹션 컨텐츠 (접히지 않았을 때 보이는 실제 내용)
+  // ============================================================================
+  Widget _buildSectionContent(BuildContext context, AppState state, String sectionId) {
+    switch (sectionId) {
+      case 'positive':
+        return _buildPromptCardBody(
+          context,
+          state,
+          color: const Color(0xFF00BFA5),
+          controller: state.positiveController,
+          hint: "태그를 입력하세요...",
+          icon: Icons.add_circle_outline,
+          title: "긍정적 프롬프트",
+        );
+      case 'prefix':
+        return _buildPromptCardBody(
+          context,
+          state,
+          color: const Color(0xFF29B6F6),
+          controller: state.prefixController,
+          hint: "1girl, solo, artist:kuroboshi kouhaku...",
+          icon: Icons.arrow_right_alt,
+          title: "선행 프롬프트",
+        );
+      case 'suffix':
+        return _buildPromptCardBody(
+          context,
+          state,
+          color: const Color(0xFFFFA000),
+          controller: state.suffixController,
+          hint: "고정으로 맨 뒤에 들어갈 태그...",
+          icon: Icons.keyboard_double_arrow_right,
+          title: "후행 프롬프트",
+        );
+      case 'negative':
+        return _buildPromptCardBody(
+          context,
+          state,
+          color: const Color(0xFFFF5252),
+          controller: state.negativeController,
+          hint: "text, logo, worst quality...",
+          icon: Icons.remove_circle_outline,
+          title: "부정적 프롬프트",
+        );
+      case 'removeChips':
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+            border: Border.all(color: const Color(0xFF8B5CF6).withValues(alpha: 0.3)),
+          ),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildRemoveChip("특징 제거", Icons.auto_fix_high, state.removeCharacteristics, (v) {
+                state.removeCharacteristics = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }),
+              _buildRemoveChip("의상 제거", Icons.checkroom, state.removeClothes, (v) {
+                state.removeClothes = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }),
+              _buildRemoveChip("색상 제거", Icons.palette, state.removeColors, (v) {
+                state.removeColors = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }),
+            ],
+          ),
+        );
+      case 'customRemove':
+        return _buildPromptCardBody(
+          context,
+          state,
+          color: Colors.grey,
+          controller: state.customRemoveController,
+          hint: "*censor*, *skirt*, 단어...",
+          icon: Icons.delete_outline,
+          title: "개별 제거 프롬프트",
+        );
+      case 'conditional':
+        return Column(
+          children: [
+            _buildPromptCardBody(
+              context,
+              state,
+              color: const Color(0xFF29B6F6),
+              controller: state.conditionalRuleController,
+              hint: "# 주석을 적을 수 있습니다\n(e|q):*skirt=*skirt, pants\n(cat*):cat*^dog*",
+              icon: Icons.bolt,
+              title: "조건부 트리거 작성 (줄바꿈 구분)",
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF29B6F6).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF29B6F6).withValues(alpha: 0.3)),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "💡 문법 가이드",
+                    style: TextStyle(
+                      color: Color(0xFF29B6F6),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    "(조건):A=B → 조건 만족시 A를 B로 덮어쓰기 교체",
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  Text(
+                    "(조건):A^B → 조건 만족시 A를 B로 교체 (*A인 경우 포함되는 프롬프트중 A 부분만 교체)",
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  Text(
+                    "(조건):prefix=B → 긍정 프롬프트 맨 앞에 B 추가",
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  Text(
+                    "(조건):suffix=B → 긍정 프롬프트 맨 뒤에 B 추가",
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    "*조건식에 g, s, q, e 를 쓰면 해당 연령 등급을 인식합니다.",
+                    style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
+                  ),
+                  Text(
+                    "*조건식에는 *, &, |, ! 기호를 섞어 쓸 수 있습니다.",
+                    style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
+                  ),
+                  Text(
+                    "*맨 앞에 #을 붙이면 주석으로 처리되어 실행되지 않습니다.",
+                    style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  // 프롬프트 카드 본문 (헤더 분리 후 터치하면 편집 다이얼로그 열림)
+  Widget _buildPromptCardBody(
+    BuildContext context,
+    AppState state, {
+    required Color color,
+    required TextEditingController controller,
+    required String hint,
+    required IconData icon,
+    required String title,
+  }) {
+    return GestureDetector(
+      onTap: () => _showPromptEditDialog(context, state, title, icon, color, controller),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+          border: Border.all(color: color.withValues(alpha: 0.3)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  controller.text.isEmpty ? hint : controller.text,
+                  style: TextStyle(
+                    color: controller.text.isEmpty ? Colors.white30 : Colors.white,
+                    height: 1.5,
+                    fontSize: 14,
+                  ),
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(Icons.edit, color: color, size: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRemoveChip(String label, IconData icon, bool value, ValueChanged<bool> onChanged) {
+    return GestureDetector(
+      onTap: () => onChanged(!value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: value ? Colors.deepPurpleAccent.withValues(alpha: 0.25) : const Color(0xFF1E1E1E),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: value ? Colors.deepPurpleAccent : Colors.white24,
+            width: value ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: value ? Colors.deepPurpleAccent : Colors.white54),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: value ? Colors.white : Colors.white54,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildSimpleCheck(
     BuildContext context,
     AppState state,
@@ -1068,7 +1383,7 @@ class PromptTab extends StatelessWidget {
                             if (!context.mounted) {
                               return;
                             }
-                            state.handleGenerate(context, onScrollToHistoryEnd ?? () {});
+                            state.handleGenerate(context, widget.onScrollToHistoryEnd ?? () {});
                           },
                     style: ElevatedButton.styleFrom(
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -1094,6 +1409,46 @@ class PromptTab extends StatelessWidget {
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 2),
+              // 토큰 카운터
+              Builder(
+                builder: (context) {
+                  final combined = [
+                    state.prefixController.text,
+                    state.positiveController.text,
+                    state.suffixController.text,
+                  ].where((s) => s.trim().isNotEmpty).join(', ');
+                  final tokens = estimateTokenCount(combined);
+                  final ratio = (tokens / 512).clamp(0.0, 1.0);
+                  final color = tokens > 450
+                      ? Colors.redAccent
+                      : tokens > 350
+                      ? Colors.orangeAccent
+                      : Colors.white38;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Row(
+                      children: [
+                        Icon(Icons.token, size: 14, color: color),
+                        const SizedBox(width: 4),
+                        Text("~$tokens / 512 tokens", style: TextStyle(color: color, fontSize: 11)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(2),
+                            child: LinearProgressIndicator(
+                              value: ratio,
+                              minHeight: 3,
+                              backgroundColor: Colors.white12,
+                              valueColor: AlwaysStoppedAnimation(color),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 2),
               Row(
@@ -1209,204 +1564,57 @@ class PromptTab extends StatelessWidget {
             const SizedBox(height: 12),
           ],
 
-          _buildPromptCard(
-            context,
-            state,
-            title: "긍정적 프롬프트",
-            icon: Icons.add_circle_outline,
-            color: const Color(0xFF00BFA5),
-            controller: state.positiveController,
-            hint: "태그를 입력하세요...",
-          ),
-          const SizedBox(height: 12),
-          _buildPromptCard(
-            context,
-            state,
-            title: "선행 프롬프트",
-            icon: Icons.arrow_right_alt,
-            color: const Color(0xFF29B6F6),
-            controller: state.prefixController,
-            hint: "1girl, solo, artist:kuroboshi kouhaku...",
-          ),
-          const SizedBox(height: 12),
-          _buildPromptCard(
-            context,
-            state,
-            title: "후행 프롬프트",
-            icon: Icons.keyboard_double_arrow_right,
-            color: const Color(0xFFFFA000),
-            controller: state.suffixController,
-            hint: "고정으로 맨 뒤에 들어갈 태그...",
-          ),
-          const SizedBox(height: 16),
-          _buildPromptCard(
-            context,
-            state,
-            title: "부정적 프롬프트",
-            icon: Icons.remove_circle_outline,
-            color: const Color(0xFFFF5252),
-            controller: state.negativeController,
-            hint: "text, logo, worst quality...",
-          ),
-          const SizedBox(height: 12),
-
-          Row(
+          // ============================================================================
+          // 🚀 접기/펴기 + 드래그 재배치 가능한 프롬프트 섹션
+          // ============================================================================
+          ReorderableListView(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, index, animation) {
+              return Material(
+                elevation: 4,
+                color: Colors.transparent,
+                shadowColor: Colors.deepPurpleAccent.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(12),
+                child: child,
+              );
+            },
+            onReorder: (oldIndex, newIndex) {
+              if (newIndex > oldIndex) newIndex--;
+              final item = state.promptSectionOrder.removeAt(oldIndex);
+              state.promptSectionOrder.insert(newIndex, item);
+              state.saveAllSettings();
+              state.refreshUI();
+            },
             children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              for (int idx = 0; idx < state.promptSectionOrder.length; idx++)
+                Padding(
+                  key: ValueKey(state.promptSectionOrder[idx]),
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Column(
                     children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.auto_fix_high, color: Colors.deepPurpleAccent, size: 18),
-                          SizedBox(width: 8),
-                          Text(
-                            "특징 제거",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
+                      _buildSectionHeader(
+                        state: state,
+                        sectionId: state.promptSectionOrder[idx],
+                        isCollapsed: state.collapsedSections.contains(
+                          state.promptSectionOrder[idx],
+                        ),
+                        index: idx,
                       ),
-                      Switch(
-                        value: state.removeCharacteristics,
-                        activeThumbColor: Colors.deepPurpleAccent,
-                        activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                        onChanged: (v) {
-                          state.removeCharacteristics = v;
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeInOut,
+                        child: state.collapsedSections.contains(state.promptSectionOrder[idx])
+                            ? const SizedBox.shrink()
+                            : _buildSectionContent(context, state, state.promptSectionOrder[idx]),
                       ),
                     ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.checkroom, color: Colors.deepPurpleAccent, size: 18),
-                          SizedBox(width: 8),
-                          Text(
-                            "의상 제거",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Switch(
-                        value: state.removeClothes,
-                        activeThumbColor: Colors.deepPurpleAccent,
-                        activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                        onChanged: (v) {
-                          state.removeClothes = v;
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ),
             ],
           ),
-          const SizedBox(height: 12),
 
-          _buildPromptCard(
-            context,
-            state,
-            title: "개별 제거 프롬프트",
-            icon: Icons.delete_outline,
-            color: Colors.grey,
-            controller: state.customRemoveController,
-            hint: "*censor*, *skirt*, 단어...",
-          ),
-          const SizedBox(height: 12),
-          _buildPromptCard(
-            context,
-            state,
-            title: "조건부 트리거 작성 (줄바꿈 구분)",
-            icon: Icons.bolt,
-            color: const Color(0xFF29B6F6),
-            controller: state.conditionalRuleController,
-            hint: "# 주석을 적을 수 있습니다\n(e|q):*skirt=*skirt, pants\n(cat*):cat*^dog*",
-          ),
-          const SizedBox(height: 12),
-
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: const Color(0xFF29B6F6).withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF29B6F6).withValues(alpha: 0.3)),
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  "💡 문법 가이드",
-                  style: TextStyle(
-                    color: Color(0xFF29B6F6),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                  ),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  "(조건):A=B → 조건 만족시 A를 B로 덮어쓰기 교체",
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                Text(
-                  "(조건):A^B → 조건 만족시 A를 B로 교체 (*A인 경우 포함되는 프롬프트중 A 부분만 교체)",
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                Text(
-                  "(조건):prefix=B → 긍정 프롬프트 맨 앞에 B 추가",
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                Text(
-                  "(조건):suffix=B → 긍정 프롬프트 맨 뒤에 B 추가",
-                  style: TextStyle(color: Colors.white70, fontSize: 12),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  "*조건식에 g, s, q, e 를 쓰면 해당 연령 등급을 인식합니다.",
-                  style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                ),
-                Text(
-                  "*조건식에는 *, &, |, ! 기호를 섞어 쓸 수 있습니다.",
-                  style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                ),
-                Text(
-                  "*맨 앞에 #을 붙이면 주석으로 처리되어 실행되지 않습니다.",
-                  style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
           const SizedBox(height: 24),
         ],
       ),

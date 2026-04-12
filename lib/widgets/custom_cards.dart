@@ -36,9 +36,7 @@ class CustomPromptCard extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 color: color.withValues(alpha: 0.15),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(12),
-                ),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -49,11 +47,7 @@ class CustomPromptCard extends StatelessWidget {
                       const SizedBox(width: 8),
                       Text(
                         title,
-                        style: TextStyle(
-                          color: color,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
+                        style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 15),
                       ),
                     ],
                   ),
@@ -64,13 +58,9 @@ class CustomPromptCard extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Text(
-                controller.text.isEmpty
-                    ? "$title을(를) 입력하세요..."
-                    : controller.text,
+                controller.text.isEmpty ? "$title을(를) 입력하세요..." : controller.text,
                 style: TextStyle(
-                  color: controller.text.isEmpty
-                      ? Colors.white30
-                      : Colors.white,
+                  color: controller.text.isEmpty ? Colors.white30 : Colors.white,
                   fontSize: 14,
                   height: 1.5,
                 ),
@@ -105,17 +95,11 @@ class CustomFilterSwitch extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.deepPurpleAccent.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-        ),
+        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.auto_fix_high,
-            color: Colors.deepPurpleAccent,
-            size: 20,
-          ),
+          const Icon(Icons.auto_fix_high, color: Colors.deepPurpleAccent, size: 20),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -127,11 +111,7 @@ class CustomFilterSwitch extends StatelessWidget {
               ),
             ),
           ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: Colors.deepPurpleAccent,
-          ),
+          Switch(value: value, onChanged: onChanged, activeThumbColor: Colors.deepPurpleAccent),
         ],
       ),
     );

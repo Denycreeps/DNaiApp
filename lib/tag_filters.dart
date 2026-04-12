@@ -4836,6 +4836,49 @@ class TagFilters {
   };
 
   // ============================================================================
+  // 3.5. 색상 키워드 — 태그에 포함되면 해당 태그를 제거
+  // ============================================================================
+  static const List<String> colorKeywords = [
+    "grey",
+    "beige",
+    "aqua",
+    "white",
+    "brown",
+    "blonde",
+    "red",
+    "pink",
+    "orange",
+    "yellow",
+    "gold",
+    "light green",
+    "green",
+    "sky blue",
+    "blue",
+    "purple",
+    "black",
+    "rainbow",
+    "two-tone",
+    "streaked",
+    "gradient",
+    "split-color",
+    "multicolored",
+    "colored inner",
+    "plaid",
+    "strawberry",
+    "polka dot",
+    "american flag",
+    "argyle",
+    "camouflage",
+    "print",
+    "striped",
+    "diagonal-striped",
+    "vertical-striped",
+    "checkered",
+    "dark",
+    "silver",
+  ];
+
+  // ============================================================================
   // 4. Metadata 태그 (Danbooru category 5) — 로컬 사전 필터링으로 API 호출 절감
   // ============================================================================
   static const Set<String> metadataTags = {

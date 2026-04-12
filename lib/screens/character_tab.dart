@@ -77,10 +77,7 @@ class CharacterTab extends StatelessWidget {
                 return;
               }
 
-              List<String> matches = state.danbooruTags
-                  .where((t) => t.toLowerCase().startsWith(currentWord.toLowerCase()))
-                  .take(15)
-                  .toList();
+              List<String> matches = smartMatchTags(state.danbooruTags, currentWord);
 
               setModalState(() {
                 suggestions = matches;
@@ -88,7 +85,8 @@ class CharacterTab extends StatelessWidget {
             }
 
             // 🚀 Linter 규칙 준수: 함수명 앞 언더스코어 제거
-            void insertTag(String tag) {
+            void insertTag(String rawTag) {
+              String tag = rawTag.replaceFirst(kContainsMarker, '');
               String text = tc.text;
               int cursor = tc.selection.baseOffset;
               if (cursor < 0) cursor = text.length;
@@ -191,23 +189,33 @@ class CharacterTab extends StatelessWidget {
                               scrollDirection: Axis.horizontal,
                               itemCount: suggestions.length,
                               itemBuilder: (context, index) {
+                                final raw = suggestions[index];
+                                final isContains = raw.startsWith(kContainsMarker);
+                                final display = isContains ? raw.substring(1) : raw;
                                 return Padding(
                                   padding: const EdgeInsets.only(right: 8.0),
                                   child: ActionChip(
                                     label: Text(
-                                      suggestions[index],
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
+                                      display,
+                                      style: TextStyle(
+                                        color: isContains ? Colors.white54 : Colors.white,
+                                        fontWeight: isContains
+                                            ? FontWeight.normal
+                                            : FontWeight.bold,
                                         fontSize: 13,
                                       ),
                                     ),
-                                    backgroundColor: color.withValues(alpha: 0.2),
-                                    side: BorderSide(color: color, width: 1.5),
+                                    backgroundColor: color.withValues(
+                                      alpha: isContains ? 0.08 : 0.2,
+                                    ),
+                                    side: BorderSide(
+                                      color: color.withValues(alpha: isContains ? 0.3 : 1.0),
+                                      width: isContains ? 0.5 : 1.5,
+                                    ),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(8),
                                     ),
-                                    onPressed: () => insertTag(suggestions[index]), // 🚀 수정된 함수 호출
+                                    onPressed: () => insertTag(raw),
                                   ),
                                 );
                               },
@@ -282,73 +290,6 @@ class CharacterTab extends StatelessWidget {
     state.saveAllSettings();
   }
 
-  void _showLocationDialog(BuildContext context, AppState state) {
-    int tempX = state.characters[state.selectedCharIndex].gridX;
-    int tempY = state.characters[state.selectedCharIndex].gridY;
-    showDialog(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
-            title: const Text(
-              "위치 설정",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            content: SizedBox(
-              width: 250,
-              height: 250,
-              child: GridView.builder(
-                physics: const NeverScrollableScrollPhysics(),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 5,
-                  crossAxisSpacing: 4,
-                  mainAxisSpacing: 4,
-                ),
-                itemCount: 25,
-                itemBuilder: (context, index) {
-                  int x = index % 5;
-                  int y = index ~/ 5;
-                  bool isSelected = (x == tempX && y == tempY);
-                  return GestureDetector(
-                    onTap: () => setDialogState(() {
-                      tempX = x;
-                      tempY = y;
-                    }),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: isSelected ? Colors.deepPurpleAccent : Colors.transparent,
-                        border: Border.all(color: Colors.white30),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext),
-                child: const Text("취소", style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  state.characters[state.selectedCharIndex].gridX = tempX;
-                  state.characters[state.selectedCharIndex].gridY = tempY;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                  Navigator.pop(dialogContext);
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
-                child: const Text("확인", style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
   Widget _buildPromptCard({
     required String title,
     required IconData icon,
@@ -414,130 +355,238 @@ class CharacterTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 70,
-            constraints: const BoxConstraints(maxHeight: 600),
-            decoration: const BoxDecoration(
-              color: Color(0xFF121212),
-              borderRadius: BorderRadius.only(
-                topLeft: Radius.circular(12),
-                bottomLeft: Radius.circular(12),
-              ),
-            ),
-            child: ListView(
-              padding: const EdgeInsets.only(top: 0, bottom: 16),
-              children: [
-                ...List.generate(state.characters.length, (index) {
-                  bool isSelected = state.selectedCharIndex == index;
-                  bool isActive = state.characters[index].isActive;
+    return Column(
+      children: [
+        // 캐릭터 에디터 (먼저)
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 70,
+                constraints: const BoxConstraints(maxHeight: 420),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF121212),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(12),
+                    bottomLeft: Radius.circular(12),
+                  ),
+                ),
+                child: ListView(
+                  padding: const EdgeInsets.only(top: 0, bottom: 16),
+                  children: [
+                    ...List.generate(state.characters.length, (index) {
+                      bool isSelected = state.selectedCharIndex == index;
+                      bool isActive = state.characters[index].isActive;
 
-                  return GestureDetector(
-                    onTap: () {
-                      state.selectedCharIndex = index;
-                      state.refreshUI();
-                    },
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      decoration: BoxDecoration(
-                        color: isSelected ? const Color(0xFF1E1E1E) : Colors.transparent,
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(12),
-                          bottomLeft: Radius.circular(12),
-                        ),
-                      ),
-                      child: Center(
-                        child: CircleAvatar(
-                          backgroundColor: isActive ? Colors.deepPurpleAccent : Colors.grey[700],
-                          foregroundColor: Colors.white,
-                          child: Text(
-                            "${index + 1}",
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                      return GestureDetector(
+                        onTap: () {
+                          state.selectedCharIndex = index;
+                          state.refreshUI();
+                        },
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isSelected ? const Color(0xFF1E1E1E) : Colors.transparent,
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(12),
+                              bottomLeft: Radius.circular(12),
+                            ),
+                          ),
+                          child: Center(
+                            child: CircleAvatar(
+                              backgroundColor: isActive
+                                  ? Colors.deepPurpleAccent
+                                  : Colors.grey[700],
+                              foregroundColor: Colors.white,
+                              child: Text(
+                                "${index + 1}",
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
                           ),
                         ),
-                      ),
+                      );
+                    }),
+                    const SizedBox(height: 8),
+                    IconButton(
+                      icon: const Icon(Icons.add_circle, color: Colors.deepPurpleAccent, size: 36),
+                      onPressed: () {
+                        state.characters.add(NaiCharacter());
+                        state.selectedCharIndex = state.characters.length - 1;
+                        state.refreshUI();
+                      },
                     ),
-                  );
-                }),
-                const SizedBox(height: 8),
-                IconButton(
-                  icon: const Icon(Icons.add_circle, color: Colors.deepPurpleAccent, size: 36),
-                  onPressed: () {
-                    state.characters.add(NaiCharacter());
-                    state.selectedCharIndex = state.characters.length - 1;
-                    state.refreshUI();
-                  },
+                  ],
                 ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: state.characters.isEmpty
-                ? const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Text("캐릭터를 추가해주세요.", style: TextStyle(color: Colors.grey)),
-                    ),
-                  )
-                : Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              ),
+              Expanded(
+                child: state.characters.isEmpty
+                    ? const Center(
+                        child: Padding(
+                          padding: EdgeInsets.all(32),
+                          child: Text("캐릭터를 추가해주세요.", style: TextStyle(color: Colors.grey)),
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
                             Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                GestureDetector(
-                                  onTap: () {
-                                    TextEditingController nameCtrl = TextEditingController(
-                                      text: state.characters[state.selectedCharIndex].name.isEmpty
-                                          ? "캐릭터 #${state.selectedCharIndex + 1}"
-                                          : state.characters[state.selectedCharIndex].name,
-                                    );
+                                Row(
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () {
+                                        TextEditingController nameCtrl = TextEditingController(
+                                          text:
+                                              state.characters[state.selectedCharIndex].name.isEmpty
+                                              ? "캐릭터 #${state.selectedCharIndex + 1}"
+                                              : state.characters[state.selectedCharIndex].name,
+                                        );
+                                        showDialog(
+                                          context: context,
+                                          builder: (ctx) => AlertDialog(
+                                            backgroundColor: const Color(0xFF1E1E1E),
+                                            title: const Text(
+                                              "캐릭터 이름 수정",
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 16,
+                                              ),
+                                            ),
+                                            content: TextField(
+                                              controller: nameCtrl,
+                                              maxLength: 10,
+                                              style: const TextStyle(color: Colors.white),
+                                              decoration: const InputDecoration(
+                                                counterText: "",
+                                                hintText: "새 이름 입력",
+                                                hintStyle: TextStyle(color: Colors.white30),
+                                                enabledBorder: UnderlineInputBorder(
+                                                  borderSide: BorderSide(
+                                                    color: Colors.deepPurpleAccent,
+                                                  ),
+                                                ),
+                                                focusedBorder: UnderlineInputBorder(
+                                                  borderSide: BorderSide(
+                                                    color: Colors.deepPurpleAccent,
+                                                    width: 2,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.pop(ctx),
+                                                child: const Text(
+                                                  "취소",
+                                                  style: TextStyle(color: Colors.grey),
+                                                ),
+                                              ),
+                                              ElevatedButton(
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.deepPurpleAccent,
+                                                ),
+                                                onPressed: () {
+                                                  state.characters[state.selectedCharIndex].name =
+                                                      nameCtrl.text.trim();
+                                                  state.saveAllSettings();
+                                                  state.refreshUI();
+                                                  Navigator.pop(ctx);
+                                                },
+                                                child: const Text(
+                                                  "저장",
+                                                  style: TextStyle(color: Colors.white),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        );
+                                      },
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 16,
+                                          vertical: 8,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.deepPurple.withValues(alpha: 0.2),
+                                          borderRadius: BorderRadius.circular(20),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            const Icon(
+                                              Icons.person,
+                                              color: Colors.deepPurpleAccent,
+                                              size: 16,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              state.characters[state.selectedCharIndex].name.isEmpty
+                                                  ? "캐릭터 #${state.selectedCharIndex + 1}"
+                                                  : state.characters[state.selectedCharIndex].name,
+                                              style: const TextStyle(
+                                                color: Colors.deepPurpleAccent,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Builder(
+                                      builder: (context) {
+                                        bool isCurrentActive =
+                                            state.characters[state.selectedCharIndex].isActive;
+                                        return IconButton(
+                                          icon: Icon(
+                                            isCurrentActive
+                                                ? Icons.visibility
+                                                : Icons.visibility_off,
+                                            color: isCurrentActive
+                                                ? Colors.deepPurpleAccent
+                                                : Colors.grey,
+                                          ),
+                                          tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
+                                          onPressed: () {
+                                            state.characters[state.selectedCharIndex].isActive =
+                                                !isCurrentActive;
+                                            state.saveAllSettings();
+                                            state.refreshUI();
+                                          },
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                  onPressed: () {
                                     showDialog(
                                       context: context,
                                       builder: (ctx) => AlertDialog(
                                         backgroundColor: const Color(0xFF1E1E1E),
                                         title: const Text(
-                                          "캐릭터 이름 수정",
+                                          "캐릭터 삭제",
                                           style: TextStyle(
                                             color: Colors.white,
                                             fontWeight: FontWeight.bold,
-                                            fontSize: 16,
                                           ),
                                         ),
-                                        content: TextField(
-                                          controller: nameCtrl,
-                                          maxLength: 10,
-                                          style: const TextStyle(color: Colors.white),
-                                          decoration: const InputDecoration(
-                                            counterText: "",
-                                            hintText: "새 이름 입력",
-                                            hintStyle: TextStyle(color: Colors.white30),
-                                            enabledBorder: UnderlineInputBorder(
-                                              borderSide: BorderSide(
-                                                color: Colors.deepPurpleAccent,
-                                              ),
-                                            ),
-                                            focusedBorder: UnderlineInputBorder(
-                                              borderSide: BorderSide(
-                                                color: Colors.deepPurpleAccent,
-                                                width: 2,
-                                              ),
-                                            ),
-                                          ),
+                                        content: const Text(
+                                          "이 캐릭터를 정말 삭제하시겠습니까?",
+                                          style: TextStyle(color: Colors.white70),
                                         ),
                                         actions: [
                                           TextButton(
@@ -549,17 +598,23 @@ class CharacterTab extends StatelessWidget {
                                           ),
                                           ElevatedButton(
                                             style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.deepPurpleAccent,
+                                              backgroundColor: Colors.redAccent,
                                             ),
                                             onPressed: () {
-                                              state.characters[state.selectedCharIndex].name =
-                                                  nameCtrl.text.trim();
+                                              state.characters.removeAt(state.selectedCharIndex);
+                                              // 🚀 Linter 규칙 준수: 중괄호 추가
+                                              if (state.selectedCharIndex > 0) {
+                                                state.selectedCharIndex--;
+                                              }
+                                              if (state.characters.isEmpty) {
+                                                state.characters.add(NaiCharacter());
+                                              }
                                               state.saveAllSettings();
                                               state.refreshUI();
                                               Navigator.pop(ctx);
                                             },
                                             child: const Text(
-                                              "저장",
+                                              "삭제",
                                               style: TextStyle(color: Colors.white),
                                             ),
                                           ),
@@ -567,256 +622,188 @@ class CharacterTab extends StatelessWidget {
                                       ),
                                     );
                                   },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 16,
-                                      vertical: 8,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.deepPurple.withValues(alpha: 0.2),
-                                      borderRadius: BorderRadius.circular(20),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.person,
-                                          color: Colors.deepPurpleAccent,
-                                          size: 16,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          state.characters[state.selectedCharIndex].name.isEmpty
-                                              ? "캐릭터 #${state.selectedCharIndex + 1}"
-                                              : state.characters[state.selectedCharIndex].name,
-                                          style: const TextStyle(
-                                            color: Colors.deepPurpleAccent,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Builder(
-                                  builder: (context) {
-                                    bool isCurrentActive =
-                                        state.characters[state.selectedCharIndex].isActive;
-                                    return IconButton(
-                                      icon: Icon(
-                                        isCurrentActive ? Icons.visibility : Icons.visibility_off,
-                                        color: isCurrentActive
-                                            ? Colors.deepPurpleAccent
-                                            : Colors.grey,
-                                      ),
-                                      tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
-                                      onPressed: () {
-                                        state.characters[state.selectedCharIndex].isActive =
-                                            !isCurrentActive;
-                                        state.saveAllSettings();
-                                        state.refreshUI();
-                                      },
-                                    );
-                                  },
                                 ),
                               ],
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.redAccent),
-                              onPressed: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    backgroundColor: const Color(0xFF1E1E1E),
-                                    title: const Text(
-                                      "캐릭터 삭제",
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    content: const Text(
-                                      "이 캐릭터를 정말 삭제하시겠습니까?",
-                                      style: TextStyle(color: Colors.white70),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(ctx),
-                                        child: const Text(
-                                          "취소",
-                                          style: TextStyle(color: Colors.grey),
-                                        ),
-                                      ),
-                                      ElevatedButton(
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.redAccent,
-                                        ),
-                                        onPressed: () {
-                                          state.characters.removeAt(state.selectedCharIndex);
-                                          // 🚀 Linter 규칙 준수: 중괄호 추가
-                                          if (state.selectedCharIndex > 0) {
-                                            state.selectedCharIndex--;
-                                          }
-                                          if (state.characters.isEmpty) {
-                                            state.characters.add(NaiCharacter());
-                                          }
-                                          state.saveAllSettings();
-                                          state.refreshUI();
-                                          Navigator.pop(ctx);
-                                        },
-                                        child: const Text(
-                                          "삭제",
-                                          style: TextStyle(color: Colors.white),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                );
-                              },
+                            const SizedBox(height: 16),
+                            _buildPromptCard(
+                              title: "캐릭터 긍정 프롬프트",
+                              icon: Icons.add_circle_outline,
+                              color: const Color(0xFF00BFA5),
+                              text: state.characters[state.selectedCharIndex].positive,
+                              onTap: () => _showPromptEditDialog(
+                                context,
+                                state,
+                                "긍정적 프롬프트",
+                                Icons.add_circle_outline,
+                                const Color(0xFF00BFA5),
+                                state.characters[state.selectedCharIndex].positive,
+                                (val) {
+                                  state.characters[state.selectedCharIndex].positive = val;
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            _buildPromptCard(
+                              title: "캐릭터 부정 프롬프트",
+                              icon: Icons.remove_circle_outline,
+                              color: const Color(0xFFE57373),
+                              text: state.characters[state.selectedCharIndex].negative,
+                              onTap: () => _showPromptEditDialog(
+                                context,
+                                state,
+                                "부정적 프롬프트",
+                                Icons.remove_circle_outline,
+                                const Color(0xFFE57373),
+                                state.characters[state.selectedCharIndex].negative,
+                                (val) {
+                                  state.characters[state.selectedCharIndex].negative = val;
+                                },
+                              ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 16),
-                        _buildPromptCard(
-                          title: "캐릭터 긍정 프롬프트",
-                          icon: Icons.add_circle_outline,
-                          color: const Color(0xFF00BFA5),
-                          text: state.characters[state.selectedCharIndex].positive,
-                          onTap: () => _showPromptEditDialog(
-                            context,
-                            state,
-                            "긍정적 프롬프트",
-                            Icons.add_circle_outline,
-                            const Color(0xFF00BFA5),
-                            state.characters[state.selectedCharIndex].positive,
-                            (val) {
-                              state.characters[state.selectedCharIndex].positive = val;
-                            },
+                      ),
+              ),
+            ],
+          ),
+        ),
+
+        // 캐릭터 위치 미리보기 그리드 (맨 아래)
+        if (state.characters.isNotEmpty)
+          Container(
+            margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.grid_on, color: Colors.deepPurpleAccent, size: 16),
+                    const SizedBox(width: 6),
+                    const Text(
+                      "캐릭터 배치",
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () {
+                        for (final char in state.characters) {
+                          char.gridX = 2;
+                          char.gridY = 2;
+                        }
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Text(
+                          "위치 초기화",
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                        const SizedBox(height: 16),
-                        _buildPromptCard(
-                          title: "캐릭터 부정 프롬프트",
-                          icon: Icons.remove_circle_outline,
-                          color: const Color(0xFFE57373),
-                          text: state.characters[state.selectedCharIndex].negative,
-                          onTap: () => _showPromptEditDialog(
-                            context,
-                            state,
-                            "부정적 프롬프트",
-                            Icons.remove_circle_outline,
-                            const Color(0xFFE57373),
-                            state.characters[state.selectedCharIndex].negative,
-                            (val) {
-                              state.characters[state.selectedCharIndex].negative = val;
-                            },
-                          ),
-                        ),
-                        const SizedBox(height: 16),
-                        Container(
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                AspectRatio(
+                  aspectRatio: 5 / 5,
+                  child: GridView.builder(
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 5,
+                      crossAxisSpacing: 3,
+                      mainAxisSpacing: 3,
+                    ),
+                    itemCount: 25,
+                    itemBuilder: (context, index) {
+                      int gx = index % 5;
+                      int gy = index ~/ 5;
+
+                      List<int> charsHere = [];
+                      for (int ci = 0; ci < state.characters.length; ci++) {
+                        if (state.characters[ci].gridX == gx && state.characters[ci].gridY == gy) {
+                          charsHere.add(ci);
+                        }
+                      }
+
+                      bool isSelected = charsHere.contains(state.selectedCharIndex);
+
+                      return GestureDetector(
+                        onTap: () {
+                          if (charsHere.isNotEmpty) {
+                            if (isSelected && charsHere.length > 1) {
+                              int curIdx = charsHere.indexOf(state.selectedCharIndex);
+                              state.selectedCharIndex = charsHere[(curIdx + 1) % charsHere.length];
+                            } else {
+                              state.selectedCharIndex = charsHere.first;
+                            }
+                            state.refreshUI();
+                          } else {
+                            if (state.characters.isNotEmpty) {
+                              state.characters[state.selectedCharIndex].gridX = gx;
+                              state.characters[state.selectedCharIndex].gridY = gy;
+                              state.saveAllSettings();
+                              state.refreshUI();
+                            }
+                          }
+                        },
+                        child: Container(
                           decoration: BoxDecoration(
-                            color: const Color(0xFF2A2A35),
-                            borderRadius: BorderRadius.circular(12),
+                            color: charsHere.isNotEmpty
+                                ? (isSelected
+                                      ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
+                                      : Colors.deepPurpleAccent.withValues(alpha: 0.15))
+                                : Colors.white.withValues(alpha: 0.03),
+                            border: Border.all(
+                              color: isSelected
+                                  ? Colors.deepPurpleAccent
+                                  : Colors.white.withValues(alpha: 0.1),
+                              width: isSelected ? 1.5 : 0.5,
+                            ),
+                            borderRadius: BorderRadius.circular(4),
                           ),
-                          padding: const EdgeInsets.all(16),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.location_on_outlined, color: Colors.white54),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    "캐릭터 위치 설정",
+                          child: Center(
+                            child: charsHere.isNotEmpty
+                                ? Text(
+                                    charsHere.map((i) => "C${i + 1}").join("\n"),
+                                    textAlign: TextAlign.center,
                                     style: TextStyle(
-                                      color: Colors.white,
+                                      color: charsHere.any((i) => state.characters[i].isActive)
+                                          ? Colors.white
+                                          : Colors.white38,
+                                      fontSize: charsHere.length > 1 ? 9 : 11,
                                       fontWeight: FontWeight.bold,
                                     ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                children: [
-                                  Container(
-                                    width: 65,
-                                    height: 65,
-                                    padding: const EdgeInsets.all(4),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF1E1E28),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: Colors.deepPurple.withValues(alpha: 0.3),
-                                      ),
-                                    ),
-                                    child: GridView.builder(
-                                      physics: const NeverScrollableScrollPhysics(),
-                                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                                        crossAxisCount: 5,
-                                        crossAxisSpacing: 2,
-                                        mainAxisSpacing: 2,
-                                      ),
-                                      itemCount: 25,
-                                      itemBuilder: (context, index) {
-                                        int x = index % 5;
-                                        int y = index ~/ 5;
-                                        bool isSelected =
-                                            (x == state.characters[state.selectedCharIndex].gridX &&
-                                            y == state.characters[state.selectedCharIndex].gridY);
-                                        return Container(
-                                          decoration: BoxDecoration(
-                                            color: isSelected
-                                                ? Colors.deepPurpleAccent
-                                                : Colors.transparent,
-                                            border: Border.all(
-                                              color: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-                                            ),
-                                            borderRadius: BorderRadius.circular(2),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Column(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.black26,
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                        child: Text(
-                                          "X: ${state.characters[state.selectedCharIndex].gridX + 1}  Y: ${state.characters[state.selectedCharIndex].gridY + 1}",
-                                          style: const TextStyle(color: Colors.white),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 8),
-                                      ElevatedButton.icon(
-                                        onPressed: () => _showLocationDialog(context, state),
-                                        icon: const Icon(Icons.edit, size: 16),
-                                        label: const Text("위치 수정"),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.deepPurpleAccent,
-                                          foregroundColor: Colors.white,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ],
+                                  )
+                                : null,
                           ),
                         ),
-                      ],
-                    ),
+                      );
+                    },
                   ),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
-    );
+      ],
+    ); // Column closing
   }
 }

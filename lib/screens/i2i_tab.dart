@@ -562,17 +562,15 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                 return;
               }
 
-              List<String> matches = state.danbooruTags
-                  .where((t) => t.toLowerCase().startsWith(currentWord.toLowerCase()))
-                  .take(15)
-                  .toList();
+              List<String> matches = smartMatchTags(state.danbooruTags, currentWord);
 
               setModalState(() {
                 suggestions = matches;
               });
             }
 
-            void insertTag(String tag) {
+            void insertTag(String rawTag) {
+              String tag = rawTag.replaceFirst(kContainsMarker, '');
               String text = controller.text;
               int cursor = controller.selection.baseOffset;
               if (cursor < 0) {
@@ -676,23 +674,33 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                               scrollDirection: Axis.horizontal,
                               itemCount: suggestions.length,
                               itemBuilder: (context, index) {
+                                final raw = suggestions[index];
+                                final isContains = raw.startsWith(kContainsMarker);
+                                final display = isContains ? raw.substring(1) : raw;
                                 return Padding(
                                   padding: const EdgeInsets.only(right: 8.0),
                                   child: ActionChip(
                                     label: Text(
-                                      suggestions[index],
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
+                                      display,
+                                      style: TextStyle(
+                                        color: isContains ? Colors.white54 : Colors.white,
+                                        fontWeight: isContains
+                                            ? FontWeight.normal
+                                            : FontWeight.bold,
                                         fontSize: 13,
                                       ),
                                     ),
-                                    backgroundColor: color.withValues(alpha: 0.2),
-                                    side: BorderSide(color: color, width: 1.5),
+                                    backgroundColor: color.withValues(
+                                      alpha: isContains ? 0.08 : 0.2,
+                                    ),
+                                    side: BorderSide(
+                                      color: color.withValues(alpha: isContains ? 0.3 : 1.0),
+                                      width: isContains ? 0.5 : 1.5,
+                                    ),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(8),
                                     ),
-                                    onPressed: () => insertTag(suggestions[index]),
+                                    onPressed: () => insertTag(raw),
                                   ),
                                 );
                               },

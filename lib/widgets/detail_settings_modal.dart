@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -580,8 +581,17 @@ void showDetailSettingsModal(BuildContext context) {
   });
 }
 
-void showSaveImageModal(BuildContext context, AppState state, Uint8List imageBytes) {
+void showSaveImageModal(
+  BuildContext context,
+  AppState state,
+  Uint8List imageBytes, {
+  String? savedFilePath,
+}) {
   if (state.isLoading) return;
+
+  // 파일이 이미 존재하는지 확인
+  final bool alreadySaved =
+      savedFilePath != null && savedFilePath.isNotEmpty && File(savedFilePath).existsSync();
 
   showModalBottomSheet(
     context: context,
@@ -616,16 +626,29 @@ void showSaveImageModal(BuildContext context, AppState state, Uint8List imageByt
             ),
 
             ListTile(
-              leading: const Icon(Icons.download, color: Colors.deepPurpleAccent),
-              title: const Text("기본 폴더에 저장", style: TextStyle(color: Colors.white)),
-              subtitle: const Text(
-                "지정된 경로로 원본 이미지가 저장됩니다.",
-                style: TextStyle(color: Colors.white54, fontSize: 12),
+              leading: Icon(
+                alreadySaved ? Icons.check_circle : Icons.download,
+                color: alreadySaved ? Colors.tealAccent : Colors.deepPurpleAccent,
               ),
-              onTap: () {
-                Navigator.pop(modalContext);
-                state.manualSaveImage(context, imageBytes);
-              },
+              title: Text(
+                alreadySaved ? "이미 저장된 이미지" : "기본 폴더에 저장",
+                style: const TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                alreadySaved ? "이 이미지는 이미 기기에 저장되어 있습니다." : "지정된 경로로 원본 이미지가 저장됩니다.",
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: alreadySaved
+                  ? () {
+                      Navigator.pop(modalContext);
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(const SnackBar(content: Text("이미 저장된 이미지입니다.")));
+                    }
+                  : () {
+                      Navigator.pop(modalContext);
+                      state.manualSaveImage(context, imageBytes);
+                    },
             ),
 
             // 🚀 [추가] i2i 전송 액션 및 탭 이동!
