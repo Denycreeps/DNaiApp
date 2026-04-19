@@ -1,4 +1,5 @@
 import 'dart:math'; // 🚀 max() 함수를 쓰기 위해 추가
+import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -98,30 +99,7 @@ class _WildcardTabState extends State<WildcardTab> {
 
     String beforeCursor = text.substring(0, cursor);
     String afterCursor = text.substring(cursor);
-
-    // 🚀 삽입할 때도 쉼표, 콜론, 괄호 등에 따라 포맷 변경!
-    int lastNewline = beforeCursor.lastIndexOf('\n');
-    int lastComma = beforeCursor.lastIndexOf(',');
-    int lastColon = beforeCursor.lastIndexOf(':');
-    int lastParen = beforeCursor.lastIndexOf(')');
-    int lastDelimiter = max(lastNewline, max(lastComma, max(lastColon, lastParen)));
-
-    String newBefore;
-    if (lastDelimiter == -1) {
-      newBefore = "$tag, ";
-    } else {
-      String delimiterStr = beforeCursor.substring(lastDelimiter, lastDelimiter + 1);
-
-      if (delimiterStr == ':') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
-      } else if (delimiterStr == '\n') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
-      } else if (delimiterStr == ')') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
-      } else {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}, $tag, ";
-      }
-    }
+    String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
 
     _contentController.value = TextEditingValue(
       text: newBefore + afterCursor,
@@ -322,9 +300,12 @@ class _WildcardTabState extends State<WildcardTab> {
                 onPressed: () {
                   String formattedName = "__${currentCard.name}__";
                   Clipboard.setData(ClipboardData(text: formattedName));
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(SnackBar(content: Text("'$formattedName' 복사 완료!")));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      duration: const Duration(milliseconds: 2400),
+                      content: Text("'$formattedName' 복사 완료!"),
+                    ),
+                  );
                 },
                 style: OutlinedButton.styleFrom(
                   side: const BorderSide(color: Colors.deepPurpleAccent),

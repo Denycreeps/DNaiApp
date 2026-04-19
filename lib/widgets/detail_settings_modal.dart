@@ -641,9 +641,12 @@ void showSaveImageModal(
               onTap: alreadySaved
                   ? () {
                       Navigator.pop(modalContext);
-                      ScaffoldMessenger.of(
-                        context,
-                      ).showSnackBar(const SnackBar(content: Text("이미 저장된 이미지입니다.")));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          duration: const Duration(milliseconds: 2400),
+                          content: Text("이미 저장된 이미지입니다."),
+                        ),
+                      );
                     }
                   : () {
                       Navigator.pop(modalContext);
@@ -667,9 +670,12 @@ void showSaveImageModal(
                 // 🚀 i2i 탭(2번 탭)으로 즉시 이동!
                 state.navigateToTab(2);
 
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text("이미지를 i2i 탭으로 보냈습니다! 👉")));
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    duration: const Duration(milliseconds: 2400),
+                    content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
+                  ),
+                );
               },
             ),
 
@@ -684,9 +690,12 @@ void showSaveImageModal(
                 Navigator.pop(modalContext);
                 NaiMetadata? meta = extractNovelAIMetadata(imageBytes);
                 if (meta == null) {
-                  ScaffoldMessenger.of(
-                    context,
-                  ).showSnackBar(const SnackBar(content: Text("이 이미지에서 메타데이터를 찾을 수 없습니다.")));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      duration: const Duration(milliseconds: 2400),
+                      content: Text("이 이미지에서 메타데이터를 찾을 수 없습니다."),
+                    ),
+                  );
                   return;
                 }
                 _showLoadPromptDialog(context, state, meta);
@@ -897,8 +906,11 @@ void _applyMetadata(
   state.navigateToTab(0);
 
   if (applied.isNotEmpty) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text("${applied.join(', ')}을(를) 불러왔습니다!")));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(milliseconds: 2400),
+        content: Text("${applied.join(', ')}을(를) 불러왔습니다!"),
+      ),
+    );
   }
 }

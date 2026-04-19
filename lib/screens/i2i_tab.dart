@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:math';
+import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
@@ -573,35 +574,11 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
               String tag = rawTag.replaceFirst(kContainsMarker, '');
               String text = controller.text;
               int cursor = controller.selection.baseOffset;
-              if (cursor < 0) {
-                cursor = text.length;
-              }
+              if (cursor < 0) cursor = text.length;
 
               String beforeCursor = text.substring(0, cursor);
               String afterCursor = text.substring(cursor);
-
-              int lastComma = beforeCursor.lastIndexOf(',');
-              int lastColon = beforeCursor.lastIndexOf(':');
-              int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = beforeCursor.lastIndexOf(')');
-              int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-              String newBefore;
-
-              if (lastDelimiter == -1) {
-                newBefore = "$tag, ";
-              } else {
-                String delimiterStr = beforeCursor.substring(lastDelimiter, lastDelimiter + 1);
-                if (delimiterStr == ':') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
-                } else if (delimiterStr == '\n') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
-                } else if (delimiterStr == ')') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
-                } else {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}, $tag, ";
-                }
-              }
+              String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
 
               controller.value = TextEditingValue(
                 text: newBefore + afterCursor,
@@ -898,14 +875,20 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                                 if (state.targetI2iImage == null ||
                                     state.targetI2iMetadata == null) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text("히스토리에서 먼저 이미지를 선택해주세요!")),
+                                    SnackBar(
+                                      duration: const Duration(milliseconds: 2400),
+                                      content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
+                                    ),
                                   );
                                   return;
                                 }
                                 if (_strokes.isEmpty) {
-                                  ScaffoldMessenger.of(
-                                    context,
-                                  ).showSnackBar(const SnackBar(content: Text("마스크를 그려주세요! 🖍️")));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      duration: const Duration(milliseconds: 2400),
+                                      content: Text("마스크를 그려주세요! 🖍️"),
+                                    ),
+                                  );
                                   return;
                                 }
                                 final maskBytes = await _captureMask(
@@ -950,7 +933,10 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                             : () {
                                 if (state.targetI2iImage == null) {
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text("히스토리에서 먼저 이미지를 선택해주세요!")),
+                                    SnackBar(
+                                      duration: const Duration(milliseconds: 2400),
+                                      content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
+                                    ),
                                   );
                                   return;
                                 }
@@ -1167,9 +1153,12 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                           state.inpaintSuffixController.text = state.suffixController.text;
                           state.inpaintNegativeController.text = state.negativeController.text;
                         });
-                        ScaffoldMessenger.of(
-                          context,
-                        ).showSnackBar(const SnackBar(content: Text("프롬프트 탭의 값을 가져왔습니다!")));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            duration: const Duration(milliseconds: 2400),
+                            content: Text("프롬프트 탭의 값을 가져왔습니다!"),
+                          ),
+                        );
                       },
                       icon: const Icon(Icons.content_copy, color: Colors.white70, size: 18),
                       label: const Text(

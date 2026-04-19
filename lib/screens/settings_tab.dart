@@ -65,6 +65,33 @@ class _SettingsTabState extends State<SettingsTab> {
     );
   }
 
+  Widget _tabChip(String label, bool value, ValueChanged<bool> onChanged) {
+    return GestureDetector(
+      onTap: () => onChanged(!value),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: value
+              ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: value ? Colors.deepPurpleAccent : Colors.white24,
+            width: value ? 1.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: value ? Colors.deepPurpleAccent : Colors.white38,
+            fontSize: 13,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -184,9 +211,12 @@ class _SettingsTabState extends State<SettingsTab> {
                             state.saveAllSettings();
                             state.refreshUI();
                             if (context.mounted) {
-                              ScaffoldMessenger.of(
-                                context,
-                              ).showSnackBar(const SnackBar(content: Text("폴더 경로가 선택되었습니다!")));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  duration: const Duration(milliseconds: 2400),
+                                  content: Text("폴더 경로가 선택되었습니다!"),
+                                ),
+                              );
                             }
                           }
                         },
@@ -222,9 +252,12 @@ class _SettingsTabState extends State<SettingsTab> {
                     child: ElevatedButton(
                       onPressed: () {
                         state.saveAllSettings();
-                        ScaffoldMessenger.of(
-                          context,
-                        ).showSnackBar(const SnackBar(content: Text("경로 및 파일 이름이 저장되었습니다.")));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            duration: const Duration(milliseconds: 2400),
+                            content: Text("경로 및 파일 이름이 저장되었습니다."),
+                          ),
+                        );
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.deepPurpleAccent,
@@ -280,6 +313,57 @@ class _SettingsTabState extends State<SettingsTab> {
                 ],
               ),
             ),
+            const SizedBox(height: 16),
+
+            // 탭 표시 설정
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "탭 표시 설정",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _tabChip("히스토리", state.historyTabEnabled, (v) {
+                        state.historyTabEnabled = v;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }),
+                      _tabChip("i2i", state.i2iTabEnabled, (v) {
+                        state.i2iTabEnabled = v;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }),
+                      _tabChip("캐릭터", state.characterTabEnabled, (v) {
+                        state.characterTabEnabled = v;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }),
+                      _tabChip("와일드카드", state.wildcardTabEnabled, (v) {
+                        state.wildcardTabEnabled = v;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }),
+                    ],
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 24),
 
             // API 토큰 설정 (미연결 시)
@@ -320,16 +404,22 @@ class _SettingsTabState extends State<SettingsTab> {
                             state.refreshUI();
                             if (!context.mounted) return;
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("계정 정보(Anlas/구독 등급) 동기화 완료!")),
+                              SnackBar(
+                                duration: const Duration(milliseconds: 2400),
+                                content: Text("계정 정보(Anlas/구독 등급) 동기화 완료!"),
+                              ),
                             );
                           } else {
                             state.isApiConnected = false;
                             await state.saveAllSettings();
                             state.refreshUI();
                             if (!context.mounted) return;
-                            ScaffoldMessenger.of(
-                              context,
-                            ).showSnackBar(const SnackBar(content: Text("API 토큰을 입력해주세요.")));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                duration: const Duration(milliseconds: 2400),
+                                content: Text("API 토큰을 입력해주세요."),
+                              ),
+                            );
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -535,9 +625,12 @@ class _SettingsTabState extends State<SettingsTab> {
                               );
                             } catch (e) {
                               if (context.mounted) {
-                                ScaffoldMessenger.of(
-                                  context,
-                                ).showSnackBar(const SnackBar(content: Text("내보내기에 실패했습니다.")));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("내보내기에 실패했습니다."),
+                                  ),
+                                );
                               }
                             }
                           },
@@ -565,14 +658,18 @@ class _SettingsTabState extends State<SettingsTab> {
                               final data = jsonDecode(jsonStr) as Map<String, dynamic>;
                               state.importSettings(data);
                               if (context.mounted) {
-                                ScaffoldMessenger.of(
-                                  context,
-                                ).showSnackBar(const SnackBar(content: Text("설정을 성공적으로 불러왔습니다!")));
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("설정을 성공적으로 불러왔습니다!"),
+                                  ),
+                                );
                               }
                             } catch (e) {
                               if (context.mounted) {
                                 ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
                                     content: Text("파일을 읽는 데 실패했습니다. JSON 형식을 확인해주세요."),
                                   ),
                                 );
@@ -648,9 +745,12 @@ class _SettingsTabState extends State<SettingsTab> {
                       onTap: () {
                         if (state.updateUrl != null) {
                           Clipboard.setData(ClipboardData(text: state.updateUrl!));
-                          ScaffoldMessenger.of(
-                            context,
-                          ).showSnackBar(const SnackBar(content: Text("다운로드 링크가 클립보드에 복사되었습니다!")));
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              duration: const Duration(milliseconds: 2400),
+                              content: Text("다운로드 링크가 클립보드에 복사되었습니다!"),
+                            ),
+                          );
                         }
                       },
                       child: Container(

@@ -36,39 +36,37 @@ class NovelAiApp extends StatefulWidget {
   State<NovelAiApp> createState() => _NovelAiAppState();
 }
 
-class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
-  late TabController _tabController;
+class _NovelAiAppState extends State<NovelAiApp>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+  TabController? _tabController;
   late PageController _pageController;
   final ScrollController _historyScrollController = ScrollController();
   bool _updateDialogShown = false;
+  List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(initialPage: 6000);
-
-    _tabController.addListener(() {
-      if (_tabController.indexIsChanging) return;
-      if (_tabController.index == 1 && _historyScrollController.hasClients) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _historyScrollController.animateTo(
-            _historyScrollController.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        });
-      }
-      setState(() {});
-    });
   }
 
   @override
   void dispose() {
-    _tabController.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _tabController?.dispose();
     _pageController.dispose();
     _historyScrollController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      // 앱이 백그라운드/종료될 때 밀린 히스토리 전체 저장 실행
+      final appState = context.read<AppState>();
+      appState.fullSaveHistoryIfNeeded();
+    }
   }
 
   void _showUpdateDialog(BuildContext context, AppState state) {
@@ -221,18 +219,94 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
       });
     }
 
+    // 활성 탭 리스트 계산 (원본 인덱스 기준)
+    // 0=프롬프트, 1=히스토리, 2=i2i, 3=캐릭터, 4=와일드카드, 5=설정
+    List<int> newVisibleIndices = [0];
+    if (state.historyTabEnabled) newVisibleIndices.add(1);
+    if (state.i2iTabEnabled) newVisibleIndices.add(2);
+    if (state.characterTabEnabled) newVisibleIndices.add(3);
+    if (state.wildcardTabEnabled) newVisibleIndices.add(4);
+    newVisibleIndices.add(5); // 설정은 항상
+
+    // TabController 재생성 (활성 탭 수가 바뀌었을 때만)
+    if (_tabController == null || _tabController!.length != newVisibleIndices.length) {
+      // navigateToTab 요청이 있으면 그 탭으로, 아니면 현재 탭 유지
+      int targetOrigIdx = 0;
+      if (state.requestedTabIndex != null) {
+        targetOrigIdx = state.requestedTabIndex!;
+      } else if (_tabController != null && _visibleTabIndices.isNotEmpty) {
+        final idx = _tabController!.index.clamp(0, _visibleTabIndices.length - 1);
+        targetOrigIdx = _visibleTabIndices[idx];
+      }
+
+      final int newTabCount = newVisibleIndices.length;
+      int newInitialIndex = newVisibleIndices.indexOf(targetOrigIdx);
+      if (newInitialIndex == -1) newInitialIndex = 0;
+
+      if (state.requestedTabIndex != null) {
+        state.clearNavigation();
+      }
+
+      _tabController?.dispose();
+      _tabController = TabController(
+        length: newTabCount,
+        initialIndex: newInitialIndex,
+        vsync: this,
+      );
+      _tabController!.addListener(() {
+        if (_tabController!.indexIsChanging) return;
+        final origIdx =
+            _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
+            ? _visibleTabIndices[_tabController!.index]
+            : -1;
+        if (origIdx == 1 && _historyScrollController.hasClients) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _historyScrollController.animateTo(
+              _historyScrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          });
+        }
+        setState(() {});
+      });
+
+      // PageController를 올바른 페이지로 재생성 (old는 프레임 후 dispose)
+      final oldPageController = _pageController;
+      final int targetPage = newTabCount * 1000 + newInitialIndex;
+      _pageController = PageController(initialPage: targetPage);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        oldPageController.dispose();
+      });
+    }
+    _visibleTabIndices = newVisibleIndices;
+    final int tabCount = _visibleTabIndices.length;
+
+    // 현재 선택된 원본 탭 인덱스
+    final int currentVisibleIdx = _tabController!.index.clamp(0, tabCount - 1);
+    final int currentOrigIdx = _visibleTabIndices[currentVisibleIdx];
+
+    bool isPromptTab = currentOrigIdx == 0;
+    bool isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+    double bottomNavBarHeight = MediaQuery.of(context).padding.bottom;
+
     if (state.requestedTabIndex != null) {
-      int targetTab = state.requestedTabIndex!;
+      int targetOrigTab = state.requestedTabIndex!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        int targetVisibleTab = _visibleTabIndices.indexOf(targetOrigTab);
+        if (targetVisibleTab == -1) {
+          state.clearNavigation();
+          return;
+        }
         if (_pageController.hasClients) {
           int currentPage = _pageController.page?.round() ?? 6000;
-          int currentTab = currentPage % 6;
-          int diff = targetTab - currentTab;
-          if (diff > 3) {
-            diff -= 6;
-          } else if (diff < -3) {
-            diff += 6;
+          int currentTab = currentPage % tabCount;
+          int diff = targetVisibleTab - currentTab;
+          if (diff > tabCount ~/ 2) {
+            diff -= tabCount;
+          } else if (diff < -(tabCount ~/ 2)) {
+            diff += tabCount;
           }
           _pageController.animateToPage(
             currentPage + diff,
@@ -243,10 +317,6 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
         state.clearNavigation();
       });
     }
-
-    bool isPromptTab = _tabController.index == 0;
-    bool isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
-    double bottomNavBarHeight = MediaQuery.of(context).padding.bottom;
 
     return GestureDetector(
       onTap: () => FocusScope.of(context).unfocus(),
@@ -263,15 +333,15 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
             indicatorColor: Colors.deepPurpleAccent,
             labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
             unselectedLabelStyle: const TextStyle(fontSize: 11.5),
-            onTap: (targetTab) {
-              state.setI2iScrollDisabled(false); // 🚀 탭 전환 시 강제로 잠금 해제!
+            onTap: (targetVisibleTab) {
+              state.setI2iScrollDisabled(false);
               int currentPage = _pageController.page?.round() ?? 6000;
-              int currentTab = currentPage % 6;
-              int diff = targetTab - currentTab;
-              if (diff > 3) {
-                diff -= 6;
-              } else if (diff < -3) {
-                diff += 6;
+              int currentTab = currentPage % tabCount;
+              int diff = targetVisibleTab - currentTab;
+              if (diff > tabCount ~/ 2) {
+                diff -= tabCount;
+              } else if (diff < -(tabCount ~/ 2)) {
+                diff += tabCount;
               }
               _pageController.animateToPage(
                 currentPage + diff,
@@ -279,32 +349,31 @@ class _NovelAiAppState extends State<NovelAiApp> with TickerProviderStateMixin {
                 curve: Curves.easeOut,
               );
             },
-            tabs: const [
-              Tab(text: "프롬프트"),
-              Tab(text: "히스토리"),
-              Tab(text: "i2i"),
-              Tab(text: "캐릭터"),
-              Tab(text: "와일드카드"),
-              Tab(text: "설정"),
-            ],
+            tabs: _visibleTabIndices.map((origIdx) {
+              const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "와일드카드", "설정"];
+              return Tab(text: labels[origIdx]);
+            }).toList(),
           ),
         ),
         body: Stack(
           children: [
             PageView.builder(
               controller: _pageController,
-              // 🚀 [해결] i2i 탭이고 스크롤 잠금 상태일 때만 옆으로 넘어가는 걸 차단!
-              physics: (_tabController.index == 2 && state.isI2iScrollDisabled)
+              // i2i 탭에서는 좌우 스크롤 항상 차단
+              physics: (currentOrigIdx == 2)
                   ? const NeverScrollableScrollPhysics()
                   : const AlwaysScrollableScrollPhysics(),
               onPageChanged: (index) {
-                state.setI2iScrollDisabled(false); // 🚀 스와이프로 탭이 바뀌면 잠금 해제!
-                int targetTab = index % 6;
-                if (_tabController.index != targetTab) _tabController.animateTo(targetTab);
+                state.setI2iScrollDisabled(false);
+                int targetVisibleTab = index % tabCount;
+                if (_tabController!.index != targetVisibleTab) {
+                  _tabController!.animateTo(targetVisibleTab);
+                }
               },
               itemBuilder: (context, index) {
-                int tabIndex = index % 6;
-                switch (tabIndex) {
+                int visibleIdx = index % tabCount;
+                int origIdx = _visibleTabIndices[visibleIdx];
+                switch (origIdx) {
                   case 0:
                     return _buildTabScrollContent(
                       state,

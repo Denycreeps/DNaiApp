@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
@@ -102,35 +103,11 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
   void insertTag(String tag) {
     String text = widget.controller.text;
     int cursor = widget.controller.selection.baseOffset;
-    if (cursor < 0) {
-      cursor = text.length;
-    }
+    if (cursor < 0) cursor = text.length;
 
     String beforeCursor = text.substring(0, cursor);
     String afterCursor = text.substring(cursor);
-
-    int lastComma = beforeCursor.lastIndexOf(',');
-    int lastColon = beforeCursor.lastIndexOf(':');
-    int lastNewline = beforeCursor.lastIndexOf('\n');
-    int lastParen = beforeCursor.lastIndexOf(')');
-    int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-    String newBefore;
-
-    if (lastDelimiter == -1) {
-      newBefore = "$tag, ";
-    } else {
-      String delimiterStr = beforeCursor.substring(lastDelimiter, lastDelimiter + 1);
-      if (delimiterStr == ':') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
-      } else if (delimiterStr == '\n') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
-      } else if (delimiterStr == ')') {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
-      } else {
-        newBefore = "${beforeCursor.substring(0, lastDelimiter)}, $tag, ";
-      }
-    }
+    String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
 
     widget.controller.value = TextEditingValue(
       text: newBefore + afterCursor,
@@ -498,7 +475,10 @@ class _PromptTabState extends State<PromptTab> {
                                   consumerState.refreshUI();
                                   Navigator.pop(modalContext);
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(content: Text("'${preset.name}' 프리셋을 불러왔습니다.")),
+                                    SnackBar(
+                                      duration: const Duration(milliseconds: 2400),
+                                      content: Text("'${preset.name}' 프리셋을 불러왔습니다."),
+                                    ),
                                   );
                                 },
                                 style: OutlinedButton.styleFrom(
@@ -619,35 +599,11 @@ class _PromptTabState extends State<PromptTab> {
             void insertTag(String tag) {
               String text = controller.text;
               int cursor = controller.selection.baseOffset;
-              if (cursor < 0) {
-                cursor = text.length;
-              }
+              if (cursor < 0) cursor = text.length;
 
               String beforeCursor = text.substring(0, cursor);
               String afterCursor = text.substring(cursor);
-
-              int lastComma = beforeCursor.lastIndexOf(',');
-              int lastColon = beforeCursor.lastIndexOf(':');
-              int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = beforeCursor.lastIndexOf(')');
-              int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-              String newBefore;
-
-              if (lastDelimiter == -1) {
-                newBefore = "$tag, ";
-              } else {
-                String delimiterStr = beforeCursor.substring(lastDelimiter, lastDelimiter + 1);
-                if (delimiterStr == ':') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
-                } else if (delimiterStr == '\n') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
-                } else if (delimiterStr == ')') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
-                } else {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}, $tag, ";
-                }
-              }
+              String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
 
               controller.value = TextEditingValue(
                 text: newBefore + afterCursor,
@@ -1323,7 +1279,7 @@ class _PromptTabState extends State<PromptTab> {
                   ),
                   const SizedBox(width: 16),
                   ElevatedButton.icon(
-                    onPressed: state.isLoading
+                    onPressed: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
                         ? null
                         : () async {
                             if (state.checkIfAnlasConsumed()) {
@@ -1389,10 +1345,12 @@ class _PromptTabState extends State<PromptTab> {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       fixedSize: const Size(160, 40),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      backgroundColor: const Color(0xFF8B5CF6),
+                      backgroundColor: (state.isInpaintLoading || state.isUpscaleLoading)
+                          ? Colors.grey[700]
+                          : const Color(0xFF8B5CF6),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
                     ),
-                    icon: state.isLoading
+                    icon: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
                         ? const SizedBox(
                             width: 16,
                             height: 16,
@@ -1400,7 +1358,11 @@ class _PromptTabState extends State<PromptTab> {
                           )
                         : const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                     label: Text(
-                      state.isLoading ? "생성 중..." : "이미지 생성 시작",
+                      state.isLoading
+                          ? "생성 중..."
+                          : (state.isInpaintLoading
+                                ? "인페인트 중..."
+                                : (state.isUpscaleLoading ? "업스케일 중..." : "이미지 생성 시작")),
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,

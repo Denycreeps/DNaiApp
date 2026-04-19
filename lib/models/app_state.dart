@@ -578,6 +578,12 @@ class AppState extends ChangeNotifier {
   double infillStrength = 0.7;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool showImageInOtherTabs = false;
+
+  // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
+  bool historyTabEnabled = true;
+  bool i2iTabEnabled = true;
+  bool characterTabEnabled = true;
+  bool wildcardTabEnabled = true;
   bool useGelbooruApiKey = true;
 
   // 프롬프트 섹션 순서 (드래그로 재배치 가능)
@@ -647,6 +653,7 @@ class AppState extends ChangeNotifier {
   List<NaiMetadata?> historyMetadata = [];
   List<bool> historyFavorites = [];
   List<String?> historyFilePaths = []; // 자동저장된 파일 경로 추적
+  bool historyNeedsFullSave = false; // 인덱스 변경 시 전체 저장 필요 표시
   int selectedHistoryIndex = -1;
 
   List<Uint8List> i2iHistoryImages = [];
@@ -737,6 +744,10 @@ class AppState extends ChangeNotifier {
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     showImageInOtherTabs = prefs.getBool('showImageInOtherTabs') ?? false;
+    historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
+    i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
+    characterTabEnabled = prefs.getBool('characterTabEnabled') ?? true;
+    wildcardTabEnabled = prefs.getBool('wildcardTabEnabled') ?? true;
     useGelbooruApiKey = prefs.getBool('useGelbooruApiKey') ?? true;
     resolutionMode = prefs.getString('resolutionMode') ?? "수동";
     final sectionOrderJson = prefs.getStringList('promptSectionOrder');
@@ -848,6 +859,10 @@ class AppState extends ChangeNotifier {
       'infillStrength': infillStrength,
       'variancePlus': isVariancePlus,
       'showImageInOtherTabs': showImageInOtherTabs,
+      'historyTabEnabled': historyTabEnabled,
+      'i2iTabEnabled': i2iTabEnabled,
+      'characterTabEnabled': characterTabEnabled,
+      'wildcardTabEnabled': wildcardTabEnabled,
       'useGelbooruApiKey': useGelbooruApiKey,
       'characters': characters.map((c) => c.toJson()).toList(),
       'wildcards': wildcards.map((w) => w.toJson()).toList(),
@@ -896,6 +911,10 @@ class AppState extends ChangeNotifier {
     infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
     showImageInOtherTabs = data['showImageInOtherTabs'] ?? false;
+    historyTabEnabled = data['historyTabEnabled'] ?? true;
+    i2iTabEnabled = data['i2iTabEnabled'] ?? true;
+    characterTabEnabled = data['characterTabEnabled'] ?? true;
+    wildcardTabEnabled = data['wildcardTabEnabled'] ?? true;
     useGelbooruApiKey = data['useGelbooruApiKey'] ?? true;
 
     if (data['characters'] != null) {
@@ -951,6 +970,10 @@ class AppState extends ChangeNotifier {
     await prefs.setDouble('infillStrength', infillStrength);
     await prefs.setBool('variancePlus', isVariancePlus);
     await prefs.setBool('showImageInOtherTabs', showImageInOtherTabs);
+    await prefs.setBool('historyTabEnabled', historyTabEnabled);
+    await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
+    await prefs.setBool('characterTabEnabled', characterTabEnabled);
+    await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
     await prefs.setStringList('promptSectionOrder', promptSectionOrder);
     await prefs.setStringList('collapsedSections', collapsedSections.toList());
     await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
@@ -971,6 +994,11 @@ class AppState extends ChangeNotifier {
   void sendToI2i(Uint8List imageBytes, NaiMetadata? metadata) {
     targetI2iImage = imageBytes;
     targetI2iMetadata = metadata;
+    // i2i 탭이 꺼져 있으면 자동으로 켜기
+    if (!i2iTabEnabled) {
+      i2iTabEnabled = true;
+      saveAllSettings();
+    }
     notifyListeners();
   }
 
@@ -1009,13 +1037,16 @@ class AppState extends ChangeNotifier {
         gelbooruTotal = results.length;
         gelbooruRemaining = gelbooruTotal;
         saveAllSettings();
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("${results.length}개의 프롬프트를 찾았습니다.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("${results.length}개의 프롬프트를 찾았습니다."),
+          ),
+        );
       } else {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("조건에 맞는 결과가 없습니다.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("조건에 맞는 결과가 없습니다.")),
+        );
       }
     } catch (e) {
       isGelbooruLoading = false;
@@ -1023,7 +1054,11 @@ class AppState extends ChangeNotifier {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("검색에 실패했습니다. 다시 시도해주세요."), backgroundColor: Colors.redAccent),
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("검색에 실패했습니다. 다시 시도해주세요."),
+          backgroundColor: Colors.redAccent,
+        ),
       );
     }
     notifyListeners();
@@ -1574,17 +1609,23 @@ class AppState extends ChangeNotifier {
 
     if (!isApiConnected) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("설정 탭에서 API 키를 먼저 연결해주세요.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
+          ),
+        );
       }
       return;
     }
     if (targetI2iImage == null || targetI2iMetadata == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
+          ),
+        );
       }
       return;
     }
@@ -1727,18 +1768,24 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("설정 탭에서 API 키를 먼저 연결해주세요.")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
+        ),
+      );
       return;
     }
     if (targetI2iImage == null || targetI2iMetadata == null) {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요.")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
+        ),
+      );
       return;
     }
 
@@ -1954,17 +2001,78 @@ class AppState extends ChangeNotifier {
         if (!context.mounted) {
           return;
         }
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("이미지를 성공적으로 불러왔습니다!")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("이미지를 성공적으로 불러왔습니다!"),
+          ),
+        );
       }
     } catch (e) {
       debugPrint("이미지 불러오기 오류: $e");
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("이미지를 불러오는 데 실패했습니다.")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("이미지를 불러오는 데 실패했습니다."),
+        ),
+      );
     }
+  }
+
+  // ============================================================================
+  // 히스토리 일괄 삭제
+  // ============================================================================
+  void deleteAllHistory() {
+    historyImages.clear();
+    historyMetadata.clear();
+    historyFavorites.clear();
+    historyFilePaths.clear();
+    selectedHistoryIndex = -1;
+    _fullSaveHistoryToLocal();
+    notifyListeners();
+  }
+
+  void deleteNonFavoriteHistory() {
+    int i = 0;
+    while (i < historyImages.length) {
+      if (i >= historyFavorites.length || !historyFavorites[i]) {
+        historyImages.removeAt(i);
+        if (i < historyMetadata.length) historyMetadata.removeAt(i);
+        if (i < historyFavorites.length) historyFavorites.removeAt(i);
+        if (i < historyFilePaths.length) historyFilePaths.removeAt(i);
+      } else {
+        i++;
+      }
+    }
+    if (historyImages.isEmpty) {
+      selectedHistoryIndex = -1;
+    } else {
+      selectedHistoryIndex = selectedHistoryIndex.clamp(0, historyImages.length - 1);
+    }
+    _fullSaveHistoryToLocal();
+    notifyListeners();
+  }
+
+  void deleteHistoryByIndices(Set<int> indices) {
+    // 큰 인덱스부터 삭제해야 인덱스가 안 밀림
+    final sorted = indices.toList()..sort((a, b) => b.compareTo(a));
+    for (final idx in sorted) {
+      if (idx < 0 || idx >= historyImages.length) continue;
+      historyImages.removeAt(idx);
+      if (idx < historyMetadata.length) historyMetadata.removeAt(idx);
+      if (idx < historyFavorites.length) historyFavorites.removeAt(idx);
+      if (idx < historyFilePaths.length) historyFilePaths.removeAt(idx);
+    }
+    if (historyImages.isEmpty) {
+      selectedHistoryIndex = -1;
+    } else {
+      selectedHistoryIndex = selectedHistoryIndex.clamp(0, historyImages.length - 1);
+    }
+    _fullSaveHistoryToLocal();
+    notifyListeners();
   }
 
   void toggleHistoryFavorite(int index) {
@@ -2000,6 +2108,7 @@ class AppState extends ChangeNotifier {
       selectedHistoryIndex--;
       if (selectedHistoryIndex < 0) selectedHistoryIndex = 0;
     }
+    historyNeedsFullSave = true; // 인덱스가 밀렸으므로 전체 저장 필요
   }
 
   void deleteHistoryImage(int index) {
@@ -2022,7 +2131,8 @@ class AppState extends ChangeNotifier {
         selectedHistoryIndex = 0;
       }
     }
-    saveHistoryToLocal();
+    _fullSaveHistoryToLocal(); // 인덱스 변경되므로 전체 저장
+    historyNeedsFullSave = false;
     notifyListeners();
   }
 
@@ -2041,57 +2151,88 @@ class AppState extends ChangeNotifier {
   Future<void> saveHistoryToLocal() async {
     try {
       final dir = await _getHistoryDir();
+      final int total = historyImages.length;
 
-      // 기존 파일 전부 삭제 후 새로 저장
+      // JSON 파일만 매번 갱신 (가볍고 빠름)
+      await File(
+        '${dir.path}/metadata.json',
+      ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
+      await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
+      await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
+
+      // 마지막(최신) 이미지만 저장 (이미 파일이 있으면 건너뛰기)
+      if (total > 0) {
+        final lastIdx = total - 1;
+        final pngFile = File('${dir.path}/img_$lastIdx.png');
+        final thumbFile = File('${dir.path}/thumb_$lastIdx.jpg');
+        if (!pngFile.existsSync() && !thumbFile.existsSync()) {
+          await pngFile.writeAsBytes(historyImages[lastIdx]);
+        }
+      }
+
+      debugPrint("✅ 히스토리 증분 저장 완료 ($total개)");
+    } catch (e) {
+      debugPrint("❌ 히스토리 저장 실패: $e");
+    }
+  }
+
+  // 앱 백그라운드/종료 시 호출 — 밀린 전체 저장 실행
+  Future<void> fullSaveHistoryIfNeeded() async {
+    if (historyNeedsFullSave) {
+      await _fullSaveHistoryToLocal();
+      historyNeedsFullSave = false;
+    }
+  }
+
+  // 전체 재정렬 저장 (삭제 등 인덱스가 바뀌는 작업 후에만 호출)
+  Future<void> _fullSaveHistoryToLocal() async {
+    try {
+      final dir = await _getHistoryDir();
+
+      // 기존 이미지 파일 전부 삭제
       final existing = dir.listSync().whereType<File>();
       for (final f in existing) {
         await f.delete();
       }
 
-      // 이미지 저장 (최신 30개: 원본 PNG, 나머지: 썸네일 JPEG)
       final int total = historyImages.length;
       for (int i = 0; i < total; i++) {
         final bool isRecent = (total - i) <= 30;
         final bool hasFileOnDevice = await _checkFileExists(i);
 
         if (isRecent || hasFileOnDevice) {
-          final file = File('${dir.path}/img_$i.png');
-          await file.writeAsBytes(historyImages[i]);
+          await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
         } else {
-          try {
-            final decoded = img.decodeImage(historyImages[i]);
-            if (decoded != null) {
-              final thumbnail = img.copyResize(decoded, width: 200);
-              final jpegBytes = img.encodeJpg(thumbnail, quality: 70);
-              final file = File('${dir.path}/thumb_$i.jpg');
-              await file.writeAsBytes(jpegBytes);
-            } else {
-              final file = File('${dir.path}/img_$i.png');
-              await file.writeAsBytes(historyImages[i]);
+          // 이미 썸네일인 이미지는 디코딩 없이 그대로 저장
+          if (isHistoryThumbnail(i)) {
+            await File('${dir.path}/thumb_$i.jpg').writeAsBytes(historyImages[i]);
+          } else {
+            try {
+              final decoded = img.decodeImage(historyImages[i]);
+              if (decoded != null) {
+                final thumbnail = img.copyResize(decoded, width: 200);
+                final jpegBytes = img.encodeJpg(thumbnail, quality: 70);
+                await File('${dir.path}/thumb_$i.jpg').writeAsBytes(Uint8List.fromList(jpegBytes));
+              } else {
+                await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
+              }
+            } catch (_) {
+              await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
             }
-          } catch (_) {
-            final file = File('${dir.path}/img_$i.png');
-            await file.writeAsBytes(historyImages[i]);
           }
         }
       }
 
-      // 메타데이터 저장
-      final metaList = historyMetadata.map((m) => m?.toJson()).toList();
-      final metaFile = File('${dir.path}/metadata.json');
-      await metaFile.writeAsString(jsonEncode(metaList));
+      // JSON 저장
+      await File(
+        '${dir.path}/metadata.json',
+      ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
+      await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
+      await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
 
-      // 즐겨찾기 저장
-      final favFile = File('${dir.path}/favorites.json');
-      await favFile.writeAsString(jsonEncode(historyFavorites));
-
-      // 파일 경로 저장
-      final pathsFile = File('${dir.path}/paths.json');
-      await pathsFile.writeAsString(jsonEncode(historyFilePaths));
-
-      debugPrint("✅ 히스토리 ${historyImages.length}개 로컬 저장 완료");
+      debugPrint("✅ 히스토리 전체 저장 완료 ($total개)");
     } catch (e) {
-      debugPrint("❌ 히스토리 저장 실패: $e");
+      debugPrint("❌ 히스토리 전체 저장 실패: $e");
     }
   }
 
@@ -2190,18 +2331,24 @@ class AppState extends ChangeNotifier {
     final meta = historyMetadata[index];
     if (meta == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("메타데이터가 없어 재생성할 수 없습니다.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("메타데이터가 없어 재생성할 수 없습니다."),
+          ),
+        );
       }
       return;
     }
 
     if (apiToken.isEmpty) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("API 토큰이 설정되지 않았습니다.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("API 토큰이 설정되지 않았습니다."),
+          ),
+        );
       }
       return;
     }
@@ -2255,22 +2402,31 @@ class AppState extends ChangeNotifier {
         saveHistoryToLocal();
 
         if (context.mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(const SnackBar(content: Text("이미지 재생성 및 저장 완료!")));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              duration: const Duration(milliseconds: 2400),
+              content: Text("이미지 재생성 및 저장 완료!"),
+            ),
+          );
         }
       } else if (result.error != null && context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text("재생성 실패: ${result.error}")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("재생성 실패: ${result.error}"),
+          ),
+        );
       }
       await fetchAnlas();
     } catch (e) {
       debugPrint("재생성 오류: $e");
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("재생성 중 오류가 발생했습니다.")));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("재생성 중 오류가 발생했습니다."),
+          ),
+        );
       }
     } finally {
       isLoading = false;
@@ -2364,16 +2520,22 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("이미지가 지정된 경로에 안전하게 저장되었습니다!")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("이미지가 지정된 경로에 안전하게 저장되었습니다!"),
+        ),
+      );
     } catch (e) {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요.")));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2400),
+          content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요."),
+        ),
+      );
     }
     notifyListeners();
   }

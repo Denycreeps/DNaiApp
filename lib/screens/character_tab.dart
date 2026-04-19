@@ -1,4 +1,5 @@
 import 'dart:math';
+import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
@@ -93,29 +94,7 @@ class CharacterTab extends StatelessWidget {
 
               String beforeCursor = text.substring(0, cursor);
               String afterCursor = text.substring(cursor);
-
-              int lastComma = beforeCursor.lastIndexOf(',');
-              int lastColon = beforeCursor.lastIndexOf(':');
-              int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = beforeCursor.lastIndexOf(')');
-              int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-              String newBefore;
-
-              if (lastDelimiter == -1) {
-                newBefore = "$tag, ";
-              } else {
-                String delimiterStr = beforeCursor.substring(lastDelimiter, lastDelimiter + 1);
-                if (delimiterStr == ':') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
-                } else if (delimiterStr == '\n') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
-                } else if (delimiterStr == ')') {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
-                } else {
-                  newBefore = "${beforeCursor.substring(0, lastDelimiter)}, $tag, ";
-                }
-              }
+              String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
 
               tc.value = TextEditingValue(
                 text: newBefore + afterCursor,
@@ -750,8 +729,20 @@ class CharacterTab extends StatelessWidget {
                         onTap: () {
                           if (charsHere.isNotEmpty) {
                             if (isSelected && charsHere.length > 1) {
+                              // 같은 칸에 여러 캐릭터 → 순환 선택
                               int curIdx = charsHere.indexOf(state.selectedCharIndex);
                               state.selectedCharIndex = charsHere[(curIdx + 1) % charsHere.length];
+                            } else if (!isSelected && state.characters.isNotEmpty) {
+                              // 다른 캐릭터가 있는 칸 → 자리 교환
+                              final myChar = state.characters[state.selectedCharIndex];
+                              final otherChar = state.characters[charsHere.first];
+                              final tempX = myChar.gridX;
+                              final tempY = myChar.gridY;
+                              myChar.gridX = otherChar.gridX;
+                              myChar.gridY = otherChar.gridY;
+                              otherChar.gridX = tempX;
+                              otherChar.gridY = tempY;
+                              state.saveAllSettings();
                             } else {
                               state.selectedCharIndex = charsHere.first;
                             }
