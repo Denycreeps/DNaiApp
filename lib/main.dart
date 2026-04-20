@@ -121,17 +121,14 @@ class _NovelAiAppState extends State<NovelAiApp>
             onPressed: () => Navigator.pop(ctx),
             child: const Text("나중에", style: TextStyle(color: Colors.grey)),
           ),
-          if (state.updateUrl != null)
+          if (state.apkDownloadUrl != null)
             ElevatedButton.icon(
               onPressed: () {
                 Navigator.pop(ctx);
-                Clipboard.setData(ClipboardData(text: state.updateUrl!));
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(const SnackBar(content: Text("다운로드 링크가 클립보드에 복사되었습니다!")));
+                state.downloadAndInstallUpdate(context);
               },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text("링크 복사", style: TextStyle(fontWeight: FontWeight.bold)),
+              icon: const Icon(Icons.download, size: 16),
+              label: const Text("다운로드", style: TextStyle(fontWeight: FontWeight.bold)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.deepPurpleAccent,
                 foregroundColor: Colors.white,

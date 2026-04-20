@@ -14,6 +14,7 @@ import 'package:image/image.dart' as img;
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart';
 
 import '../novelai_service.dart';
 import '../tag_filters.dart';
@@ -421,14 +422,20 @@ class NaiPreset {
   String negative;
   String prefix;
   String suffix;
+  Map<String, dynamic>? settings; // 상세 설정 (스텝, 시드, cfg 등)
+  List<Map<String, dynamic>>? characters; // 캐릭터 리스트
+  Set<String> savedFields; // 어떤 항목이 저장되었는지 추적
 
   NaiPreset({
     required this.name,
-    required this.positive,
-    required this.negative,
-    required this.prefix,
-    required this.suffix,
-  });
+    this.positive = '',
+    this.negative = '',
+    this.prefix = '',
+    this.suffix = '',
+    this.settings,
+    this.characters,
+    Set<String>? savedFields,
+  }) : savedFields = savedFields ?? {'positive', 'negative', 'prefix', 'suffix'};
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -436,6 +443,9 @@ class NaiPreset {
     'negative': negative,
     'prefix': prefix,
     'suffix': suffix,
+    'settings': settings,
+    'characters': characters,
+    'savedFields': savedFields.toList(),
   };
 
   factory NaiPreset.fromJson(Map<String, dynamic> json) => NaiPreset(
@@ -444,6 +454,11 @@ class NaiPreset {
     negative: json['negative'] ?? '',
     prefix: json['prefix'] ?? '',
     suffix: json['suffix'] ?? '',
+    settings: json['settings'] as Map<String, dynamic>?,
+    characters: (json['characters'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
+    savedFields: json['savedFields'] != null
+        ? (json['savedFields'] as List).map((e) => e.toString()).toSet()
+        : {'positive', 'negative', 'prefix', 'suffix'},
   );
 }
 
@@ -486,11 +501,16 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   static String currentVersion = "0.0.0"; // pubspec.yaml에서 자동 로드됨
   // 🚀 GitHub 저장소 주소 (본인 리포로 변경!)
-  static const String githubRepo = "YOUR_USERNAME/YOUR_REPO";
+  static const String githubRepo = "Denycreeps/DNaiApp";
 
   String? latestVersion;
   String? updateUrl;
   String? updateNotes;
+  String? apkDownloadUrl; // APK 직접 다운로드 URL
+  bool autoCheckUpdate = true; // 기동 시 자동 업데이트 체크
+  bool isDownloadingUpdate = false;
+  double downloadProgress = 0.0;
+
   bool get hasUpdate =>
       latestVersion != null && _compareVersions(latestVersion!, currentVersion) > 0;
 
@@ -520,11 +540,88 @@ class AppState extends ChangeNotifier {
           latestVersion = tag.replaceFirst('v', '');
           updateUrl = data['html_url']?.toString();
           updateNotes = data['body']?.toString();
+
+          // APK 에셋 찾기
+          final assets = data['assets'] as List? ?? [];
+          for (final asset in assets) {
+            final name = asset['name']?.toString() ?? '';
+            if (name.endsWith('.apk')) {
+              apkDownloadUrl = asset['browser_download_url']?.toString();
+              break;
+            }
+          }
           notifyListeners();
         }
       }
     } catch (_) {
       // 네트워크 실패 시 무시 (업데이트 체크는 부가 기능)
+    }
+  }
+
+  Future<void> downloadAndInstallUpdate(BuildContext context) async {
+    if (apkDownloadUrl == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("다운로드 URL을 찾을 수 없습니다."),
+          ),
+        );
+      }
+      return;
+    }
+
+    isDownloadingUpdate = true;
+    downloadProgress = 0.0;
+    notifyListeners();
+
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/DNaiApp_v$latestVersion.apk');
+
+      // 스트리밍 다운로드 (프로그레스 표시)
+      final request = http.Request('GET', Uri.parse(apkDownloadUrl!));
+      final response = await http.Client().send(request);
+      final contentLength = response.contentLength ?? 0;
+
+      List<int> bytes = [];
+      int received = 0;
+
+      await for (final chunk in response.stream) {
+        bytes.addAll(chunk);
+        received += chunk.length;
+        if (contentLength > 0) {
+          downloadProgress = received / contentLength;
+          notifyListeners();
+        }
+      }
+
+      await file.writeAsBytes(bytes);
+
+      isDownloadingUpdate = false;
+      downloadProgress = 1.0;
+      notifyListeners();
+
+      // APK 설치 실행
+      final result = await OpenFilex.open(file.path);
+      if (result.type != ResultType.done && context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("설치 실행에 실패했습니다: ${result.message}"),
+          ),
+        );
+      }
+    } catch (e) {
+      isDownloadingUpdate = false;
+      downloadProgress = 0.0;
+      notifyListeners();
+      debugPrint("업데이트 다운로드 실패: $e");
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("다운로드에 실패했습니다.")),
+        );
+      }
     }
   }
 
@@ -744,6 +841,7 @@ class AppState extends ChangeNotifier {
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     showImageInOtherTabs = prefs.getBool('showImageInOtherTabs') ?? false;
+    autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
     characterTabEnabled = prefs.getBool('characterTabEnabled') ?? true;
@@ -797,8 +895,10 @@ class AppState extends ChangeNotifier {
     await _loadHistoryFromLocal();
     notifyListeners();
 
-    // 업데이트 체크 (비동기, 앱 시작을 블로킹하지 않음)
-    checkForUpdate();
+    // 업데이트 체크 (조건부, 앱 시작을 블로킹하지 않음)
+    if (autoCheckUpdate) {
+      checkForUpdate();
+    }
   }
 
   Future<void> _loadTagsFromJson() async {
@@ -970,6 +1070,7 @@ class AppState extends ChangeNotifier {
     await prefs.setDouble('infillStrength', infillStrength);
     await prefs.setBool('variancePlus', isVariancePlus);
     await prefs.setBool('showImageInOtherTabs', showImageInOtherTabs);
+    await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
     await prefs.setBool('historyTabEnabled', historyTabEnabled);
     await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
     await prefs.setBool('characterTabEnabled', characterTabEnabled);
@@ -990,6 +1091,37 @@ class AppState extends ChangeNotifier {
   }
 
   void refreshUI() => notifyListeners();
+
+  // ============================================================================
+  // 프리셋용 설정 스냅샷
+  // ============================================================================
+  Map<String, dynamic> getSettingsSnapshot() {
+    return {
+      'steps': stepsController.text,
+      'cfg': cfgScaleController.text,
+      'cfgRescale': cfgRescaleController.text,
+      'seed': seedController.text,
+      'sampler': selectedSampler,
+      'scheduler': selectedScheduler,
+      'model': selectedModel,
+      'resolution': selectedResolution,
+      'seedLocked': isSeedLocked,
+      'variancePlus': isVariancePlus,
+    };
+  }
+
+  void applySettingsSnapshot(Map<String, dynamic> s) {
+    if (s['steps'] != null) stepsController.text = s['steps'];
+    if (s['cfg'] != null) cfgScaleController.text = s['cfg'];
+    if (s['cfgRescale'] != null) cfgRescaleController.text = s['cfgRescale'];
+    if (s['seed'] != null) seedController.text = s['seed'];
+    if (s['sampler'] != null) selectedSampler = s['sampler'];
+    if (s['scheduler'] != null) selectedScheduler = s['scheduler'];
+    if (s['model'] != null) selectedModel = s['model'];
+    if (s['resolution'] != null) selectedResolution = s['resolution'];
+    if (s['seedLocked'] != null) isSeedLocked = s['seedLocked'];
+    if (s['variancePlus'] != null) isVariancePlus = s['variancePlus'];
+  }
 
   void sendToI2i(Uint8List imageBytes, NaiMetadata? metadata) {
     targetI2iImage = imageBytes;

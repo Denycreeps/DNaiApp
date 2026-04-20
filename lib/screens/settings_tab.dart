@@ -718,6 +718,125 @@ class _SettingsTabState extends State<SettingsTab> {
               const SizedBox(height: 16),
             ],
 
+            // 업데이트 설정
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                children: [
+                  // 기동시 업데이트 확인 토글
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.sync, color: Colors.deepPurpleAccent, size: 20),
+                          SizedBox(width: 8),
+                          Text(
+                            "기동 시 업데이트 확인",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Switch(
+                        value: state.autoCheckUpdate,
+                        activeThumbColor: Colors.deepPurpleAccent,
+                        activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                        onChanged: (val) {
+                          state.autoCheckUpdate = val;
+                          state.saveAllSettings();
+                          state.refreshUI();
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // 업데이트 확인 버튼
+                  SizedBox(
+                    width: double.infinity,
+                    child: state.isDownloadingUpdate
+                        ? Column(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: LinearProgressIndicator(
+                                  value: state.downloadProgress,
+                                  minHeight: 8,
+                                  backgroundColor: Colors.white12,
+                                  valueColor: const AlwaysStoppedAnimation(Colors.deepPurpleAccent),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                "다운로드 중... ${(state.downloadProgress * 100).toStringAsFixed(0)}%",
+                                style: const TextStyle(color: Colors.white54, fontSize: 12),
+                              ),
+                            ],
+                          )
+                        : state.hasUpdate
+                        ? ElevatedButton.icon(
+                            onPressed: () => state.downloadAndInstallUpdate(context),
+                            icon: const Icon(Icons.download, color: Colors.white, size: 18),
+                            label: Text(
+                              "v${state.latestVersion} 다운로드 및 설치",
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.deepPurpleAccent,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          )
+                        : OutlinedButton.icon(
+                            onPressed: () async {
+                              await state.checkForUpdate();
+                              if (!context.mounted) return;
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  duration: const Duration(milliseconds: 2400),
+                                  content: Text(
+                                    state.hasUpdate
+                                        ? "v${state.latestVersion} 업데이트가 있습니다!"
+                                        : "최신 버전입니다.",
+                                  ),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text(
+                              "업데이트 확인",
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.white70,
+                              side: const BorderSide(color: Colors.white24),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
             // 앱 버전 정보
             Container(
               padding: const EdgeInsets.all(16),
@@ -726,50 +845,15 @@ class _SettingsTabState extends State<SettingsTab> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.white12),
               ),
-              child: Column(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.info_outline, color: Colors.white38, size: 16),
-                      const SizedBox(width: 6),
-                      Text(
-                        "DNaiApp v${AppState.currentVersion}",
-                        style: const TextStyle(color: Colors.white38, fontSize: 13),
-                      ),
-                    ],
+                  const Icon(Icons.info_outline, color: Colors.white38, size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    "DNaiApp v${AppState.currentVersion}",
+                    style: const TextStyle(color: Colors.white38, fontSize: 13),
                   ),
-                  if (state.hasUpdate) ...[
-                    const SizedBox(height: 8),
-                    GestureDetector(
-                      onTap: () {
-                        if (state.updateUrl != null) {
-                          Clipboard.setData(ClipboardData(text: state.updateUrl!));
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              duration: const Duration(milliseconds: 2400),
-                              content: Text("다운로드 링크가 클립보드에 복사되었습니다!"),
-                            ),
-                          );
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          "🎉 v${state.latestVersion} 업데이트 가능! (터치하면 링크 복사)",
-                          style: const TextStyle(
-                            color: Colors.deepPurpleAccent,
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
                 ],
               ),
             ),

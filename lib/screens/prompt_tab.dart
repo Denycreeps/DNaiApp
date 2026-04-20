@@ -4,6 +4,7 @@ import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/nai_character.dart';
 
 // ============================================================================
 // 🚀 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
@@ -252,45 +253,177 @@ class _PromptTabState extends State<PromptTab> {
               ElevatedButton.icon(
                 onPressed: () {
                   TextEditingController nameCtrl = TextEditingController();
+                  Map<String, bool> fields = {
+                    'positive': true,
+                    'negative': true,
+                    'prefix': true,
+                    'suffix': true,
+                    'settings': false,
+                    'characters': false,
+                  };
                   showDialog(
                     context: modalContext,
-                    builder: (ctx) => AlertDialog(
-                      backgroundColor: const Color(0xFF1E1E1E),
-                      title: const Text("프리셋 저장", style: TextStyle(color: Colors.white)),
-                      content: TextField(
-                        controller: nameCtrl,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          hintText: "프리셋 이름을 입력하세요",
-                          hintStyle: TextStyle(color: Colors.white30),
-                        ),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text("취소", style: TextStyle(color: Colors.grey)),
-                        ),
-                        ElevatedButton(
-                          onPressed: () {
-                            if (nameCtrl.text.trim().isNotEmpty) {
-                              state.presets.add(
-                                NaiPreset(
-                                  name: nameCtrl.text.trim(),
-                                  positive: state.positiveController.text,
-                                  negative: state.negativeController.text,
-                                  prefix: state.prefixController.text,
-                                  suffix: state.suffixController.text,
+                    builder: (ctx) => StatefulBuilder(
+                      builder: (ctx, setDialogState) {
+                        Widget fieldChip(String key, String label, Color color) {
+                          final selected = fields[key]!;
+                          return GestureDetector(
+                            onTap: () => setDialogState(() => fields[key] = !selected),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: selected
+                                    ? color.withValues(alpha: 0.15)
+                                    : Colors.white.withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: selected ? color : Colors.white24,
+                                  width: selected ? 1.5 : 1,
                                 ),
-                              );
-                              state.saveAllSettings();
-                              state.refreshUI();
-                              Navigator.pop(ctx);
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
-                          child: const Text("저장", style: TextStyle(color: Colors.white)),
-                        ),
-                      ],
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    selected ? Icons.check_circle : Icons.circle_outlined,
+                                    size: 16,
+                                    color: selected ? color : Colors.white38,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    label,
+                                    style: TextStyle(
+                                      color: selected ? color : Colors.white38,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }
+
+                        return AlertDialog(
+                          backgroundColor: const Color(0xFF1E1E1E),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                          title: const Text(
+                            "프리셋 저장",
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          ),
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextField(
+                                controller: nameCtrl,
+                                style: const TextStyle(color: Colors.white),
+                                decoration: InputDecoration(
+                                  hintText: "프리셋 이름을 입력하세요",
+                                  hintStyle: const TextStyle(color: Colors.white30),
+                                  filled: true,
+                                  fillColor: const Color(0xFF121212),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              const Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  "저장할 항목 선택",
+                                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: fieldChip('positive', '긍정적', const Color(0xFF00BFA5)),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: fieldChip('negative', '부정적', const Color(0xFFFF5252)),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: fieldChip('prefix', '선행', const Color(0xFF29B6F6)),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: fieldChip('suffix', '후행', const Color(0xFFFFA000)),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(child: fieldChip('settings', '설정', Colors.amber)),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: fieldChip('characters', '캐릭터', Colors.deepPurpleAccent),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text("취소", style: TextStyle(color: Colors.grey)),
+                            ),
+                            ElevatedButton(
+                              onPressed: () {
+                                if (nameCtrl.text.trim().isNotEmpty) {
+                                  final savedFields = fields.entries
+                                      .where((e) => e.value)
+                                      .map((e) => e.key)
+                                      .toSet();
+                                  state.presets.add(
+                                    NaiPreset(
+                                      name: nameCtrl.text.trim(),
+                                      positive: savedFields.contains('positive')
+                                          ? state.positiveController.text
+                                          : '',
+                                      negative: savedFields.contains('negative')
+                                          ? state.negativeController.text
+                                          : '',
+                                      prefix: savedFields.contains('prefix')
+                                          ? state.prefixController.text
+                                          : '',
+                                      suffix: savedFields.contains('suffix')
+                                          ? state.suffixController.text
+                                          : '',
+                                      settings: savedFields.contains('settings')
+                                          ? state.getSettingsSnapshot()
+                                          : null,
+                                      characters: savedFields.contains('characters')
+                                          ? state.characters.map((c) => c.toJson()).toList()
+                                          : null,
+                                      savedFields: savedFields,
+                                    ),
+                                  );
+                                  state.saveAllSettings();
+                                  state.refreshUI();
+                                  Navigator.pop(ctx);
+                                }
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.deepPurpleAccent,
+                              ),
+                              child: const Text(
+                                "저장",
+                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   );
                 },
@@ -331,9 +464,19 @@ class _PromptTabState extends State<PromptTab> {
                             ),
                           ),
                           subtitle: Text(
-                            "긍정: ${preset.positive.isEmpty ? '없음' : preset.positive}",
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                            preset.savedFields
+                                .map((f) {
+                                  const labels = {
+                                    'positive': '긍정',
+                                    'negative': '부정',
+                                    'prefix': '선행',
+                                    'suffix': '후행',
+                                    'settings': '설정',
+                                    'characters': '캐릭터',
+                                  };
+                                  return labels[f] ?? f;
+                                })
+                                .join(' · '),
                             style: const TextStyle(color: Colors.white54, fontSize: 12),
                           ),
                           onTap: () {
@@ -429,10 +572,28 @@ class _PromptTabState extends State<PromptTab> {
                                           preset.negative,
                                           const Color(0xFFFF5252),
                                         ),
+                                        if (preset.settings != null)
+                                          buildSection(
+                                            "설정",
+                                            "모델: ${preset.settings!['model'] ?? '-'}\n"
+                                                "샘플러: ${preset.settings!['sampler'] ?? '-'}\n"
+                                                "스텝: ${preset.settings!['steps'] ?? '-'} / CFG: ${preset.settings!['cfg'] ?? '-'}",
+                                            Colors.amber,
+                                          ),
+                                        if (preset.characters != null)
+                                          buildSection(
+                                            "캐릭터 (${preset.characters!.length}개)",
+                                            preset.characters!
+                                                .map((c) => c['name'] ?? '이름 없음')
+                                                .join(', '),
+                                            Colors.deepPurpleAccent,
+                                          ),
                                         if (preset.prefix.isEmpty &&
                                             preset.positive.isEmpty &&
                                             preset.suffix.isEmpty &&
-                                            preset.negative.isEmpty)
+                                            preset.negative.isEmpty &&
+                                            preset.settings == null &&
+                                            preset.characters == null)
                                           const Text(
                                             "저장된 내용이 없습니다.",
                                             style: TextStyle(color: Colors.white54),
@@ -467,10 +628,28 @@ class _PromptTabState extends State<PromptTab> {
                             children: [
                               OutlinedButton(
                                 onPressed: () {
-                                  consumerState.positiveController.text = preset.positive;
-                                  consumerState.negativeController.text = preset.negative;
-                                  consumerState.prefixController.text = preset.prefix;
-                                  consumerState.suffixController.text = preset.suffix;
+                                  if (preset.savedFields.contains('positive')) {
+                                    consumerState.positiveController.text = preset.positive;
+                                  }
+                                  if (preset.savedFields.contains('negative')) {
+                                    consumerState.negativeController.text = preset.negative;
+                                  }
+                                  if (preset.savedFields.contains('prefix')) {
+                                    consumerState.prefixController.text = preset.prefix;
+                                  }
+                                  if (preset.savedFields.contains('suffix')) {
+                                    consumerState.suffixController.text = preset.suffix;
+                                  }
+                                  if (preset.savedFields.contains('settings') &&
+                                      preset.settings != null) {
+                                    consumerState.applySettingsSnapshot(preset.settings!);
+                                  }
+                                  if (preset.savedFields.contains('characters') &&
+                                      preset.characters != null) {
+                                    consumerState.characters = preset.characters!
+                                        .map((j) => NaiCharacter.fromJson(j))
+                                        .toList();
+                                  }
                                   consumerState.saveAllSettings();
                                   consumerState.refreshUI();
                                   Navigator.pop(modalContext);
@@ -764,68 +943,6 @@ class _PromptTabState extends State<PromptTab> {
         );
       },
     ).then((_) => focusNode.dispose());
-  }
-
-  Widget _buildPromptCard(
-    BuildContext context,
-    AppState state, {
-    required String title,
-    required IconData icon,
-    required Color color,
-    required TextEditingController controller,
-    String hint = "",
-  }) {
-    return GestureDetector(
-      onTap: () => _showPromptEditDialog(context, state, title, icon, color, controller),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withValues(alpha: 0.3)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.15),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Icon(icon, color: color, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        title,
-                        style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                    ],
-                  ),
-                  Icon(Icons.edit, color: color, size: 16),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                controller.text.isEmpty ? hint : controller.text,
-                style: TextStyle(
-                  color: controller.text.isEmpty ? Colors.white30 : Colors.white,
-                  height: 1.5,
-                  fontSize: 14,
-                ),
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   // ============================================================================
