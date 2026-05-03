@@ -24,7 +24,7 @@ class CharacterTab extends StatelessWidget {
     await showDialog(
       context: context,
       builder: (ctx) {
-        // 🚀 Linter 규칙 준수: 변수명 앞 언더스코어 제거
+        // Linter 규칙 준수: 변수명 앞 언더스코어 제거
         List<String> suggestions = [];
 
         return StatefulBuilder(
@@ -37,7 +37,7 @@ class CharacterTab extends StatelessWidget {
               }
             });
 
-            // 🚀 Linter 규칙 준수: 함수명 앞 언더스코어 제거
+            // Linter 규칙 준수: 함수명 앞 언더스코어 제거
             void onTextChanged() {
               String text = tc.text;
               int cursor = tc.selection.baseOffset;
@@ -48,7 +48,7 @@ class CharacterTab extends StatelessWidget {
               int lastComma = beforeCursor.lastIndexOf(',');
               int lastColon = beforeCursor.lastIndexOf(':');
               int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = beforeCursor.lastIndexOf(')');
+              int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
               int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
               String currentWord = lastDelimiter == -1
@@ -85,7 +85,7 @@ class CharacterTab extends StatelessWidget {
               });
             }
 
-            // 🚀 Linter 규칙 준수: 함수명 앞 언더스코어 제거
+            // Linter 규칙 준수: 함수명 앞 언더스코어 제거
             void insertTag(String rawTag) {
               String tag = rawTag.replaceFirst(kContainsMarker, '');
               String text = tc.text;
@@ -143,7 +143,7 @@ class CharacterTab extends StatelessWidget {
                         controller: tc,
                         focusNode: focusNode,
                         onChanged: (val) {
-                          onTextChanged(); // 🚀 수정된 함수 호출
+                          onTextChanged(); // 수정된 함수 호출
                           onSaved(val);
                           state.refreshUI();
                         },
@@ -162,7 +162,7 @@ class CharacterTab extends StatelessWidget {
 
                     AnimatedContainer(
                       duration: const Duration(milliseconds: 200),
-                      height: suggestions.isNotEmpty ? 40 : 0, // 🚀 수정된 변수 사용
+                      height: suggestions.isNotEmpty ? 40 : 0, // 수정된 변수 사용
                       child: suggestions.isNotEmpty
                           ? ListView.builder(
                               scrollDirection: Axis.horizontal,
@@ -581,7 +581,7 @@ class CharacterTab extends StatelessWidget {
                                             ),
                                             onPressed: () {
                                               state.characters.removeAt(state.selectedCharIndex);
-                                              // 🚀 Linter 규칙 준수: 중괄호 추가
+                                              // Linter 규칙 준수: 중괄호 추가
                                               if (state.selectedCharIndex > 0) {
                                                 state.selectedCharIndex--;
                                               }

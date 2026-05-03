@@ -4,7 +4,7 @@ import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
 
 // ============================================================================
-// 🚀 히스토리 탭 메인 UI
+// 히스토리 탭 메인 UI
 // (중복된 데이터 파싱 기능은 모두 app_state.dart로 깔끔하게 이사갔습니다!)
 // ============================================================================
 class HistoryTab extends StatefulWidget {
@@ -1030,243 +1030,276 @@ class _HistoryTabState extends State<HistoryTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // 리스트/그리드 토글 바
-          if (_isSelectMode && isGridView)
-            // ===== 선택 모드 툴바 =====
-            Row(
-              children: [
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _isSelectMode = false;
-                      _selectedIndices.clear();
-                    });
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1E1E),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white24),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.close, size: 18, color: Colors.white54),
-                        SizedBox(width: 4),
-                        Text(
-                          "취소",
-                          style: TextStyle(
-                            color: Colors.white54,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  "${_selectedIndices.length}장 선택됨",
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const Spacer(),
-                // 선택 삭제 버튼
-                GestureDetector(
-                  onTap: _selectedIndices.isEmpty
-                      ? null
-                      : () {
-                          showDialog(
-                            context: context,
-                            builder: (ctx) => AlertDialog(
-                              backgroundColor: const Color(0xFF1E1E1E),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              title: const Row(
-                                children: [
-                                  Icon(Icons.delete_outline, color: Colors.redAccent),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    "선택 삭제",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              content: Text(
-                                "${_selectedIndices.length}장의 이미지를 히스토리에서 삭제하시겠습니까?\n(실제 파일은 삭제되지 않습니다.)",
-                                style: const TextStyle(color: Colors.white70, fontSize: 14),
-                              ),
-                              actions: [
-                                TextButton(
-                                  onPressed: () => Navigator.pop(ctx),
-                                  child: const Text("취소", style: TextStyle(color: Colors.grey)),
-                                ),
-                                ElevatedButton(
-                                  onPressed: () {
-                                    Navigator.pop(ctx);
-                                    state.deleteHistoryByIndices(_selectedIndices);
-                                    setState(() {
-                                      _isSelectMode = false;
-                                      _selectedIndices.clear();
-                                    });
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.redAccent,
-                                  ),
-                                  child: const Text(
-                                    "삭제",
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          );
+          // 리스트/그리드 토글 바 (고정 높이로 모드 전환 시 버튼 움직임 방지)
+          SizedBox(
+            height: 44,
+            child: _isSelectMode && isGridView
+                ? // ===== 선택 모드 툴바 =====
+                  Row(
+                    children: [
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _isSelectMode = false;
+                            _selectedIndices.clear();
+                          });
                         },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: _selectedIndices.isEmpty
-                          ? const Color(0xFF1E1E1E)
-                          : Colors.redAccent.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: _selectedIndices.isEmpty ? Colors.white24 : Colors.redAccent,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.delete_outline,
-                          size: 18,
-                          color: _selectedIndices.isEmpty ? Colors.white38 : Colors.redAccent,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E1E1E),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.close, size: 18, color: Colors.white54),
+                              SizedBox(width: 4),
+                              Text(
+                                "취소",
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                        const SizedBox(width: 4),
-                        Text(
-                          "삭제",
-                          style: TextStyle(
-                            color: _selectedIndices.isEmpty ? Colors.white38 : Colors.redAccent,
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        "${_selectedIndices.length}장 선택됨",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      // 선택 삭제 버튼
+                      GestureDetector(
+                        onTap: _selectedIndices.isEmpty
+                            ? null
+                            : () {
+                                showDialog(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    backgroundColor: const Color(0xFF1E1E1E),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    title: const Row(
+                                      children: [
+                                        Icon(Icons.delete_outline, color: Colors.redAccent),
+                                        SizedBox(width: 8),
+                                        Text(
+                                          "선택 삭제",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    content: Text(
+                                      "${_selectedIndices.length}장의 이미지를 히스토리에서 삭제하시겠습니까?\n(실제 파일은 삭제되지 않습니다.)",
+                                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(ctx),
+                                        child: const Text(
+                                          "취소",
+                                          style: TextStyle(color: Colors.grey),
+                                        ),
+                                      ),
+                                      ElevatedButton(
+                                        onPressed: () {
+                                          Navigator.pop(ctx);
+                                          state.deleteHistoryByIndices(_selectedIndices);
+                                          setState(() {
+                                            _isSelectMode = false;
+                                            _selectedIndices.clear();
+                                          });
+                                        },
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.redAccent,
+                                        ),
+                                        child: const Text(
+                                          "삭제",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: _selectedIndices.isEmpty
+                                ? const Color(0xFF1E1E1E)
+                                : Colors.redAccent.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: _selectedIndices.isEmpty ? Colors.white24 : Colors.redAccent,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.delete_outline,
+                                size: 18,
+                                color: _selectedIndices.isEmpty ? Colors.white38 : Colors.redAccent,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                "삭제",
+                                style: TextStyle(
+                                  color: _selectedIndices.isEmpty
+                                      ? Colors.white38
+                                      : Colors.redAccent,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : // ===== 일반 모드 툴바 =====
+                  Row(
+                    children: [
+                      // 단일 토글 버튼
+                      GestureDetector(
+                        onTap: () {
+                          if (isGridView) {
+                            setState(() {
+                              _isSelectMode = false;
+                              _selectedIndices.clear();
+                            });
+                            state.isHistoryGridView = false;
+                          } else {
+                            state.isHistoryGridView = true;
+                          }
+                          state.refreshUI();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                isGridView ? Icons.view_carousel_outlined : Icons.grid_view_rounded,
+                                size: 18,
+                                color: Colors.deepPurpleAccent,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                isGridView ? "리스트" : "그리드",
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        "${images.length}장",
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      if (isGridView) ...[
+                        const SizedBox(width: 8),
+                        // 즐겨찾기 필터
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _showFavoritesOnly = !_showFavoritesOnly;
+                            });
+                          },
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: _showFavoritesOnly
+                                  ? Colors.amber.withValues(alpha: 0.2)
+                                  : const Color(0xFF1E1E1E),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: _showFavoritesOnly ? Colors.amber : Colors.white24,
+                                width: _showFavoritesOnly ? 1.5 : 1.0,
+                              ),
+                            ),
+                            child: Icon(
+                              _showFavoritesOnly ? Icons.star : Icons.star_border,
+                              size: 18,
+                              color: _showFavoritesOnly ? Colors.amber : Colors.white54,
+                            ),
+                          ),
+                        ),
+                        // 삭제 (불러오기 앞으로 이동)
+                        if (images.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          GestureDetector(
+                            onTap: () => _showBulkDeleteSheet(context, state),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E1E1E),
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(color: Colors.white24),
+                              ),
+                              child: const Icon(
+                                Icons.delete_outline,
+                                size: 18,
+                                color: Colors.white54,
+                              ),
+                            ),
+                          ),
+                        ],
+                        // 불러오기 (맨 오른쪽)
+                        const SizedBox(width: 8),
+                        OutlinedButton(
+                          onPressed: () => state.importImageToHistory(context),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          child: const Text(
+                            "불러오기",
+                            style: TextStyle(
+                              color: Color(0xFF8B5CF6),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                       ],
-                    ),
+                    ],
                   ),
-                ),
-              ],
-            )
-          else
-            // ===== 일반 모드 툴바 =====
-            Row(
-              children: [
-                _buildViewToggle(
-                  icon: Icons.view_carousel_outlined,
-                  label: "리스트",
-                  isActive: !isGridView,
-                  onTap: () {
-                    setState(() {
-                      _isSelectMode = false;
-                      _selectedIndices.clear();
-                    });
-                    state.isHistoryGridView = false;
-                    state.refreshUI();
-                  },
-                ),
-                const SizedBox(width: 8),
-                _buildViewToggle(
-                  icon: Icons.grid_view_rounded,
-                  label: "그리드",
-                  isActive: isGridView,
-                  onTap: () {
-                    state.isHistoryGridView = true;
-                    state.refreshUI();
-                  },
-                ),
-                const Spacer(),
-                Text(
-                  "${images.length}장",
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                if (isGridView) ...[
-                  const SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _showFavoritesOnly = !_showFavoritesOnly;
-                      });
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _showFavoritesOnly
-                            ? Colors.amber.withValues(alpha: 0.2)
-                            : const Color(0xFF1E1E1E),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: _showFavoritesOnly ? Colors.amber : Colors.white24,
-                          width: _showFavoritesOnly ? 1.5 : 1.0,
-                        ),
-                      ),
-                      child: Icon(
-                        _showFavoritesOnly ? Icons.star : Icons.star_border,
-                        size: 18,
-                        color: _showFavoritesOnly ? Colors.amber : Colors.white54,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  OutlinedButton(
-                    onPressed: () => state.importImageToHistory(context),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    ),
-                    child: const Text(
-                      "불러오기",
-                      style: TextStyle(
-                        color: Color(0xFF8B5CF6),
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  if (images.isNotEmpty) ...[
-                    const SizedBox(width: 8),
-                    GestureDetector(
-                      onTap: () => _showBulkDeleteSheet(context, state),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1E1E1E),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                        child: const Icon(Icons.delete_outline, size: 18, color: Colors.white54),
-                      ),
-                    ),
-                  ],
-                ],
-              ],
-            ),
+          ), // SizedBox 닫기
           const SizedBox(height: 12),
 
           // 메인 컨텐츠
@@ -1284,46 +1317,6 @@ class _HistoryTabState extends State<HistoryTab> {
 
           const SizedBox(height: 40),
         ],
-      ),
-    );
-  }
-
-  Widget _buildViewToggle({
-    required IconData icon,
-    required String label,
-    required bool isActive,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: isActive
-              ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
-              : const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isActive ? Colors.deepPurpleAccent : Colors.white24,
-            width: isActive ? 1.5 : 1.0,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18, color: isActive ? Colors.deepPurpleAccent : Colors.white54),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                color: isActive ? Colors.white : Colors.white54,
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }

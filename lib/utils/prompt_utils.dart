@@ -11,7 +11,9 @@ class PromptUtils {
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
     int lastNewline = beforeCursor.lastIndexOf('\n');
-    int lastParen = beforeCursor.lastIndexOf(')');
+    int lastCloseParen = beforeCursor.lastIndexOf(')');
+    int lastOpenParen = beforeCursor.lastIndexOf('(');
+    int lastParen = max(lastCloseParen, lastOpenParen);
     int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
     if (lastDelimiter == -1) {
@@ -33,6 +35,9 @@ class PromptUtils {
       }
     } else if (delimiterStr == '\n') {
       return "${beforeCursor.substring(0, lastDelimiter)}\n$tag, ";
+    } else if (delimiterStr == '(') {
+      // 조건부 트리거 등: ( 뒤에 태그만 넣고 쉼표 안 붙임
+      return "${beforeCursor.substring(0, lastDelimiter)}($tag";
     } else if (delimiterStr == ')') {
       return "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
     } else {

@@ -16,7 +16,7 @@ const List<String> _samplers = [
   "ddim",
 ];
 
-// 🚀 [추가] 샘플러 표시명 매핑 (NovelAI 웹사이트와 동일)
+// [추가] 샘플러 표시명 매핑 (NovelAI 웹사이트와 동일)
 const Map<String, String> _samplerDisplayNames = {
   "k_euler_ancestral": "Euler Ancestral",
   "k_euler": "Euler",
@@ -654,7 +654,7 @@ void showSaveImageModal(
                     },
             ),
 
-            // 🚀 [추가] i2i 전송 액션 및 탭 이동!
+            // [추가] i2i 전송 액션 및 탭 이동!
             ListTile(
               leading: const Icon(Icons.brush, color: Colors.deepPurpleAccent),
               title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
@@ -667,7 +667,7 @@ void showSaveImageModal(
                 NaiMetadata? parsedMetadata = extractNovelAIMetadata(imageBytes);
                 state.sendToI2i(imageBytes, parsedMetadata);
 
-                // 🚀 i2i 탭(2번 탭)으로 즉시 이동!
+                // i2i 탭(2번 탭)으로 즉시 이동!
                 state.navigateToTab(2);
 
                 ScaffoldMessenger.of(context).showSnackBar(

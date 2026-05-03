@@ -1,4 +1,4 @@
-import 'dart:math'; // 🚀 max() 함수를 쓰기 위해 추가
+import 'dart:math';
 import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -47,11 +47,11 @@ class _WildcardTabState extends State<WildcardTab> {
 
     String beforeCursor = text.substring(0, cursor);
 
-    // 🚀 쉼표, 콜론, 줄바꿈, 괄호 인식!
+    // 쉼표, 콜론, 줄바꿈, 괄호 인식!
     int lastNewline = beforeCursor.lastIndexOf('\n');
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
-    int lastParen = beforeCursor.lastIndexOf(')');
+    int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
     int lastDelimiter = max(lastNewline, max(lastComma, max(lastColon, lastParen)));
 
     String currentWord = lastDelimiter == -1
@@ -67,7 +67,7 @@ class _WildcardTabState extends State<WildcardTab> {
       return;
     }
 
-    // 🚀 [추가] 와일드카드 자동완성 로직
+    // [추가] 와일드카드 자동완성 로직
     if (currentWord.startsWith('__')) {
       String searchWord = currentWord.replaceAll('__', '').toLowerCase();
       List<String> matches = state.wildcards

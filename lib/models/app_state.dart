@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:io';
+import 'dart:async';
 import 'dart:math';
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -27,7 +28,7 @@ import 'nai_character.dart';
 // ============================================================================
 // † 접두어 = 보조 매칭 결과 (UI에서 연한 스타일로 구분)
 // ============================================================================
-const String kContainsMarker = '†';
+const String kContainsMarker = '* ';
 
 // ============================================================================
 // 프롬프트 토큰 추정기 (NAI V4/V4.5 T5 토크나이저 기준 ~512 토큰 제한)
@@ -500,8 +501,8 @@ class AppState extends ChangeNotifier {
   // 앱 버전 & 업데이트 체크
   // ============================================================================
   static String currentVersion = "0.0.0"; // pubspec.yaml에서 자동 로드됨
-  // 🚀 GitHub 저장소 주소 (본인 리포로 변경!)
-  static const String githubRepo = "Denycreeps/DNaiApp";
+  // GitHub 저장소 주소 (본인 리포로 변경!)
+  static const String githubRepo = "YOUR_USERNAME/YOUR_REPO";
 
   String? latestVersion;
   String? updateUrl;
@@ -696,14 +697,6 @@ class AppState extends ChangeNotifier {
 
   // 프롬프트 섹션 접기 상태
   Set<String> collapsedSections = {};
-
-  bool isI2iScrollDisabled = false;
-  void setI2iScrollDisabled(bool disabled) {
-    if (isI2iScrollDisabled != disabled) {
-      isI2iScrollDisabled = disabled;
-      notifyListeners();
-    }
-  }
 
   String resolutionMode = "수동";
   int currentImageWidth = 0;
@@ -918,8 +911,38 @@ class AppState extends ChangeNotifier {
   // 설정 내보내기/가져오기
   // ============================================================================
   Map<String, dynamic> exportSettings() {
+    // 히스토리 썸네일 생성 (전부 200px JPEG → base64)
+    List<Map<String, dynamic>> historyExport = [];
+    for (int i = 0; i < historyImages.length; i++) {
+      String base64Thumb;
+      if (isHistoryThumbnail(i)) {
+        // 이미 썸네일이면 그대로
+        base64Thumb = base64Encode(historyImages[i]);
+      } else {
+        // 원본 → 썸네일 변환
+        try {
+          final decoded = img.decodeImage(historyImages[i]);
+          if (decoded != null) {
+            final thumb = img.copyResize(decoded, width: 200);
+            base64Thumb = base64Encode(Uint8List.fromList(img.encodeJpg(thumb, quality: 70)));
+          } else {
+            base64Thumb = base64Encode(historyImages[i]);
+          }
+        } catch (_) {
+          base64Thumb = base64Encode(historyImages[i]);
+        }
+      }
+      historyExport.add({
+        'image': base64Thumb,
+        'metadata': i < historyMetadata.length ? historyMetadata[i]?.toJson() : null,
+        'favorite': i < historyFavorites.length ? historyFavorites[i] : false,
+        'filePath': i < historyFilePaths.length ? historyFilePaths[i] : null,
+      });
+    }
+
     return {
       'version': currentVersion,
+      'api_token': apiToken,
       'positive': positiveController.text,
       'negative': negativeController.text,
       'prefix': prefixController.text,
@@ -966,10 +989,19 @@ class AppState extends ChangeNotifier {
       'useGelbooruApiKey': useGelbooruApiKey,
       'characters': characters.map((c) => c.toJson()).toList(),
       'wildcards': wildcards.map((w) => w.toJson()).toList(),
+      'presets': presets.map((p) => p.toJson()).toList(),
+      'history': historyExport,
     };
   }
 
   void importSettings(Map<String, dynamic> data) {
+    // API 토큰 복원
+    if (data['api_token'] != null && data['api_token'].toString().isNotEmpty) {
+      apiToken = data['api_token'];
+      apiTokenController.text = apiToken;
+      isApiConnected = true;
+    }
+
     positiveController.text = data['positive'] ?? '';
     negativeController.text = data['negative'] ?? '';
     prefixController.text = data['prefix'] ?? '';
@@ -1023,6 +1055,39 @@ class AppState extends ChangeNotifier {
     }
     if (data['wildcards'] != null) {
       wildcards = (data['wildcards'] as List).map((e) => NaiWildcard.fromJson(e)).toList();
+    }
+    if (data['presets'] != null) {
+      presets = (data['presets'] as List).map((e) => NaiPreset.fromJson(e)).toList();
+    }
+
+    // 히스토리 복원 (썸네일 base64 → Uint8List)
+    if (data['history'] != null) {
+      final historyData = data['history'] as List;
+      historyImages.clear();
+      historyMetadata.clear();
+      historyFavorites.clear();
+      historyFilePaths.clear();
+
+      for (final item in historyData) {
+        try {
+          final imageBase64 = item['image'] as String?;
+          if (imageBase64 != null) {
+            historyImages.add(base64Decode(imageBase64));
+            historyMetadata.add(
+              item['metadata'] != null ? NaiMetadata.fromJson(item['metadata']) : null,
+            );
+            historyFavorites.add(item['favorite'] ?? false);
+            historyFilePaths.add(item['filePath'] as String?);
+          }
+        } catch (_) {
+          // 손상된 항목 건너뛰기
+        }
+      }
+
+      if (historyImages.isNotEmpty) {
+        selectedHistoryIndex = historyImages.length - 1;
+      }
+      _fullSaveHistoryToLocal();
     }
 
     saveAllSettings();
@@ -1134,6 +1199,71 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // {A|B|C} 형식 → ~A, ~B, ~C (OR 검색)
+  // *keyword 형식 → 해당 키워드가 포함된 태그들을 OR 검색 (상위 20개)
+  String _expandWildcardForSearch(String input) {
+    // 1단계: {A|B|C} → ~A, ~B, ~C
+    String result = input.replaceAllMapped(RegExp(r'\{([^}]+)\}'), (match) {
+      final options = match.group(1)!.split('|').map((e) => e.trim()).where((e) => e.isNotEmpty);
+      return options.map((o) => '~$o').join(', ');
+    });
+
+    // 2단계: *keyword → ~tag1, ~tag2, ... (태그 DB에서 매칭)
+    final tags = result.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    List<String> expanded = [];
+
+    for (final tag in tags) {
+      if (tag.startsWith('*') && tag.length > 1) {
+        final keyword = tag.substring(1).toLowerCase().replaceAll(' ', '_');
+        final matches = danbooruTags
+            .where((t) => t.contains(keyword))
+            .take(20)
+            .map((t) => '~${t.replaceAll('_', ' ')}')
+            .toList();
+        if (matches.isNotEmpty) {
+          expanded.addAll(matches);
+        } else {
+          expanded.add(keyword.replaceAll('_', ' '));
+        }
+      } else {
+        expanded.add(tag);
+      }
+    }
+
+    return expanded.join(', ');
+  }
+
+  // 제외 태그 확장 (~ 없이, 로컬 필터링용)
+  List<String> _expandExcludeForSearch(String input) {
+    List<String> result = [];
+
+    // {A|B|C} → A, B, C (전부 제외 대상)
+    String flattened = input.replaceAllMapped(RegExp(r'\{([^}]+)\}'), (match) {
+      return match.group(1)!.split('|').map((e) => e.trim()).join(', ');
+    });
+
+    final tags = flattened.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+
+    for (final tag in tags) {
+      if (tag.startsWith('*') && tag.length > 1) {
+        final keyword = tag.substring(1).toLowerCase().replaceAll(' ', '_');
+        final matches = danbooruTags
+            .where((t) => t.contains(keyword))
+            .take(50) // 제외는 넉넉하게 50개
+            .toList();
+        if (matches.isNotEmpty) {
+          result.addAll(matches);
+        } else {
+          result.add(keyword);
+        }
+      } else {
+        result.add(tag.replaceAll(' ', '_'));
+      }
+    }
+
+    return result;
+  }
+
   Future<void> handleGelbooruSearch(BuildContext context) async {
     isGelbooruLoading = true;
     gelbooruPrompts.clear();
@@ -1145,9 +1275,16 @@ class AppState extends ChangeNotifier {
     parseGelbooruApi();
 
     try {
+      // 포함: {A|B} → ~A, ~B / *keyword → 매칭 태그 OR
+      final expandedInclude = _expandWildcardForSearch(gelbooruIncludeController.text);
+      // 제외: 로컬 후처리용 (API 태그 제한 회피 + 정확한 필터링)
+      final localExcludeTags = _expandExcludeForSearch(gelbooruExcludeController.text);
+      debugPrint("🔍 검색: $expandedInclude / 제외(${localExcludeTags.length}개): $localExcludeTags");
+
       List<String> results = await _service.fetchDanbooruTags(
-        includeTags: gelbooruIncludeController.text,
-        excludeTags: gelbooruExcludeController.text,
+        includeTags: expandedInclude,
+        excludeTags: '', // API에 제외 태그 안 보냄
+        localExcludeTags: localExcludeTags, // 로컬 후처리
         rG: ratingG,
         rS: ratingS,
         rQ: ratingQ,
@@ -1162,6 +1299,8 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
+
+      if (!context.mounted) return;
 
       if (results.isNotEmpty) {
         results.shuffle();
@@ -1687,34 +1826,21 @@ class AppState extends ChangeNotifier {
 
       if (result.image != null) {
         sessionGenerateCount++;
-        if (historyImages.length >= 100) {
-          _removeOldestNonFavorite();
-        }
-        historyImages.add(result.image!);
-        historyFavorites.add(false);
-
-        String? savedPath;
-        if (isAutoSave) {
-          if (context.mounted) {
-            savedPath = await autoSaveImage(context, result.image!);
-          } else {
-            savedPath = await autoSaveImage(null, result.image!);
-          }
-        }
-        historyFilePaths.add(savedPath);
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
-        // 서버가 PNG 메타데이터에 variety_plus를 기록하지 않으므로 앱에서 직접 주입
         if (parsedMeta != null) {
           parsedMeta = parsedMeta.copyWithExtra({'variety_plus': isVariancePlus});
         }
-        historyMetadata.add(parsedMeta);
 
-        selectedHistoryIndex = historyImages.length - 1;
-        scrollToThumbnailEnd = true;
-        saveHistoryToLocal();
+        await addImageToHistory(
+          image: result.image!,
+          metadata: parsedMeta,
+          context: context.mounted ? context : null,
+        );
 
-        onScrollToHistoryEnd();
+        if (!isHistoryGridView) {
+          onScrollToHistoryEnd();
+        }
       }
 
       await fetchAnlas();
@@ -1729,11 +1855,11 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // 🚀 [추가] 엄격한 뮤텍스 잠금을 위한 변수 선언 [cite: 479]
+  // [추가] 엄격한 뮤텍스 잠금을 위한 변수 선언
   bool _isInpaintProcessing = false;
 
   Future<void> handleInpaintGenerate(BuildContext context, Uint8List maskBytes) async {
-    // 1. 뮤텍스 검사: 앞선 작업 진행 중이라면 다중 클릭 무시 [cite: 62]
+    // 1. 뮤텍스 검사: 앞선 작업 진행 중이라면 다중 클릭 무시
     if (_isInpaintProcessing) {
       debugPrint('이미 처리 중입니다. 중복 요청을 무시합니다.');
       return;
@@ -1762,7 +1888,7 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    // 🚀 잠금 활성화 [cite: 64]
+    // 잠금 활성화
     _isInpaintProcessing = true;
     isInpaintLoading = true;
     inpaintStatusMessage = "연결 중...";
@@ -1862,32 +1988,23 @@ class AppState extends ChangeNotifier {
           );
         }
       } else if (result.image != null) {
-        if (historyImages.length >= 100) {
-          _removeOldestNonFavorite();
-        }
-        historyImages.add(result.image!);
-        historyFavorites.add(false);
-
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
-        historyMetadata.add(parsedMeta);
 
-        String? savedPath;
-        if (isAutoSave) {
-          savedPath = await autoSaveImage(context.mounted ? context : null, result.image!);
-        }
-        historyFilePaths.add(savedPath);
+        await addImageToHistory(
+          image: result.image!,
+          metadata: parsedMeta,
+          context: context.mounted ? context : null,
+        );
 
-        selectedHistoryIndex = historyImages.length - 1;
-        scrollToThumbnailEnd = true;
-        saveHistoryToLocal();
+        isHistoryGridView = false;
         navigateToTab(1);
       }
 
       await fetchAnlas();
     } catch (e) {
-      debugPrint('인페인트 파이프라인 에러: $e'); // [cite: 73]
+      debugPrint('인페인트 파이프라인 에러: $e'); //
     } finally {
-      // 🚀 성공/실패 여부와 관계없이 반드시 락 해제 [cite: 75]
+      // 성공/실패 여부와 관계없이 반드시 락 해제
       _isInpaintProcessing = false;
       isInpaintLoading = false;
       inpaintStatusMessage = "";
@@ -1924,7 +2041,7 @@ class AppState extends ChangeNotifier {
     int width = targetI2iMetadata!.width;
     int height = targetI2iMetadata!.height;
 
-    // 🚀 [수정] PDF 가이드라인 적용: 1024x1024 픽셀 한계 검증 (면적 기준 계산) [cite: 168]
+    // [수정] PDF 가이드라인 적용: 1024x1024 픽셀 한계 검증 (면적 기준 계산)
     if ((width * height) > 1048576) {
       if (!context.mounted) {
         return;
@@ -1945,7 +2062,7 @@ class AppState extends ChangeNotifier {
             ],
           ),
           content: Text(
-            "업스케일 API는 1024x1024 (1,048,576 픽셀) 면적 이하인 원본 이미지만 처리할 수 있습니다.\n\n현재 해상도: ${width}x$height", // [cite: 168]
+            "업스케일 API는 1024x1024 (1,048,576 픽셀) 면적 이하인 원본 이미지만 처리할 수 있습니다.\n\n현재 해상도: ${width}x$height", //
             style: const TextStyle(color: Colors.white70),
           ),
           actions: [
@@ -2054,12 +2171,6 @@ class AppState extends ChangeNotifier {
           ),
         );
       } else if (result.image != null) {
-        if (historyImages.length >= 100) {
-          _removeOldestNonFavorite();
-        }
-        historyImages.add(result.image!);
-        historyFavorites.add(false);
-
         NaiMetadata? parsedMeta;
         if (targetI2iMetadata != null) {
           parsedMeta = NaiMetadata(
@@ -2082,20 +2193,14 @@ class AppState extends ChangeNotifier {
           parsedMeta = extractNovelAIMetadata(result.image!);
         }
 
-        historyMetadata.add(parsedMeta);
+        await addImageToHistory(
+          image: result.image!,
+          metadata: parsedMeta,
+          context: context.mounted ? context : null,
+          forceSave: true, // 업스케일은 항상 저장
+        );
 
-        // 업스케일 결과는 항상 저장
-        String? savedPath;
-        if (context.mounted) {
-          savedPath = await autoSaveImage(context, result.image!);
-        } else {
-          savedPath = await autoSaveImage(null, result.image!);
-        }
-        historyFilePaths.add(savedPath);
-
-        selectedHistoryIndex = historyImages.length - 1;
-        scrollToThumbnailEnd = true;
-        saveHistoryToLocal();
+        isHistoryGridView = false;
         navigateToTab(1);
       }
 
@@ -2157,6 +2262,35 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 히스토리 일괄 삭제
   // ============================================================================
+  // ============================================================================
+  // 히스토리에 이미지 추가 (공통 헬퍼)
+  // ============================================================================
+  Future<String?> addImageToHistory({
+    required Uint8List image,
+    required NaiMetadata? metadata,
+    BuildContext? context,
+    bool forceSave = false, // true면 isAutoSave 무시하고 저장
+  }) async {
+    if (historyImages.length >= 100) {
+      _removeOldestNonFavorite();
+    }
+    historyImages.add(image);
+    historyFavorites.add(false);
+    historyMetadata.add(metadata);
+
+    String? savedPath;
+    if (forceSave || isAutoSave) {
+      savedPath = await autoSaveImage((context != null && context.mounted) ? context : null, image);
+    }
+    historyFilePaths.add(savedPath);
+
+    selectedHistoryIndex = historyImages.length - 1;
+    scrollToThumbnailEnd = true;
+    saveHistoryToLocal();
+
+    return savedPath;
+  }
+
   void deleteAllHistory() {
     historyImages.clear();
     historyMetadata.clear();
@@ -2280,36 +2414,43 @@ class AppState extends ChangeNotifier {
     return historyDir;
   }
 
+  Timer? _historySaveDebounce;
+
   Future<void> saveHistoryToLocal() async {
-    try {
-      final dir = await _getHistoryDir();
-      final int total = historyImages.length;
+    // 빠른 연속 호출 방지 (300ms 디바운스)
+    _historySaveDebounce?.cancel();
+    _historySaveDebounce = Timer(const Duration(milliseconds: 300), () async {
+      try {
+        final dir = await _getHistoryDir();
+        final int total = historyImages.length;
 
-      // JSON 파일만 매번 갱신 (가볍고 빠름)
-      await File(
-        '${dir.path}/metadata.json',
-      ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
-      await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
-      await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
+        // JSON 파일만 매번 갱신 (가볍고 빠름)
+        await File(
+          '${dir.path}/metadata.json',
+        ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
+        await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
+        await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
 
-      // 마지막(최신) 이미지만 저장 (이미 파일이 있으면 건너뛰기)
-      if (total > 0) {
-        final lastIdx = total - 1;
-        final pngFile = File('${dir.path}/img_$lastIdx.png');
-        final thumbFile = File('${dir.path}/thumb_$lastIdx.jpg');
-        if (!pngFile.existsSync() && !thumbFile.existsSync()) {
-          await pngFile.writeAsBytes(historyImages[lastIdx]);
+        // 인덱스가 밀린 상태면 이미지 파일은 건너뛰기 (fullSave에서 처리)
+        if (!historyNeedsFullSave && total > 0) {
+          final lastIdx = total - 1;
+          final pngFile = File('${dir.path}/img_$lastIdx.png');
+          final thumbFile = File('${dir.path}/thumb_$lastIdx.jpg');
+          if (!pngFile.existsSync() && !thumbFile.existsSync()) {
+            await pngFile.writeAsBytes(historyImages[lastIdx]);
+          }
         }
-      }
 
-      debugPrint("✅ 히스토리 증분 저장 완료 ($total개)");
-    } catch (e) {
-      debugPrint("❌ 히스토리 저장 실패: $e");
-    }
+        debugPrint("✅ 히스토리 증분 저장 완료 ($total개)");
+      } catch (e) {
+        debugPrint("❌ 히스토리 저장 실패: $e");
+      }
+    });
   }
 
   // 앱 백그라운드/종료 시 호출 — 밀린 전체 저장 실행
   Future<void> fullSaveHistoryIfNeeded() async {
+    _historySaveDebounce?.cancel();
     if (historyNeedsFullSave) {
       await _fullSaveHistoryToLocal();
       historyNeedsFullSave = false;
@@ -2458,6 +2599,26 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 메타데이터로 이미지 재생성 (썸네일만 있는 경우)
   // ============================================================================
+  // ============================================================================
+  // 메타데이터 표시 모델명 → API 모델 ID 변환
+  // (예: "NovelAI Diffusion V4.5 4BDE2A90" → "nai-diffusion-4-5-full")
+  // 뒤의 해시는 패치마다 바뀌므로 버전 키워드로 매칭
+  // ============================================================================
+  String _resolveModelId(String displayName) {
+    final lower = displayName.toLowerCase();
+
+    // 이미 API 모델 ID 형식이면 그대로 반환
+    if (lower.startsWith('nai-diffusion')) return displayName;
+
+    // 버전 키워드 매칭 (구체적인 것부터 체크)
+    if (lower.contains('v4.5')) return 'nai-diffusion-4-5-full';
+    if (lower.contains('v4')) return 'nai-diffusion-4-full';
+    if (lower.contains('v3')) return 'nai-diffusion-3';
+
+    // 매칭 실패 → 현재 선택된 모델 사용
+    return selectedModel;
+  }
+
   Future<void> regenerateFromMetadata(BuildContext context, int index) async {
     if (index < 0 || index >= historyMetadata.length) return;
     final meta = historyMetadata[index];
@@ -2505,7 +2666,7 @@ class AppState extends ChangeNotifier {
         positive: meta.positive,
         negative: meta.negative,
         token: apiToken,
-        model: meta.source.isNotEmpty ? meta.source : selectedModel,
+        model: meta.source.isNotEmpty ? _resolveModelId(meta.source) : selectedModel,
         steps: meta.steps > 0 ? meta.steps : 28,
         sampler: meta.sampler.isNotEmpty ? meta.sampler : selectedSampler,
         scheduler: meta.extraParams['noise_schedule']?.toString() ?? selectedScheduler,

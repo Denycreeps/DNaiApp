@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
@@ -102,41 +101,6 @@ class _SettingsTabState extends State<SettingsTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // API 연결 상태
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: state.isApiConnected
-                    ? Colors.tealAccent.withValues(alpha: 0.05)
-                    : Colors.redAccent.withValues(alpha: 0.05),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: state.isApiConnected
-                      ? Colors.tealAccent.withValues(alpha: 0.3)
-                      : Colors.redAccent.withValues(alpha: 0.3),
-                ),
-              ),
-              child: Column(
-                children: [
-                  Icon(
-                    state.isApiConnected ? Icons.check_circle_outline : Icons.error_outline,
-                    color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    state.isApiConnected ? "NovelAI 서버에 연결되어 있습니다." : "API 토큰 입력이 필요합니다.",
-                    style: TextStyle(
-                      color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-
             // ✅ 4번: '현재 생성된 이미지'
             Container(
               padding: const EdgeInsets.all(16),
@@ -439,6 +403,187 @@ class _SettingsTabState extends State<SettingsTab> {
               const SizedBox(height: 16),
             ],
 
+            // ✅ 1번: 설정 백업 (margin 제거 → 다른 항목과 동일한 가로 크기)
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.sync_alt, color: Colors.deepPurpleAccent, size: 18),
+                      SizedBox(width: 8),
+                      Text(
+                        "설정 백업",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    "프롬프트, 캐릭터, 와일드카드, 상세 설정, 토큰, 히스토리를 파일로 저장하거나 불러옵니다.",
+                    style: TextStyle(color: Colors.white54, fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                duration: const Duration(milliseconds: 2400),
+                                content: Text("내보내기 준비 중..."),
+                              ),
+                            );
+                            try {
+                              final data = state.exportSettings();
+                              final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
+                              final dir = await getTemporaryDirectory();
+                              final file = File('${dir.path}/dnaiapp_settings.json');
+                              await file.writeAsString(jsonStr);
+                              await SharePlus.instance.share(
+                                ShareParams(files: [XFile(file.path)]),
+                              );
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("내보내기에 실패했습니다."),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.upload_file, size: 18),
+                          label: const Text("내보내기"),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: const BorderSide(color: Colors.white24),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () async {
+                            final result = await FilePicker.platform.pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: ['json'],
+                            );
+                            if (result == null || result.files.isEmpty) return;
+                            try {
+                              final file = File(result.files.single.path!);
+                              final jsonStr = await file.readAsString();
+                              final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+                              state.importSettings(data);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("설정을 성공적으로 불러왔습니다!"),
+                                  ),
+                                );
+                              }
+                            } catch (e) {
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("파일을 읽는 데 실패했습니다. JSON 형식을 확인해주세요."),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.download, size: 18),
+                          label: const Text("가져오기"),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white70,
+                            side: const BorderSide(color: Colors.white24),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // API 연결 상태
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: state.isApiConnected
+                    ? Colors.tealAccent.withValues(alpha: 0.05)
+                    : Colors.redAccent.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: state.isApiConnected
+                      ? Colors.tealAccent.withValues(alpha: 0.3)
+                      : Colors.redAccent.withValues(alpha: 0.3),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Icon(
+                    state.isApiConnected ? Icons.check_circle_outline : Icons.error_outline,
+                    color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
+                    size: 48,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    state.isApiConnected ? "NovelAI 서버에 연결되어 있습니다." : "API 토큰 입력이 필요합니다.",
+                    style: TextStyle(
+                      color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // ✅ 5번: 연결 해제 버튼 → 버전 바로 위로 이동
+            if (state.isApiConnected) ...[
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    state.apiToken = "";
+                    state.apiTokenController.clear();
+                    state.isApiConnected = false;
+                    state.currentAnlas = 0;
+                    state.subscriptionTier = 0;
+                    state.saveAllSettings();
+                    state.refreshUI();
+                  },
+                  icon: const Icon(Icons.logout, color: Colors.redAccent),
+                  label: const Text("연결 해제", style: TextStyle(color: Colors.redAccent)),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    side: const BorderSide(color: Colors.redAccent),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
             // ✅ 2번: Gelbooru API 설정 (접기/펴기)
             Container(
               padding: const EdgeInsets.all(16),
@@ -577,146 +722,6 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
             const SizedBox(height: 16),
-
-            // ✅ 1번: 설정 백업 (margin 제거 → 다른 항목과 동일한 가로 크기)
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E1E1E),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.sync_alt, color: Colors.deepPurpleAccent, size: 18),
-                      SizedBox(width: 8),
-                      Text(
-                        "설정 백업",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 15,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    "프롬프트, 캐릭터, 와일드카드, 상세 설정을 파일로 저장하거나 불러옵니다.",
-                    style: TextStyle(color: Colors.white54, fontSize: 12),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            try {
-                              final data = state.exportSettings();
-                              final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
-                              final dir = await getTemporaryDirectory();
-                              final file = File('${dir.path}/dnaiapp_settings.json');
-                              await file.writeAsString(jsonStr);
-                              await SharePlus.instance.share(
-                                ShareParams(files: [XFile(file.path)]),
-                              );
-                            } catch (e) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    duration: const Duration(milliseconds: 2400),
-                                    content: Text("내보내기에 실패했습니다."),
-                                  ),
-                                );
-                              }
-                            }
-                          },
-                          icon: const Icon(Icons.upload_file, size: 18),
-                          label: const Text("내보내기"),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white70,
-                            side: const BorderSide(color: Colors.white24),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () async {
-                            final result = await FilePicker.platform.pickFiles(
-                              type: FileType.custom,
-                              allowedExtensions: ['json'],
-                            );
-                            if (result == null || result.files.isEmpty) return;
-                            try {
-                              final file = File(result.files.single.path!);
-                              final jsonStr = await file.readAsString();
-                              final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-                              state.importSettings(data);
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    duration: const Duration(milliseconds: 2400),
-                                    content: Text("설정을 성공적으로 불러왔습니다!"),
-                                  ),
-                                );
-                              }
-                            } catch (e) {
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    duration: const Duration(milliseconds: 2400),
-                                    content: Text("파일을 읽는 데 실패했습니다. JSON 형식을 확인해주세요."),
-                                  ),
-                                );
-                              }
-                            }
-                          },
-                          icon: const Icon(Icons.download, size: 18),
-                          label: const Text("가져오기"),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.white70,
-                            side: const BorderSide(color: Colors.white24),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-
-            // ✅ 5번: 연결 해제 버튼 → 버전 바로 위로 이동
-            if (state.isApiConnected) ...[
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () {
-                    state.apiToken = "";
-                    state.apiTokenController.clear();
-                    state.isApiConnected = false;
-                    state.currentAnlas = 0;
-                    state.subscriptionTier = 0;
-                    state.saveAllSettings();
-                    state.refreshUI();
-                  },
-                  icon: const Icon(Icons.logout, color: Colors.redAccent),
-                  label: const Text("연결 해제", style: TextStyle(color: Colors.redAccent)),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    side: const BorderSide(color: Colors.redAccent),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
 
             // 업데이트 설정
             Container(

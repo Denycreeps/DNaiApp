@@ -7,7 +7,7 @@ import '../models/app_state.dart';
 import '../models/nai_character.dart';
 
 // ============================================================================
-// 🚀 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
+// 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
 // ============================================================================
 class _InlineAutocompleteTextField extends StatefulWidget {
   final TextEditingController controller;
@@ -65,7 +65,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
     int lastNewline = beforeCursor.lastIndexOf('\n');
-    int lastParen = beforeCursor.lastIndexOf(')');
+    int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
     int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
     String currentWord = lastDelimiter == -1
@@ -455,12 +455,15 @@ class _PromptTabState extends State<PromptTab> {
                       itemBuilder: (context, index) {
                         final preset = consumerState.presets[index];
                         return ListTile(
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                          dense: true,
+                          visualDensity: const VisualDensity(vertical: -3),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
                           title: Text(
                             preset.name,
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
+                              fontSize: 14,
                             ),
                           ),
                           subtitle: Text(
@@ -477,148 +480,208 @@ class _PromptTabState extends State<PromptTab> {
                                   return labels[f] ?? f;
                                 })
                                 .join(' · '),
-                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            style: const TextStyle(color: Colors.white54, fontSize: 11),
                           ),
                           onTap: () {
                             showDialog(
                               context: modalContext,
                               builder: (ctx) {
-                                Widget buildSection(String label, String text, Color color) {
-                                  if (text.trim().isEmpty) {
-                                    return const SizedBox.shrink();
-                                  }
-                                  return Padding(
-                                    padding: const EdgeInsets.only(bottom: 12),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          label,
-                                          style: TextStyle(
-                                            color: color,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                                Set<String> expandedSections = {};
+
+                                return StatefulBuilder(
+                                  builder: (ctx, setDialogState) {
+                                    Widget buildSection(String label, String text, Color color) {
+                                      if (text.trim().isEmpty) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      final isExpanded = expandedSections.contains(label);
+                                      return Padding(
+                                        padding: const EdgeInsets.only(bottom: 8),
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            GestureDetector(
+                                              onTap: () {
+                                                setDialogState(() {
+                                                  if (isExpanded) {
+                                                    expandedSections.remove(label);
+                                                  } else {
+                                                    expandedSections.add(label);
+                                                  }
+                                                });
+                                              },
+                                              child: Container(
+                                                width: double.infinity,
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                  vertical: 8,
+                                                ),
+                                                decoration: BoxDecoration(
+                                                  color: color.withValues(alpha: 0.1),
+                                                  borderRadius: BorderRadius.circular(8),
+                                                  border: Border.all(
+                                                    color: color.withValues(alpha: 0.3),
+                                                  ),
+                                                ),
+                                                child: Row(
+                                                  children: [
+                                                    Icon(
+                                                      isExpanded
+                                                          ? Icons.expand_more
+                                                          : Icons.chevron_right,
+                                                      color: color,
+                                                      size: 18,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      label,
+                                                      style: TextStyle(
+                                                        color: color,
+                                                        fontSize: 13,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                    const Spacer(),
+                                                    if (!isExpanded)
+                                                      Text(
+                                                        text.length > 30
+                                                            ? '${text.substring(0, 30)}...'
+                                                            : text,
+                                                        style: TextStyle(
+                                                          color: color.withValues(alpha: 0.5),
+                                                          fontSize: 11,
+                                                        ),
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                            if (isExpanded)
+                                              Container(
+                                                width: double.infinity,
+                                                padding: const EdgeInsets.all(10),
+                                                decoration: BoxDecoration(
+                                                  color: Colors.black26,
+                                                  borderRadius: const BorderRadius.vertical(
+                                                    bottom: Radius.circular(8),
+                                                  ),
+                                                  border: Border.all(
+                                                    color: color.withValues(alpha: 0.2),
+                                                  ),
+                                                ),
+                                                child: Text(
+                                                  text,
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: 13,
+                                                  ),
+                                                ),
+                                              ),
+                                          ],
                                         ),
-                                        const SizedBox(height: 4),
-                                        Container(
-                                          width: double.infinity,
-                                          padding: const EdgeInsets.all(10),
-                                          decoration: BoxDecoration(
-                                            color: Colors.black26,
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(color: color.withValues(alpha: 0.3)),
+                                      );
+                                    }
+
+                                    return AlertDialog(
+                                      backgroundColor: const Color(0xFF1E1E1E),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      title: Row(
+                                        children: [
+                                          const Icon(
+                                            Icons.info_outline,
+                                            color: Colors.deepPurpleAccent,
                                           ),
-                                          child: Text(
-                                            text,
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                              fontSize: 13,
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: Text(
+                                              preset.name,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 18,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      content: SingleChildScrollView(
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            buildSection(
+                                              "선행 프롬프트",
+                                              preset.prefix,
+                                              const Color(0xFF29B6F6),
+                                            ),
+                                            buildSection(
+                                              "긍정적 프롬프트",
+                                              preset.positive,
+                                              const Color(0xFF00BFA5),
+                                            ),
+                                            buildSection(
+                                              "후행 프롬프트",
+                                              preset.suffix,
+                                              const Color(0xFFFFA000),
+                                            ),
+                                            buildSection(
+                                              "부정적 프롬프트",
+                                              preset.negative,
+                                              const Color(0xFFFF5252),
+                                            ),
+                                            if (preset.settings != null)
+                                              buildSection(
+                                                "설정",
+                                                "모델: ${preset.settings!['model'] ?? '-'}\n"
+                                                    "샘플러: ${preset.settings!['sampler'] ?? '-'}\n"
+                                                    "스텝: ${preset.settings!['steps'] ?? '-'} / CFG: ${preset.settings!['cfg'] ?? '-'}",
+                                                Colors.amber,
+                                              ),
+                                            if (preset.characters != null)
+                                              buildSection(
+                                                "캐릭터 (${preset.characters!.length}개)",
+                                                preset.characters!
+                                                    .map((c) => c['name'] ?? '이름 없음')
+                                                    .join(', '),
+                                                Colors.deepPurpleAccent,
+                                              ),
+                                            if (preset.prefix.isEmpty &&
+                                                preset.positive.isEmpty &&
+                                                preset.suffix.isEmpty &&
+                                                preset.negative.isEmpty &&
+                                                preset.settings == null &&
+                                                preset.characters == null)
+                                              const Text(
+                                                "저장된 내용이 없습니다.",
+                                                style: TextStyle(color: Colors.white54),
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                      actions: [
+                                        ElevatedButton(
+                                          onPressed: () => Navigator.pop(ctx),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.deepPurpleAccent,
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(8),
+                                            ),
+                                          ),
+                                          child: const Text(
+                                            "닫기",
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
                                             ),
                                           ),
                                         ),
                                       ],
-                                    ),
-                                  );
-                                }
-
-                                return AlertDialog(
-                                  backgroundColor: const Color(0xFF1E1E1E),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  title: Row(
-                                    children: [
-                                      const Icon(
-                                        Icons.info_outline,
-                                        color: Colors.deepPurpleAccent,
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Expanded(
-                                        child: Text(
-                                          preset.name,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  content: SingleChildScrollView(
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        buildSection(
-                                          "선행 프롬프트",
-                                          preset.prefix,
-                                          const Color(0xFF29B6F6),
-                                        ),
-                                        buildSection(
-                                          "긍정적 프롬프트",
-                                          preset.positive,
-                                          const Color(0xFF00BFA5),
-                                        ),
-                                        buildSection(
-                                          "후행 프롬프트",
-                                          preset.suffix,
-                                          const Color(0xFFFFA000),
-                                        ),
-                                        buildSection(
-                                          "부정적 프롬프트",
-                                          preset.negative,
-                                          const Color(0xFFFF5252),
-                                        ),
-                                        if (preset.settings != null)
-                                          buildSection(
-                                            "설정",
-                                            "모델: ${preset.settings!['model'] ?? '-'}\n"
-                                                "샘플러: ${preset.settings!['sampler'] ?? '-'}\n"
-                                                "스텝: ${preset.settings!['steps'] ?? '-'} / CFG: ${preset.settings!['cfg'] ?? '-'}",
-                                            Colors.amber,
-                                          ),
-                                        if (preset.characters != null)
-                                          buildSection(
-                                            "캐릭터 (${preset.characters!.length}개)",
-                                            preset.characters!
-                                                .map((c) => c['name'] ?? '이름 없음')
-                                                .join(', '),
-                                            Colors.deepPurpleAccent,
-                                          ),
-                                        if (preset.prefix.isEmpty &&
-                                            preset.positive.isEmpty &&
-                                            preset.suffix.isEmpty &&
-                                            preset.negative.isEmpty &&
-                                            preset.settings == null &&
-                                            preset.characters == null)
-                                          const Text(
-                                            "저장된 내용이 없습니다.",
-                                            style: TextStyle(color: Colors.white54),
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                                  actions: [
-                                    ElevatedButton(
-                                      onPressed: () => Navigator.pop(ctx),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.deepPurpleAccent,
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(8),
-                                        ),
-                                      ),
-                                      child: const Text(
-                                        "닫기",
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                                    );
+                                  },
                                 );
                               },
                             );
@@ -672,14 +735,20 @@ class _PromptTabState extends State<PromptTab> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                              IconButton(
-                                icon: const Icon(Icons.delete, color: Colors.redAccent),
-                                onPressed: () {
-                                  consumerState.presets.removeAt(index);
-                                  consumerState.saveAllSettings();
-                                  consumerState.refreshUI();
-                                },
+                              const SizedBox(width: 4),
+                              SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: IconButton(
+                                  padding: EdgeInsets.zero,
+                                  iconSize: 20,
+                                  icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                  onPressed: () {
+                                    consumerState.presets.removeAt(index);
+                                    consumerState.saveAllSettings();
+                                    consumerState.refreshUI();
+                                  },
+                                ),
                               ),
                             ],
                           ),
@@ -738,7 +807,7 @@ class _PromptTabState extends State<PromptTab> {
               int lastComma = beforeCursor.lastIndexOf(',');
               int lastColon = beforeCursor.lastIndexOf(':');
               int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = beforeCursor.lastIndexOf(')');
+              int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
               int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
               String currentWord = lastDelimiter == -1
@@ -1034,7 +1103,7 @@ class _PromptTabState extends State<PromptTab> {
           state,
           color: const Color(0xFF00BFA5),
           controller: state.positiveController,
-          hint: "태그를 입력하세요...",
+          hint: "프롬프트를 입력하세요...",
           icon: Icons.add_circle_outline,
           title: "긍정적 프롬프트",
         );
@@ -1044,7 +1113,7 @@ class _PromptTabState extends State<PromptTab> {
           state,
           color: const Color(0xFF29B6F6),
           controller: state.prefixController,
-          hint: "1girl, solo, artist:kuroboshi kouhaku...",
+          hint: "프롬프트를 입력하세요...",
           icon: Icons.arrow_right_alt,
           title: "선행 프롬프트",
         );
@@ -1054,7 +1123,7 @@ class _PromptTabState extends State<PromptTab> {
           state,
           color: const Color(0xFFFFA000),
           controller: state.suffixController,
-          hint: "고정으로 맨 뒤에 들어갈 태그...",
+          hint: "프롬프트를 입력하세요...",
           icon: Icons.keyboard_double_arrow_right,
           title: "후행 프롬프트",
         );
@@ -1064,7 +1133,7 @@ class _PromptTabState extends State<PromptTab> {
           state,
           color: const Color(0xFFFF5252),
           controller: state.negativeController,
-          hint: "text, logo, worst quality...",
+          hint: "프롬프트를 입력하세요...",
           icon: Icons.remove_circle_outline,
           title: "부정적 프롬프트",
         );
@@ -1462,7 +1531,8 @@ class _PromptTabState extends State<PromptTab> {
                       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       fixedSize: const Size(160, 40),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      backgroundColor: (state.isInpaintLoading || state.isUpscaleLoading)
+                      backgroundColor:
+                          (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
                           ? Colors.grey[700]
                           : const Color(0xFF8B5CF6),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
@@ -1644,7 +1714,7 @@ class _PromptTabState extends State<PromptTab> {
           ],
 
           // ============================================================================
-          // 🚀 접기/펴기 + 드래그 재배치 가능한 프롬프트 섹션
+          // 접기/펴기 + 드래그 재배치 가능한 프롬프트 섹션
           // ============================================================================
           ReorderableListView(
             shrinkWrap: true,

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'models/app_state.dart';
@@ -256,7 +255,7 @@ class _NovelAiAppState extends State<NovelAiApp>
             _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
             ? _visibleTabIndices[_tabController!.index]
             : -1;
-        if (origIdx == 1 && _historyScrollController.hasClients) {
+        if (origIdx == 1 && _historyScrollController.hasClients && !state.isHistoryGridView) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _historyScrollController.animateTo(
               _historyScrollController.position.maxScrollExtent,
@@ -331,7 +330,6 @@ class _NovelAiAppState extends State<NovelAiApp>
             labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
             unselectedLabelStyle: const TextStyle(fontSize: 11.5),
             onTap: (targetVisibleTab) {
-              state.setI2iScrollDisabled(false);
               int currentPage = _pageController.page?.round() ?? 6000;
               int currentTab = currentPage % tabCount;
               int diff = targetVisibleTab - currentTab;
@@ -361,7 +359,6 @@ class _NovelAiAppState extends State<NovelAiApp>
                   ? const NeverScrollableScrollPhysics()
                   : const AlwaysScrollableScrollPhysics(),
               onPageChanged: (index) {
-                state.setI2iScrollDisabled(false);
                 int targetVisibleTab = index % tabCount;
                 if (_tabController!.index != targetVisibleTab) {
                   _tabController!.animateTo(targetVisibleTab);

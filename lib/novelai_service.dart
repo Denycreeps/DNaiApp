@@ -15,7 +15,7 @@ class NaiResponse {
 }
 
 // ============================================================================
-// 🚀 [최종 핵심 해결책] 원본 이미지와 마스크 모두 무조건 '순수 3채널(RGB)' 강제 변환
+// [최종 핵심 해결책] 원본 이미지와 마스크 모두 무조건 '순수 3채널(RGB)' 강제 변환
 // ============================================================================
 String _processImage3Channel(Uint8List bytes) {
   img.Image? decoded = img.decodeImage(bytes);
@@ -315,6 +315,8 @@ class NovelAiService {
     required bool removeClothes,
     required String gelbooruUserId,
     required String gelbooruApiKey,
+    List<String> localExcludeTags = const [],
+    int maxPagesToFetch = 20,
   }) async {
     List<String> incTags = includeTags
         .split(',')
@@ -326,6 +328,9 @@ class NovelAiService {
         .map((e) => e.trim().replaceAll(' ', '_'))
         .where((e) => e.isNotEmpty)
         .toList();
+
+    // 로컬 제외 태그 Set (빠른 검색용)
+    final Set<String> localExcludeSet = localExcludeTags.map((t) => t.toLowerCase()).toSet();
 
     List<String> apiTags = [...incTags];
     for (var t in excTags) {
@@ -349,8 +354,9 @@ class NovelAiService {
       apiTags.add("sort:random");
     }
 
-    String tagQuery = Uri.encodeQueryComponent(apiTags.join(' '));
-    int maxPagesToFetch = 20;
+    String tagQuery = Uri.encodeQueryComponent(
+      apiTags.join(' '),
+    ).replaceAll('%7E', '~'); // ~ (OR 연산자) 보존
 
     List<dynamic> allValidPosts = [];
     Set<String> allUniqueTags = {};
@@ -406,6 +412,18 @@ class NovelAiService {
       } catch (e) {
         debugPrint("겔보루 파싱 에러: $e");
       }
+    }
+
+    if (allValidPosts.isEmpty) return [];
+
+    // 로컬 제외 필터링: 포스트의 태그에 제외 태그가 하나라도 포함되면 제거
+    if (localExcludeSet.isNotEmpty) {
+      allValidPosts.removeWhere((post) {
+        String tagString = (post['tags'] ?? "").toString().toLowerCase();
+        List<String> postTags = tagString.split(' ');
+        return postTags.any((t) => localExcludeSet.contains(t));
+      });
+      debugPrint("🔍 로컬 제외 후: ${allValidPosts.length}개 포스트");
     }
 
     if (allValidPosts.isEmpty) return [];
@@ -537,7 +555,7 @@ class NovelAiService {
       });
 
       if (action == "infill") {
-        // 🚀 [최종 수정] PC 프로그램 api_service.py 326~373번 줄과 1:1 일치
+        // [최종 수정] PC 프로그램 api_service.py 326~373번 줄과 1:1 일치
         // infill 전용 (326~339번 줄)
         parameters.addAll({
           "add_original_image": true,
@@ -567,7 +585,7 @@ class NovelAiService {
           "sm_dyn": false,
           "uncond_scale": 1,
           "params_version": 3,
-          // 🚀 [수정] VAR+ ON: 58, OFF: null (기존 59.04... 하드코딩 제거)
+          // [수정] VAR+ ON: 58, OFF: null (기존 59.04... 하드코딩 제거)
           "skip_cfg_above_sigma": variancePlus ? 58 : null,
         });
       }
@@ -583,7 +601,7 @@ class NovelAiService {
       // 이미지/마스크 인코딩
       if (image != null) {
         if (action == "infill") {
-          // 🚀 [핵심 수정] infill: 원본 이미지를 재인코딩 없이 그대로 전송!
+          // [핵심 수정] infill: 원본 이미지를 재인코딩 없이 그대로 전송!
           // 재인코딩하면 NovelAI PNG 메타데이터/픽셀 구조가 변형되어 서버 오류 가능
           parameters["image"] = base64Encode(image);
         } else {
@@ -602,11 +620,17 @@ class NovelAiService {
       List<Map<String, dynamic>> negCharCaptions = [];
 
       // 캐릭터 좌표는 generate 전용
+      bool hasCustomPosition = false;
       if (action != "infill") {
         for (var char in characters) {
           double cx = (char['gridX'] * 0.2) + 0.1;
           double cy = (char['gridY'] * 0.2) + 0.1;
           var center = {"x": cx, "y": cy};
+
+          // 기본 위치(C3 = gridX:2, gridY:2)가 아닌 캐릭터가 있는지 체크
+          if (char['gridX'] != 2 || char['gridY'] != 2) {
+            hasCustomPosition = true;
+          }
 
           if ((char['positive'] as String).isNotEmpty) {
             posCharCaptions.add({
@@ -625,8 +649,8 @@ class NovelAiService {
 
       parameters["v4_prompt"] = {
         "caption": {"base_caption": finalPrompt, "char_captions": posCharCaptions},
-        // PC 프로그램: infill은 항상 use_coords=false
-        "use_coords": action == "infill" ? false : posCharCaptions.isNotEmpty,
+        // 하나라도 기본 위치(C3)가 아닌 캐릭터가 있을 때만 좌표 사용
+        "use_coords": action == "infill" ? false : hasCustomPosition,
         "use_order": true,
       };
       parameters["v4_negative_prompt"] = {
