@@ -34,17 +34,13 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 # 초기 설정 방법
 
-<img width="384" height="196" alt="001" src="https://github.com/user-attachments/assets/f679de79-c409-4b4d-8050-3e7f97ed029a" />
+<img width="379" height="768" alt="image" src="https://github.com/user-attachments/assets/9a2c9a49-97b5-4b2c-b475-1d940c9371a0" />
 
-처음 어플을 켠 뒤 "설정"탭으로 가면 Nai 연동이 필요하다고 나옴
-<br />
-<br />
+처음 어플을 켠 뒤 "설정"탭으로 가서 아래로 내리면 NovelAi Api랑 Gelbooru Api가 필요하다고 나옴
 
-<img width="374" height="371" alt="002" src="https://github.com/user-attachments/assets/3e3c6435-aa43-406a-b95d-06a5582303db" />
+Gelbooru Api는 랜덤 프롬프트 검색기능을 사용안하면 필요 없지만 이 어플을 쓰는 목적이라 가급적 추천함
 
-아래로 내리면 Nai 토큰과 Gelbooru 토큰을 달라고 함
-
-Gelbooru 토큰이 필요한 이유는 아무리 Ai랑 머리싸매도 Gelbooru에서 검색을 하는게 더 검색이 용이하다는 결론이 났기 때문인데
+Danbooru에서만 검색하는거보다 훨씬 효율적인걸로 판명되서 Gelbooru Api를 쓰는건데
 
 다른 앱이나 프로그램에서 쓰는 방식(Danbooru 만으로 api없이 검색)으로도 잘 돌아가는 방법을 찾으면 그땐 없어질 것 같음
 
@@ -55,7 +51,7 @@ Gelbooru 토큰이 필요한 이유는 아무리 Ai랑 머리싸매도 Gelbooru�
 <img width="456" height="349" alt="003" src="https://github.com/user-attachments/assets/c6e21a76-1d09-434c-a743-3cd92cd46f6c" />
 <img width="717" height="541" alt="004" src="https://github.com/user-attachments/assets/fc30cb73-561d-43be-8aea-e60727f1dce8" />
 
-Nai 토큰은 모두가 아는 그 방법을 쓰면 얻을 수 있고
+NovelAi Api는 모두가 아는 그 방법을 쓰면 얻을 수 있고
 <br />
 <br />
 
