@@ -29,6 +29,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 ---
 
+<a id="초기-설정-방법"></a>
 ## ⚙️ 초기 설정 방법
 
 <img width="379" height="768" alt="image" src="https://github.com/user-attachments/assets/9a2c9a49-97b5-4b2c-b475-1d940c9371a0" />
@@ -91,6 +92,7 @@ NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥
 ---
 ---
 
+<a id="프롬프트-탭-설명---1"></a>
 ## 📝 프롬프트 탭 설명 - 1
 
 <img width="379" height="674" alt="image" src="https://github.com/user-attachments/assets/9c47f869-bd85-4da9-b9ea-f53d499d8adf" />
@@ -224,7 +226,9 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 만약 중간에 생성을 멈추고 싶을때는 "생성중(n)..." 으로 변한 버튼을 누르면 뒤에 숫자가 사라지면서 추가 생성을 취소함
 
 ---
+---
 
+<a id="프롬프트-탭-설명---2"></a>
 ## 📝 프롬프트 탭 설명 - 2
 
 <img width="371" height="774" alt="image" src="https://github.com/user-attachments/assets/d92181c8-0077-4e1b-be0e-c235c48a666b" />
@@ -329,6 +333,7 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 ---
 ---
 
+<a id="히스토리-탭"></a>
 ## 🕒 히스토리 탭
 
 <img width="379" height="652" alt="image" src="https://github.com/user-attachments/assets/f8eb760d-b47d-49ca-aad5-6906bd9d730b" />
@@ -380,6 +385,7 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 ---
 ---
 
+<a id="img2img-탭"></a>
 ## 🎨 img2img 탭
 
 <img width="371" height="749" alt="image" src="https://github.com/user-attachments/assets/6c0f8658-408d-4b5f-b44d-36e9337ba644" />
@@ -430,7 +436,9 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 상세 환경 - 프롬프트탭 맨아래 있는 그 상세환경임. 인페인트에서 적용되길래 여기서도 수정 가능하도록 넣어둠
 
 ---
+---
 
+<a id="캐릭터-탭"></a>
 ## 👥 캐릭터 탭
 
 <img width="363" height="787" alt="image" src="https://github.com/user-attachments/assets/644286a7-6514-4ebb-a0ba-3e04c1e5f43b" />
@@ -473,6 +481,7 @@ NAIA에서 있던 방식중 하나로 문법은 다르지만 예시문을 기준
 ---
 ---
 
+<a id="설정-탭"></a>
 ## ⚙️ 설정 탭
 
 <img width="364" height="729" alt="image" src="https://github.com/user-attachments/assets/29f7d5b4-81aa-4048-8c17-a1b784a33b60" />
