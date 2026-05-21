@@ -38,6 +38,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 Gelbooru Api는 랜덤 프롬프트 검색기능을 사용안하면 필요 없지만 이 어플을 쓰는 목적이라 가급적 추천함
 
+<br />
 
 Danbooru에서만 검색하는거보다 훨씬 효율적인걸로 판명되서 Gelbooru Api를 쓰는건데
 
