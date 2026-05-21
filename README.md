@@ -227,27 +227,36 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 
 ## 📝 프롬프트 탭 설명 - 2
 
-<img width="378" height="754" alt="p002" src="https://github.com/user-attachments/assets/101a4d80-5c3a-4fb0-84ce-5f1526d7d498" />
+<img width="371" height="774" alt="image" src="https://github.com/user-attachments/assets/d92181c8-0077-4e1b-be0e-c235c48a666b" />
 
 사실 뭐 보면 다 아는거고 특이한 것만 적자면
 
+---
+
 ### 개별 제거 프롬프트
+
 "다음 프롬프트"를 눌러서 검색된 프롬프트 목록을 불러올때 여기 있는 애들을 자동으로 지워줌
 
+<br />
+
 굳이 문법이 있다면
+
 | 입력 | 결과 |
 | :--- | :--- |
 | `skirt` | 정확히 skirt인 프롬프트를 제거 |
 | `*skirt` | 맨뒤가 skirt로 끝나는 프롬프트를 제거 |
 | `skirt*` | 맨앞이 skirt로 시작하는 프롬프트를 제거 |
-| `*skirt *` | 아무튼 skirt가 포함된 모든 프롬프트를 제거 (띄어쓰기는 필요 없음) |
+| `*skirt*` | 아무튼 skirt가 포함된 모든 프롬프트를 제거 |
 
 쉬움
+
+---
 
 ### 조건부 트리거 
 <details>
 <summary>볼사람만 보셈</summary>
 조건부는 최대한 NAIA랑 비슷하게 했으나(감사합니다) 조금 다름
+  
 줄바꿈이 나올때까지를 전부 인식하고 예문을 몇개 적어서 이해하기 쉽게 하겠음
 
 | 예시 | 설명 |
@@ -260,75 +269,137 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 | `(sleeping):sleeping = sleeping, 2::closed eyes ::, nightgown` | sleeping 이 있다면 sleeping을 "sleeping, 2::closed eyes ::, nightgown" 로 통째로 바꿈 (맨 뒤 쉼표는 알아서 붙음) |
 
 이정도가 있음. 어차피 `(e|q):suffix=nsfw` 같은거 아니면 쓸사람만 쓰는 기능임
+
+복수 조건을 하고 싶으면 (A&(B|C)&D) 같은것도 가능 (A랑 D는 무조건 있어야되고 B랑 C중 최소 하나는 있어야 된다는 조건).
+
 </details>
 
+---
+
 ### 상세 환경
+
 <img width="375" height="431" alt="image" src="https://github.com/user-attachments/assets/c1965fdf-6480-4c3c-9074-8cefc4ab3bf4" />
 
 잘 아는 그거임
 
+---
+
 ### 이미지 상호작용
+
 <img width="378" height="256" alt="image" src="https://github.com/user-attachments/assets/9ab739c4-34ba-489b-b07d-9535f6a7227b" />
 
-화면에 있는 생성된 큰 이미지를 꾹 누르면 이런 옵션이 나옴
+프롬프트탭 맨 위에 생성된 이미지를 꾹 누르면 이런 옵션이 나옴
+
 3가지 다 뭐 딱보면 아는 항목일것이고 3번째껄 누르면
+
+<br />
 
 <img width="263" height="444" alt="image" src="https://github.com/user-attachments/assets/397d42d5-cc6b-462f-aa8f-14208af340ad" />
 
 이렇게 나옴 이것도 그냥 딱 알만한 기능
 
 ---
+---
 
 ## 🕒 히스토리 탭
 
-<img width="379" height="664" alt="image" src="https://github.com/user-attachments/assets/4a2cbd14-ed5b-4c47-b4cc-2f7448c5e27f" />
+<img width="379" height="652" alt="image" src="https://github.com/user-attachments/assets/f8eb760d-b47d-49ca-aad5-6906bd9d730b" />
 
-그냥 보면 알만한 것들 뿐이지만 (1)에 굳이 화살표가 있는 이유는 바로 아래 (2)섬네일 미리보기가 만들어지기 전에 옆 이미지를 보기위해 만들어진거뿐임
-참고로 (2)섬네일을 꾹 누르면 지우기가 뜹니다.
+기본적으로 '리스트 모드'가 표시되고 가장 최근에 생성, 작업된 이미지를 30개 까지 보여줌
+
+그림 옆에 화살표는 그냥 좌/우 옆 이미지로 넘어가는 버튼인데 설정에서 끄기 가능
+
+바로 아래 섬네일을 누르면 바로 해당 이미지를 볼 수 있고 저 섬네일을 꾹 누르면 히스토리에서 삭제 가능함.
+
+위에 그리드를 누르면 화면이 바뀌는데
+
+<br />
+
+<img width="378" height="254" alt="image" src="https://github.com/user-attachments/assets/f25c49ff-8169-4ffd-a27e-bbc7987d2688" />
+
+이런식으로 변하고 각 이미지 우측위 별표를 누르면 북마크 기능, 휴지통을 누르면 전체삭제를 할지 물어보는 버튼이 나옴.
+
+여기서 보이는 불러오기 버튼은 위에 리스트 모드에 불러오기랑 같은 기능이고 아래에서 간단히 설명함
+
+여기서만 가능한건 이미지를 꾹 누르면 일반적인 스마트폰 갤러리 앱 처럼 삭제가 가능함.
+
+<br />
+
+<img width="376" height="255" alt="image" src="https://github.com/user-attachments/assets/39f678e6-e1ba-410f-a89b-ca4545988955" />
+
+바로 이렇게.
+
+---
 
 ### 프롬프트 확인
+
 ![22](https://github.com/user-attachments/assets/b9ed44bb-8939-4e9e-8acc-a4387913dba7)
 
 을 누르면 4가지 항목이 나오고 각각 이미지가 가진 프롬프트를 보여줌
+
 이게 다임
 
+---
+
 ### 이미지 불러오기
+
 스마트폰의 갤러리를 열어서 이미지를 골라 히스토리탭 목록 끝에 추가함
+
 생성한 이미지랑 똑같이 꾹 눌러서 상호작용도 가능하고 프롬프트 확인으로 뭐가 들었나 볼 수도 있음
 
+그리드 모드에 있는 불러오기도 동일하게 히스토리에 추가함
+
+---
 ---
 
 ## 🎨 img2img 탭
 
-<img width="380" height="630" alt="image" src="https://github.com/user-attachments/assets/cbb45243-d957-4ccc-a533-2481e6de83f1" />
+<img width="371" height="749" alt="image" src="https://github.com/user-attachments/assets/6c0f8658-408d-4b5f-b44d-36e9337ba644" />
 
 이미지를 꾹 눌러서 나오는 창 중에 '이미지 수정하기(i2i)' 를 누르면 자동으로 이 i2i탭으로 오면서 이미지가 놓여짐
 
-맨 위 왼쪽에 "인페인트"을 누르면 마스킹 씌운 영역이 프롬프트따라 우리가 아는 그 inpaint기능을 실행하고
-맨 위 오른쪽에 "업스케일"을 누르면 지금 i2i탭에 올라온 이미지를 4배 확대해서 저장함
-둘 다 실행후에 자동으로 "히스토리 탭"으로 가지면서 올라감. 단, 업스케일은 자동으로 폴더에 저장되게 해뒀음. anals 쓴게 아까워서
+맨위에 3가지 모드가 있고 각각 오른쪽 위에 커다란 버튼으로 적용이 가능함.
+
+각 모드를 간단히 설명하면
+
+<br />
+
+"인페인트"를 누르면 마스킹 씌운 영역에 우리가 아는 그 inpaint기능을 실행함 (바로 윗 스샷)
 
 아래 버튼은 순서대로
-* 브러시(누르면 크기 변경 가능)
-* 브러시 색 바꾸기
-* 지우개(누르면 크기 변경 가능, 마스크 전체 지우기 있음)
-* 돋보기(+일때 누르면 확대, 돋보기를 한번 더 터치하면 -로)
-* 화면이동(돋보기로 확대됐을때 사용)
+* 브러시 (2번 누르면 브러시 크기 변경 및 브러시 색상 변경)
+* 지우개 (2번 누르면 지우개 크기 변경 및 전체 지우기)
+* 돋보기 (+일때 누르면 확대, 돋보기를 한번 더 터치하면 -로 변경)
+* 화면이동 (돋보기로 확대됐을때 사용)
 * inpaint strength 수치 조절
 
-전부 인페인트를 하려고 만든 버튼이고 그 아래로 가면
+<br />
 
-<img width="379" height="506" alt="image" src="https://github.com/user-attachments/assets/26a4ae26-9890-4b41-ae44-fd92b957074c" />
+<img width="372" height="702" alt="image" src="https://github.com/user-attachments/assets/52e8f842-7148-498e-80a8-f6b2d6af0120" />
 
-4개는 딱보면 알거고 상세환경도 보면 알꺼고 "프롬값 가져오기"를 하면 지금 "프롬프트 탭"에 있는 4가지 프롬프트를 "i2i탭"에 적용함
+"모자이크"를 누르면 마스킹 씌운 영역에 임의의 모자이크를 적용시킴
 
-아 여기서 **중요한 포인트**가 있는데
+아래 버튼중에 인페인트랑 겹치는걸 제외하고 설명하면
+* 강도 (모자이크를 얼마나 강하게 주는지 정도를 정함)
+* 픽셀화 / 블러 / 검정칠 3가지를 변경하는 버튼
+* 미리보기 버튼 (잠깐 로딩 후 어떻게 모자이크가 적용되는지 미리 보여줌)
 
-<img width="380" height="313" alt="image" src="https://github.com/user-attachments/assets/3709a0e4-1110-4961-b4a6-1747b5605b63" />
+<br />
 
-빨강색 영역을 터치하면 드래그로 스크롤이 안되고 노란색 영역을 한번 터치해야 드래그로 스크롤이 됨
-이걸 안하니까 마스크 그리는 중간에 자꾸 스크롤되길래 ai랑 둘이 한참 뭐가좋을지 토론하다가 결국 이렇게 만들어졌음. 
-살짝 불편한감은 있는데 양해바랍니다 ㅎ
+"업스케일"은 개별적인 버튼은 없지만 지금 i2i탭에 올라온 이미지를 4배 확대해서 저장함
+
+3가지 모두 실행후에 자동으로 "히스토리 탭"으로 가지면서 올라감. 단, 업스케일은 자동으로 폴더에 저장되게 해뒀음. anals 쓴게 아까워서
+
+그리고 아래 프롬프트 보기 버튼을 누르면
+
+<br />
+
+<img width="377" height="554" alt="image" src="https://github.com/user-attachments/assets/e464933d-3cbe-436c-b678-4d24c1282249" />
+
+잘 아는 4가지 프롬프트 창이 나오고 2가지 버튼이 있음
+
+프롬값 가져오기 - 현재 프롬프트 탭에 있는 4가지 프롬프트를 그대로 복사해옴
+상세 환경 - 프롬프트탭 맨아래 있는 그 상세환경임. 인페인트에서 적용되길래 여기서도 수정 가능하도록 넣어둠
 
 ---
 
