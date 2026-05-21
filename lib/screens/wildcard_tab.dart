@@ -51,7 +51,13 @@ class _WildcardTabState extends State<WildcardTab> {
     int lastNewline = beforeCursor.lastIndexOf('\n');
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
-    int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
+    int lastParen = max(
+      beforeCursor.lastIndexOf(')'),
+      max(
+        beforeCursor.lastIndexOf('('),
+        max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
+      ),
+    );
     int lastDelimiter = max(lastNewline, max(lastComma, max(lastColon, lastParen)));
 
     String currentWord = lastDelimiter == -1

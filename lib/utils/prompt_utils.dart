@@ -12,7 +12,10 @@ class PromptUtils {
     int lastColon = beforeCursor.lastIndexOf(':');
     int lastNewline = beforeCursor.lastIndexOf('\n');
     int lastCloseParen = beforeCursor.lastIndexOf(')');
-    int lastOpenParen = beforeCursor.lastIndexOf('(');
+    int lastOpenParen = max(
+      beforeCursor.lastIndexOf('('),
+      max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
+    );
     int lastParen = max(lastCloseParen, lastOpenParen);
     int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
@@ -38,6 +41,12 @@ class PromptUtils {
     } else if (delimiterStr == '(') {
       // 조건부 트리거 등: ( 뒤에 태그만 넣고 쉼표 안 붙임
       return "${beforeCursor.substring(0, lastDelimiter)}($tag";
+    } else if (delimiterStr == '{') {
+      // {A|B} 구문: { 뒤에 태그만 넣고 쉼표 안 붙임
+      return "${beforeCursor.substring(0, lastDelimiter)}{$tag";
+    } else if (delimiterStr == '|') {
+      // {A|B} 구문의 | 뒤: 태그만 넣고 쉼표 안 붙임
+      return "${beforeCursor.substring(0, lastDelimiter)}|$tag";
     } else if (delimiterStr == ')') {
       return "${beforeCursor.substring(0, lastDelimiter)}) $tag, ";
     } else {

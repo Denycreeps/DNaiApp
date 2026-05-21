@@ -173,17 +173,15 @@ class _NovelAiAppState extends State<NovelAiApp>
       return content;
     }
 
-    bool shouldShowImage = false;
-    if (tabIndex == 0) {
-      shouldShowImage = true;
-    } else {
-      shouldShowImage = state.showImageInOtherTabs;
+    // 캐릭터/와일드카드 탭은 이미지 미표시
+    if (tabIndex == 3 || tabIndex == 4) {
+      return SingleChildScrollView(child: Column(children: [content, const SizedBox(height: 80)]));
     }
 
     return SingleChildScrollView(
       child: Column(
         children: [
-          if (shouldShowImage)
+          if (tabIndex == 0)
             Container(
               height: 480,
               width: double.infinity,
@@ -354,8 +352,8 @@ class _NovelAiAppState extends State<NovelAiApp>
           children: [
             PageView.builder(
               controller: _pageController,
-              // i2i 탭에서는 좌우 스크롤 항상 차단
-              physics: (currentOrigIdx == 2)
+              // i2i 탭이거나 좌우 스와이프 비활성화 시 차단
+              physics: (currentOrigIdx == 2 || !state.horizontalSwipeEnabled)
                   ? const NeverScrollableScrollPhysics()
                   : const AlwaysScrollableScrollPhysics(),
               onPageChanged: (index) {

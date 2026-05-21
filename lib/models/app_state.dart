@@ -6,7 +6,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:intl/intl.dart';
 import 'package:media_scanner/media_scanner.dart';
 import 'package:flutter_background/flutter_background.dart';
@@ -425,7 +424,8 @@ class NaiPreset {
   String suffix;
   Map<String, dynamic>? settings; // 상세 설정 (스텝, 시드, cfg 등)
   List<Map<String, dynamic>>? characters; // 캐릭터 리스트
-  Set<String> savedFields; // 어떤 항목이 저장되었는지 추적
+  Set<String> savedFields;
+  String? previewImage; // base64 썸네일 (100px JPEG)
 
   NaiPreset({
     required this.name,
@@ -435,6 +435,7 @@ class NaiPreset {
     this.suffix = '',
     this.settings,
     this.characters,
+    this.previewImage,
     Set<String>? savedFields,
   }) : savedFields = savedFields ?? {'positive', 'negative', 'prefix', 'suffix'};
 
@@ -447,6 +448,7 @@ class NaiPreset {
     'settings': settings,
     'characters': characters,
     'savedFields': savedFields.toList(),
+    if (previewImage != null) 'previewImage': previewImage,
   };
 
   factory NaiPreset.fromJson(Map<String, dynamic> json) => NaiPreset(
@@ -457,6 +459,7 @@ class NaiPreset {
     suffix: json['suffix'] ?? '',
     settings: json['settings'] as Map<String, dynamic>?,
     characters: (json['characters'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
+    previewImage: json['previewImage'] as String?,
     savedFields: json['savedFields'] != null
         ? (json['savedFields'] as List).map((e) => e.toString()).toSet()
         : {'positive', 'negative', 'prefix', 'suffix'},
@@ -675,7 +678,14 @@ class AppState extends ChangeNotifier {
   bool isSeedLocked = false;
   double infillStrength = 0.7;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
-  bool showImageInOtherTabs = false;
+  bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
+
+  // 배치 생성
+  int batchCount = 1; // 1, 2, 3, 4, 0(무한)
+  int batchRemaining = 0; // 남은 생성 수
+  bool isBatchMode = false;
+  double batchDelay = 0.5; // 연속 생성 딜레이 (초)
+  bool showGenerationMessage = true; // 이미지 생성 시 하단 메세지
 
   // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
   bool historyTabEnabled = true;
@@ -785,9 +795,22 @@ class AppState extends ChangeNotifier {
       currentVersion = info.version;
     } catch (_) {}
 
-    await [Permission.storage, Permission.manageExternalStorage].request();
+    // 권한: 파일 접근은 앱 전용 디렉토리 사용 (권한 불필요)
+    // 커스텀 경로 저장 시 실패하면 앱 전용 폴더로 자동 대체
     await _loadTagsFromJson();
     final prefs = await SharedPreferences.getInstance();
+
+    // SharedPreferences가 비어있으면 백업에서 복구 시도
+    final hasSettings = prefs.getString('api_token') != null || prefs.getString('positive') != null;
+    if (!hasSettings) {
+      final recovered = await tryRecoverFromBackup();
+      if (recovered) {
+        debugPrint("백업에서 설정 복구 완료");
+        notifyListeners();
+        return;
+      }
+    }
+
     apiToken = prefs.getString('api_token') ?? "";
     apiTokenController.text = apiToken;
     isApiConnected = apiToken.isNotEmpty;
@@ -833,7 +856,9 @@ class AppState extends ChangeNotifier {
     isSeedLocked = prefs.getBool('seedLocked') ?? false;
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
-    showImageInOtherTabs = prefs.getBool('showImageInOtherTabs') ?? false;
+    horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
+    batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
+    showGenerationMessage = prefs.getBool('showGenerationMessage') ?? true;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
@@ -910,33 +935,15 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 설정 내보내기/가져오기
   // ============================================================================
-  Map<String, dynamic> exportSettings() {
-    // 히스토리 썸네일 생성 (전부 200px JPEG → base64)
+  Future<Map<String, dynamic>> exportSettings({bool includeHistory = true}) async {
+    // 히스토리 썸네일 생성 → 백그라운드 isolate로 처리
     List<Map<String, dynamic>> historyExport = [];
-    for (int i = 0; i < historyImages.length; i++) {
-      String base64Thumb;
-      if (isHistoryThumbnail(i)) {
-        // 이미 썸네일이면 그대로
-        base64Thumb = base64Encode(historyImages[i]);
-      } else {
-        // 원본 → 썸네일 변환
-        try {
-          final decoded = img.decodeImage(historyImages[i]);
-          if (decoded != null) {
-            final thumb = img.copyResize(decoded, width: 200);
-            base64Thumb = base64Encode(Uint8List.fromList(img.encodeJpg(thumb, quality: 70)));
-          } else {
-            base64Thumb = base64Encode(historyImages[i]);
-          }
-        } catch (_) {
-          base64Thumb = base64Encode(historyImages[i]);
-        }
-      }
-      historyExport.add({
-        'image': base64Thumb,
-        'metadata': i < historyMetadata.length ? historyMetadata[i]?.toJson() : null,
-        'favorite': i < historyFavorites.length ? historyFavorites[i] : false,
-        'filePath': i < historyFilePaths.length ? historyFilePaths[i] : null,
+    if (includeHistory && historyImages.isNotEmpty) {
+      historyExport = await compute(_exportHistoryIsolate, {
+        'images': historyImages,
+        'metadata': historyMetadata.map((m) => m?.toJson()).toList(),
+        'favorites': historyFavorites,
+        'filePaths': historyFilePaths,
       });
     }
 
@@ -981,17 +988,58 @@ class AppState extends ChangeNotifier {
       'seedLocked': isSeedLocked,
       'infillStrength': infillStrength,
       'variancePlus': isVariancePlus,
-      'showImageInOtherTabs': showImageInOtherTabs,
+      'horizontalSwipeEnabled': horizontalSwipeEnabled,
+      'batchDelay': batchDelay,
+      'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
       'i2iTabEnabled': i2iTabEnabled,
       'characterTabEnabled': characterTabEnabled,
       'wildcardTabEnabled': wildcardTabEnabled,
       'useGelbooruApiKey': useGelbooruApiKey,
+      'gelbooru_api_input': gelbooruApiController.text,
+      'resolution': selectedResolution,
+      'autoCheckUpdate': autoCheckUpdate,
+      'collapsedSections': collapsedSections.toList(),
       'characters': characters.map((c) => c.toJson()).toList(),
       'wildcards': wildcards.map((w) => w.toJson()).toList(),
       'presets': presets.map((p) => p.toJson()).toList(),
-      'history': historyExport,
+      if (includeHistory) 'history': historyExport,
     };
+  }
+
+  static List<Map<String, dynamic>> _exportHistoryIsolate(Map<String, dynamic> params) {
+    final images = params['images'] as List<Uint8List>;
+    final metadata = params['metadata'] as List;
+    final favorites = params['favorites'] as List<bool>;
+    final filePaths = params['filePaths'] as List<String?>;
+
+    List<Map<String, dynamic>> result = [];
+    for (int i = 0; i < images.length; i++) {
+      String base64Thumb;
+      // 50KB 이하 = 이미 썸네일
+      if (images[i].length < 50000) {
+        base64Thumb = base64Encode(images[i]);
+      } else {
+        try {
+          final decoded = img.decodeImage(images[i]);
+          if (decoded != null) {
+            final thumb = img.copyResize(decoded, width: 200);
+            base64Thumb = base64Encode(Uint8List.fromList(img.encodeJpg(thumb, quality: 70)));
+          } else {
+            base64Thumb = base64Encode(images[i]);
+          }
+        } catch (_) {
+          base64Thumb = base64Encode(images[i]);
+        }
+      }
+      result.add({
+        'image': base64Thumb,
+        'metadata': i < metadata.length ? metadata[i] : null,
+        'favorite': i < favorites.length ? favorites[i] : false,
+        'filePath': i < filePaths.length ? filePaths[i] : null,
+      });
+    }
+    return result;
   }
 
   void importSettings(Map<String, dynamic> data) {
@@ -1042,12 +1090,25 @@ class AppState extends ChangeNotifier {
     isSeedLocked = data['seedLocked'] ?? false;
     infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
-    showImageInOtherTabs = data['showImageInOtherTabs'] ?? false;
+    horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
+    batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
+    showGenerationMessage = data['showGenerationMessage'] ?? true;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     characterTabEnabled = data['characterTabEnabled'] ?? true;
     wildcardTabEnabled = data['wildcardTabEnabled'] ?? true;
+    historyTabEnabled = data['historyTabEnabled'] ?? true;
+    i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     useGelbooruApiKey = data['useGelbooruApiKey'] ?? true;
+    if (data['gelbooru_api_input'] != null) {
+      gelbooruApiController.text = data['gelbooru_api_input'];
+      parseGelbooruApi();
+    }
+    if (data['resolution'] != null) selectedResolution = data['resolution'];
+    if (data['autoCheckUpdate'] != null) autoCheckUpdate = data['autoCheckUpdate'];
+    if (data['collapsedSections'] != null) {
+      collapsedSections = Set<String>.from(data['collapsedSections']);
+    }
 
     if (data['characters'] != null) {
       characters = (data['characters'] as List).map((e) => NaiCharacter.fromJson(e)).toList();
@@ -1095,64 +1156,104 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> saveAllSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('api_token', apiTokenController.text);
-    await prefs.setString('custom_save_path', customSavePathController.text);
-    await prefs.setString('custom_file_name', customFileNameController.text);
-    await prefs.setString('custom_width', customWidthController.text);
-    await prefs.setString('custom_height', customHeightController.text);
-    await prefs.setString('conditional_rules', conditionalRuleController.text);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('api_token', apiTokenController.text);
+      await prefs.setString('custom_save_path', customSavePathController.text);
+      await prefs.setString('custom_file_name', customFileNameController.text);
+      await prefs.setString('custom_width', customWidthController.text);
+      await prefs.setString('custom_height', customHeightController.text);
+      await prefs.setString('conditional_rules', conditionalRuleController.text);
 
-    await prefs.setString('positive', positiveController.text);
-    await prefs.setString('negative', negativeController.text);
-    await prefs.setString('prefix', prefixController.text);
-    await prefs.setString('suffix', suffixController.text);
+      await prefs.setString('positive', positiveController.text);
+      await prefs.setString('negative', negativeController.text);
+      await prefs.setString('prefix', prefixController.text);
+      await prefs.setString('suffix', suffixController.text);
 
-    await prefs.setString('inpaint_pos', inpaintPositiveController.text);
-    await prefs.setString('inpaint_neg', inpaintNegativeController.text);
-    await prefs.setString('inpaint_prefix', inpaintPrefixController.text);
-    await prefs.setString('inpaint_suffix', inpaintSuffixController.text);
+      await prefs.setString('inpaint_pos', inpaintPositiveController.text);
+      await prefs.setString('inpaint_neg', inpaintNegativeController.text);
+      await prefs.setString('inpaint_prefix', inpaintPrefixController.text);
+      await prefs.setString('inpaint_suffix', inpaintSuffixController.text);
 
-    await prefs.setString('steps', stepsController.text);
-    await prefs.setString('cfgScale', cfgScaleController.text);
-    await prefs.setString('cfgRescale', cfgRescaleController.text);
-    await prefs.setString('seed', seedController.text);
-    await prefs.setString('gelbooru_inc', gelbooruIncludeController.text);
-    await prefs.setString('gelbooru_exc', gelbooruExcludeController.text);
-    await prefs.setString('gelbooru_api_input', gelbooruApiController.text);
-    await prefs.setBool('rating_e', ratingE);
-    await prefs.setBool('rating_q', ratingQ);
-    await prefs.setBool('rating_s', ratingS);
-    await prefs.setBool('rating_g', ratingG);
-    await prefs.setBool('remove_char_traits', removeCharacteristics);
-    await prefs.setBool('remove_clothes', removeClothes);
-    await prefs.setBool('remove_colors', removeColors);
-    await prefs.setString('custom_remove', customRemoveController.text);
-    await prefs.setBool('auto_save', isAutoSave);
-    await prefs.setBool('random_lock', isRandomLocked);
-    await prefs.setBool('furry', isFurryMode);
-    await prefs.setBool('seedLocked', isSeedLocked);
-    await prefs.setDouble('infillStrength', infillStrength);
-    await prefs.setBool('variancePlus', isVariancePlus);
-    await prefs.setBool('showImageInOtherTabs', showImageInOtherTabs);
-    await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
-    await prefs.setBool('historyTabEnabled', historyTabEnabled);
-    await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
-    await prefs.setBool('characterTabEnabled', characterTabEnabled);
-    await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
-    await prefs.setStringList('promptSectionOrder', promptSectionOrder);
-    await prefs.setStringList('collapsedSections', collapsedSections.toList());
-    await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
-    await prefs.setString('resolutionMode', resolutionMode);
-    await prefs.setString('model', selectedModel);
-    await prefs.setString('sampler', selectedSampler);
-    await prefs.setString('scheduler', selectedScheduler);
-    await prefs.setString('resolution', selectedResolution);
-    await prefs.setString('characters', jsonEncode(characters.map((e) => e.toJson()).toList()));
-    await prefs.setString('wildcards', jsonEncode(wildcards.map((e) => e.toJson()).toList()));
-    await prefs.setString('presets', jsonEncode(presets.map((e) => e.toJson()).toList()));
-    await prefs.setStringList('gelbooruPrompts', gelbooruPrompts);
-    await prefs.setInt('currentPromptIndex', currentPromptIndex);
+      await prefs.setString('steps', stepsController.text);
+      await prefs.setString('cfgScale', cfgScaleController.text);
+      await prefs.setString('cfgRescale', cfgRescaleController.text);
+      await prefs.setString('seed', seedController.text);
+      await prefs.setString('gelbooru_inc', gelbooruIncludeController.text);
+      await prefs.setString('gelbooru_exc', gelbooruExcludeController.text);
+      await prefs.setString('gelbooru_api_input', gelbooruApiController.text);
+      await prefs.setBool('rating_e', ratingE);
+      await prefs.setBool('rating_q', ratingQ);
+      await prefs.setBool('rating_s', ratingS);
+      await prefs.setBool('rating_g', ratingG);
+      await prefs.setBool('remove_char_traits', removeCharacteristics);
+      await prefs.setBool('remove_clothes', removeClothes);
+      await prefs.setBool('remove_colors', removeColors);
+      await prefs.setString('custom_remove', customRemoveController.text);
+      await prefs.setBool('auto_save', isAutoSave);
+      await prefs.setBool('random_lock', isRandomLocked);
+      await prefs.setBool('furry', isFurryMode);
+      await prefs.setBool('seedLocked', isSeedLocked);
+      await prefs.setDouble('infillStrength', infillStrength);
+      await prefs.setBool('variancePlus', isVariancePlus);
+      await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
+      await prefs.setDouble('batchDelay', batchDelay);
+      await prefs.setBool('showGenerationMessage', showGenerationMessage);
+      await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
+      await prefs.setBool('historyTabEnabled', historyTabEnabled);
+      await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
+      await prefs.setBool('characterTabEnabled', characterTabEnabled);
+      await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
+      await prefs.setStringList('promptSectionOrder', promptSectionOrder);
+      await prefs.setStringList('collapsedSections', collapsedSections.toList());
+      await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
+      await prefs.setString('resolutionMode', resolutionMode);
+      await prefs.setString('model', selectedModel);
+      await prefs.setString('sampler', selectedSampler);
+      await prefs.setString('scheduler', selectedScheduler);
+      await prefs.setString('resolution', selectedResolution);
+      await prefs.setString('characters', jsonEncode(characters.map((e) => e.toJson()).toList()));
+      await prefs.setString('wildcards', jsonEncode(wildcards.map((e) => e.toJson()).toList()));
+      await prefs.setString('presets', jsonEncode(presets.map((e) => e.toJson()).toList()));
+      await prefs.setStringList('gelbooruPrompts', gelbooruPrompts);
+      await prefs.setInt('currentPromptIndex', currentPromptIndex);
+
+      // 설정 백업 파일 저장 (SharedPreferences 손실 방지)
+      await _saveSettingsBackup();
+    } catch (e) {
+      debugPrint("설정 저장 실패: $e");
+    }
+  }
+
+  // ============================================================================
+  // 설정 백업/복구 (SharedPreferences 손실 방지)
+  // ============================================================================
+  Future<void> _saveSettingsBackup() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/settings_backup.json');
+      // exportSettings에서 히스토리 제외 (용량 절약 + 빠른 저장)
+      final data = await exportSettings(includeHistory: false);
+      data['backup_time'] = DateTime.now().toIso8601String();
+      await file.writeAsString(jsonEncode(data));
+    } catch (_) {}
+  }
+
+  Future<bool> tryRecoverFromBackup() async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/settings_backup.json');
+      if (!file.existsSync()) return false;
+
+      final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+      // importSettings로 전부 복원 (히스토리는 별도 로컬 저장소에서 복구)
+      importSettings(data);
+      debugPrint("설정 백업에서 복구 성공 (백업 시간: ${data['backup_time'] ?? '알 수 없음'})");
+      return true;
+    } catch (e) {
+      debugPrint("백업 복구 실패: $e");
+      return false;
+    }
   }
 
   void refreshUI() => notifyListeners();
@@ -1296,10 +1397,6 @@ class AppState extends ChangeNotifier {
       );
       isGelbooruLoading = false;
 
-      if (!context.mounted) {
-        return;
-      }
-
       if (!context.mounted) return;
 
       if (results.isNotEmpty) {
@@ -1315,24 +1412,97 @@ class AppState extends ChangeNotifier {
           ),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("조건에 맞는 결과가 없습니다.")),
+        _showSearchErrorDialog(
+          context,
+          "조건에 맞는 결과가 없습니다.",
+          "포함 태그: ${gelbooruIncludeController.text}\n\n"
+              "가능한 원인:\n"
+              "• 태그 조합에 맞는 이미지가 없음\n"
+              "• 레이팅 필터가 너무 제한적\n"
+              "• 태그 이름 오타 확인",
         );
       }
     } catch (e) {
       isGelbooruLoading = false;
-      if (!context.mounted) {
-        return;
+      if (!context.mounted) return;
+
+      String errorMsg = e.toString().replaceFirst('Exception: ', '');
+      String title;
+      String detail;
+
+      if (errorMsg.contains('시간 초과')) {
+        title = "서버 응답 없음";
+        detail =
+            "Gelbooru 서버가 응답하지 않습니다.\n\n$errorMsg\n\n"
+            "가능한 원인:\n"
+            "• Gelbooru 서버 점검/장애\n"
+            "• 인터넷 연결 불안정\n"
+            "• 프록시 서버 문제";
+      } else if (errorMsg.contains('서버 오류') || errorMsg.contains('서버 응답 코드')) {
+        title = "서버 오류";
+        detail =
+            "Gelbooru 서버에서 오류가 발생했습니다.\n\n$errorMsg\n\n"
+            "가능한 원인:\n"
+            "• Gelbooru 서버 일시적 장애\n"
+            "• API 키 오류\n"
+            "• 요청 횟수 초과";
+      } else if (errorMsg.contains('연결 실패') || errorMsg.contains('SocketException')) {
+        title = "연결 실패";
+        detail =
+            "서버에 연결할 수 없습니다.\n\n$errorMsg\n\n"
+            "가능한 원인:\n"
+            "• 인터넷 연결 끊김\n"
+            "• 방화벽/VPN 차단\n"
+            "• 프록시 서버 다운";
+      } else {
+        title = "검색 실패";
+        detail = "알 수 없는 오류가 발생했습니다.\n\n$errorMsg";
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("검색에 실패했습니다. 다시 시도해주세요."),
-          backgroundColor: Colors.redAccent,
-        ),
-      );
+
+      _showSearchErrorDialog(context, title, detail);
     }
     notifyListeners();
+  }
+
+  void _showSearchErrorDialog(BuildContext context, String title, String detail) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.error_outline, color: Colors.redAccent, size: 24),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Text(
+            detail,
+            style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text(
+              "확인",
+              style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String _sortNovelAIPrompt(String prompt) {
@@ -1586,6 +1756,35 @@ class AppState extends ChangeNotifier {
     return result;
   }
 
+  // ============================================================================
+  // 조건부 트리거: 재귀 하강 파서 (중첩 괄호 지원)
+  // 문법: expr = or_expr
+  //        or_expr = and_expr ('|' and_expr)*
+  //        and_expr = atom ('&' atom)*
+  //        atom = '!' atom | '(' or_expr ')' | pattern
+  // 예시: A&(B|C)&D = A 그리고 (B 또는 C) 그리고 D
+  // ============================================================================
+  bool _evaluateCondition(String condStr, List<String> tags, String rating) {
+    final parser = _ConditionParser(condStr, tags, rating, this);
+    return parser.parseOrExpr();
+  }
+
+  bool _matchAtom(String pattern, List<String> tags, String rating) {
+    bool negate = pattern.startsWith('!');
+    if (negate) {
+      pattern = pattern.substring(1);
+    }
+
+    bool matched;
+    if (pattern == 'g' || pattern == 's' || pattern == 'q' || pattern == 'e') {
+      matched = (rating.toLowerCase() == pattern.toLowerCase());
+    } else {
+      matched = tags.any((tag) => _isMatch(tag, pattern));
+    }
+
+    return negate ? !matched : matched;
+  }
+
   bool _isMatch(String tag, String pattern) {
     if (pattern.startsWith('*') && pattern.endsWith('*') && pattern.length > 2) {
       return tag.contains(pattern.substring(1, pattern.length - 1));
@@ -1613,7 +1812,24 @@ class AppState extends ChangeNotifier {
       if (!ruleStr.startsWith('(')) {
         continue;
       }
-      int sepIdx = ruleStr.indexOf('):');
+
+      // 매칭되는 닫는 괄호 찾기 (중첩 괄호 지원)
+      int depth = 0;
+      int sepIdx = -1;
+      for (int i = 0; i < ruleStr.length; i++) {
+        if (ruleStr[i] == '(') {
+          depth++;
+        } else if (ruleStr[i] == ')') {
+          depth--;
+          if (depth == 0) {
+            // '):' 패턴 확인
+            if (i + 1 < ruleStr.length && ruleStr[i + 1] == ':') {
+              sepIdx = i;
+            }
+            break;
+          }
+        }
+      }
       if (sepIdx == -1) {
         continue;
       }
@@ -1621,43 +1837,8 @@ class AppState extends ChangeNotifier {
       String condStr = ruleStr.substring(1, sepIdx);
       String actionStr = ruleStr.substring(sepIdx + 2);
 
-      List<String> orGroups = condStr.split('|');
-      bool conditionMet = false;
-
-      for (String group in orGroups) {
-        List<String> andConditions = group.split('&');
-        bool groupMet = true;
-
-        for (String c in andConditions) {
-          String trimmedC = c.trim();
-          if (trimmedC.isEmpty) {
-            continue;
-          }
-
-          bool negate = trimmedC.startsWith('!');
-          String pattern = negate ? trimmedC.substring(1) : trimmedC;
-          bool matched = false;
-
-          if (pattern == 'g' || pattern == 's' || pattern == 'q' || pattern == 'e') {
-            matched = (rating.toLowerCase() == pattern.toLowerCase());
-          } else {
-            matched = tags.any((tag) => _isMatch(tag, pattern));
-          }
-
-          if (negate && matched) {
-            groupMet = false;
-            break;
-          }
-          if (!negate && !matched) {
-            groupMet = false;
-            break;
-          }
-        }
-        if (groupMet) {
-          conditionMet = true;
-          break;
-        }
-      }
+      // 재귀 하강 파서로 조건 평가
+      bool conditionMet = _evaluateCondition(condStr, tags, rating);
 
       if (conditionMet) {
         if (actionStr.startsWith('prefix=')) {
@@ -1853,6 +2034,46 @@ class AppState extends ChangeNotifier {
       isLoading = false;
       notifyListeners();
     }
+  }
+
+  // ============================================================================
+  // 배치 생성 (연속 생성)
+  // ============================================================================
+  void cancelBatch() {
+    batchRemaining = 0;
+    isBatchMode = false;
+    notifyListeners();
+  }
+
+  Future<void> handleBatchGenerate(BuildContext context, VoidCallback onScrollToHistoryEnd) async {
+    if (isLoading || isInpaintLoading || isUpscaleLoading) return;
+
+    final count = batchCount; // 0 = 무한
+    batchRemaining = count == 0 ? 999 : count;
+    isBatchMode = count > 1 || count == 0;
+    notifyListeners();
+
+    while (batchRemaining > 0) {
+      if (!context.mounted) break;
+
+      await handleGenerate(context, onScrollToHistoryEnd);
+
+      // 생성 중 취소 확인
+      if (!isBatchMode && batchCount != 0) break;
+      if (batchRemaining <= 0) break;
+
+      if (count != 0) {
+        batchRemaining--;
+      }
+      notifyListeners();
+
+      // 다음 생성 전 잠깐 대기 (서버 부하 방지)
+      await Future.delayed(Duration(milliseconds: (batchDelay * 1000).round()));
+    }
+
+    batchRemaining = 0;
+    isBatchMode = false;
+    notifyListeners();
   }
 
   // [추가] 엄격한 뮤텍스 잠금을 위한 변수 선언
@@ -2262,6 +2483,68 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 히스토리 일괄 삭제
   // ============================================================================
+  bool isHistoryLoading = true; // 히스토리 로드 중 플래그
+
+  // ============================================================================
+  // 히스토리 메모리 관리
+  // ============================================================================
+  static const int _memoryKeepCount = 30; // 최근 N개만 원본 유지
+
+  /// 오래된 이미지를 썸네일로 변환해서 메모리 절약 (백그라운드)
+  Future<void> _trimHistoryMemory() async {
+    if (historyImages.length <= _memoryKeepCount) return;
+
+    final cutoff = historyImages.length - _memoryKeepCount;
+    // 변환할 인덱스와 데이터 수집
+    List<int> toConvert = [];
+    List<Uint8List> toConvertData = [];
+    for (int i = 0; i < cutoff; i++) {
+      if (historyImages[i].length < 50000) continue;
+      toConvert.add(i);
+      toConvertData.add(historyImages[i]);
+    }
+    if (toConvertData.isEmpty) return;
+
+    // 백그라운드 isolate에서 변환
+    final thumbnails = await compute(_trimHistoryIsolate, toConvertData);
+    for (int j = 0; j < toConvert.length; j++) {
+      historyImages[toConvert[j]] = thumbnails[j];
+    }
+  }
+
+  static List<Uint8List> _trimHistoryIsolate(List<Uint8List> images) {
+    List<Uint8List> results = [];
+    for (final bytes in images) {
+      try {
+        final decoded = img.decodeImage(bytes);
+        if (decoded != null) {
+          final thumb = img.copyResize(decoded, width: 200);
+          results.add(Uint8List.fromList(img.encodeJpg(thumb, quality: 70)));
+          continue;
+        }
+      } catch (_) {}
+      results.add(bytes);
+    }
+    return results;
+  }
+
+  /// 특정 인덱스의 원본 이미지를 디스크에서 로드 (썸네일→원본 복구)
+  Future<Uint8List?> loadFullHistoryImage(int index) async {
+    if (index < 0 || index >= historyImages.length) return null;
+    // 이미 원본 크기면 그대로
+    if (historyImages[index].length >= 50000) return historyImages[index];
+    try {
+      final dir = await _getHistoryDir();
+      final imgFile = File('${dir.path}/img_$index.png');
+      if (await imgFile.exists()) {
+        final bytes = await imgFile.readAsBytes();
+        historyImages[index] = bytes; // 메모리에 복구
+        return bytes;
+      }
+    } catch (_) {}
+    return historyImages[index]; // 원본 없으면 썸네일 반환
+  }
+
   // ============================================================================
   // 히스토리에 이미지 추가 (공통 헬퍼)
   // ============================================================================
@@ -2287,6 +2570,7 @@ class AppState extends ChangeNotifier {
     selectedHistoryIndex = historyImages.length - 1;
     scrollToThumbnailEnd = true;
     saveHistoryToLocal();
+    await _trimHistoryMemory();
 
     return savedPath;
   }
@@ -2462,39 +2746,28 @@ class AppState extends ChangeNotifier {
     try {
       final dir = await _getHistoryDir();
 
-      // 기존 이미지 파일 전부 삭제
+      // 기존 이미지/썸네일 파일만 삭제 (JSON은 유지)
       final existing = dir.listSync().whereType<File>();
       for (final f in existing) {
-        await f.delete();
+        final name = f.path.split('/').last;
+        if (name.startsWith('img_') || name.startsWith('thumb_')) {
+          await f.delete();
+        }
       }
 
       final int total = historyImages.length;
+      // _trimHistoryMemory 덕에 오래된 이미지는 이미 썸네일 (~10KB)
+      final futures = <Future>[];
       for (int i = 0; i < total; i++) {
-        final bool isRecent = (total - i) <= 30;
-        final bool hasFileOnDevice = await _checkFileExists(i);
-
-        if (isRecent || hasFileOnDevice) {
-          await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
+        final bool isSmall = historyImages[i].length < 50000;
+        if (isSmall) {
+          futures.add(File('${dir.path}/thumb_$i.jpg').writeAsBytes(historyImages[i]));
         } else {
-          // 이미 썸네일인 이미지는 디코딩 없이 그대로 저장
-          if (isHistoryThumbnail(i)) {
-            await File('${dir.path}/thumb_$i.jpg').writeAsBytes(historyImages[i]);
-          } else {
-            try {
-              final decoded = img.decodeImage(historyImages[i]);
-              if (decoded != null) {
-                final thumbnail = img.copyResize(decoded, width: 200);
-                final jpegBytes = img.encodeJpg(thumbnail, quality: 70);
-                await File('${dir.path}/thumb_$i.jpg').writeAsBytes(Uint8List.fromList(jpegBytes));
-              } else {
-                await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
-              }
-            } catch (_) {
-              await File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]);
-            }
-          }
+          futures.add(File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]));
         }
       }
+      // 병렬 쓰기
+      await Future.wait(futures);
 
       // JSON 저장
       await File(
@@ -2510,10 +2783,15 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _loadHistoryFromLocal() async {
+    isHistoryLoading = true;
     try {
       final dir = await _getHistoryDir();
       final metaFile = File('${dir.path}/metadata.json');
-      if (!await metaFile.exists()) return;
+      if (!await metaFile.exists()) {
+        isHistoryLoading = false;
+        notifyListeners();
+        return;
+      }
 
       final metaJson = jsonDecode(await metaFile.readAsString()) as List;
 
@@ -2562,21 +2840,19 @@ class AppState extends ChangeNotifier {
         selectedHistoryIndex = historyImages.length - 1;
       }
       debugPrint("✅ 히스토리 ${historyImages.length}개 로컬에서 불러오기 완료");
+      await _trimHistoryMemory(); // 오래된 이미지 썸네일 변환
+      isHistoryLoading = false;
+      notifyListeners();
     } catch (e) {
       debugPrint("❌ 히스토리 불러오기 실패: $e");
+      isHistoryLoading = false;
+      notifyListeners();
     }
   }
 
   // ============================================================================
   // 파일 존재 여부 확인
   // ============================================================================
-  Future<bool> _checkFileExists(int index) async {
-    if (index < 0 || index >= historyFilePaths.length) return false;
-    final path = historyFilePaths[index];
-    if (path == null || path.isEmpty) return false;
-    return File(path).exists();
-  }
-
   bool checkFileExistsSync(int index) {
     if (index < 0 || index >= historyFilePaths.length) return false;
     final path = historyFilePaths[index];
@@ -2694,7 +2970,7 @@ class AppState extends ChangeNotifier {
         }
         saveHistoryToLocal();
 
-        if (context.mounted) {
+        if (context.mounted && showGenerationMessage) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               duration: const Duration(milliseconds: 2400),
@@ -2749,88 +3025,139 @@ class AppState extends ChangeNotifier {
   Future<String?> autoSaveImage(BuildContext? context, Uint8List bytes) async {
     sessionSaveCount++;
     sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+
+    String fileName = _getFormattedFileName("");
+    final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
+    final messenger = context != null ? ScaffoldMessenger.of(context) : null;
+
+    // 1차 시도: 커스텀 경로
+    String basePath = customSavePathController.text.trim();
+    if (basePath.isNotEmpty) {
+      try {
+        final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
+        }
+        final file = File("${directory.path}/$fileName.$ext");
+        await file.writeAsBytes(bytes);
+        _scanMedia(file.path);
+        if (showGenerationMessage) {
+          messenger?.showSnackBar(
+            SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
+          );
+        }
+        return file.path;
+      } catch (e) {
+        debugPrint("커스텀 경로 저장 실패 ($basePath): $e");
+      }
+    }
+
+    // 2차 시도: 앱 전용 외부 디렉토리 (권한 불필요)
     try {
-      String basePath = customSavePathController.text.trim();
-      if (basePath.isEmpty) {
-        basePath = '/storage/emulated/0/Download';
+      final appDir = await getExternalStorageDirectory();
+      if (appDir != null) {
+        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolderName');
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
+        }
+        final file = File("${directory.path}/$fileName.$ext");
+        await file.writeAsBytes(bytes);
+        _scanMedia(file.path);
+        if (showGenerationMessage) {
+          messenger?.showSnackBar(
+            SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
+          );
+        }
+        return file.path;
       }
-      final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      String fileName = _getFormattedFileName("");
-      final file = File("${directory.path}/$fileName.png");
+    } catch (e) {
+      debugPrint("앱 디렉토리 저장 실패: $e");
+    }
+
+    // 3차 시도: 임시 디렉토리 (최후의 수단)
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File("${tempDir.path}/$fileName.$ext");
       await file.writeAsBytes(bytes);
-
-      if (Platform.isAndroid) {
-        try {
-          MediaScanner.loadMedia(path: file.path);
-        } catch (e) {
-          debugPrint("자동 저장 미디어 스캔 오류: $e");
-        }
-      }
-
-      if (context != null) {
-        if (!context.mounted) {
-          return file.path;
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
-        );
-      }
       return file.path;
     } catch (e) {
-      debugPrint("자동 저장 오류: $e");
+      debugPrint("임시 디렉토리 저장 실패: $e");
     }
-    notifyListeners();
+
     return null;
   }
 
   Future<void> manualSaveImage(BuildContext context, Uint8List bytes) async {
     sessionSaveCount++;
     sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    try {
-      String basePath = customSavePathController.text.trim();
-      if (basePath.isEmpty) {
-        basePath = '/storage/emulated/0/Download';
-      }
-      final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      String fileName = _getFormattedFileName("Manual");
-      final file = File("${directory.path}/$fileName.png");
-      await file.writeAsBytes(bytes);
 
-      if (Platform.isAndroid) {
-        try {
-          MediaScanner.loadMedia(path: file.path);
-        } catch (e) {
-          debugPrint("수동 저장 미디어 스캔 오류: $e");
+    String fileName = _getFormattedFileName("Manual");
+    final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
+    final messenger = ScaffoldMessenger.of(context); // async gap 전에 캡처
+
+    // 1차: 커스텀 경로
+    String basePath = customSavePathController.text.trim();
+    if (basePath.isNotEmpty) {
+      try {
+        final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
         }
-      }
-
-      if (!context.mounted) {
+        final file = File("${directory.path}/$fileName.$ext");
+        await file.writeAsBytes(bytes);
+        _scanMedia(file.path);
+        messenger.showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("이미지가 지정된 경로에 저장되었습니다!"),
+          ),
+        );
+        notifyListeners();
         return;
+      } catch (e) {
+        debugPrint("커스텀 경로 수동 저장 실패: $e");
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("이미지가 지정된 경로에 안전하게 저장되었습니다!"),
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요."),
-        ),
-      );
     }
+
+    // 2차: 앱 전용 디렉토리
+    try {
+      final appDir = await getExternalStorageDirectory();
+      if (appDir != null) {
+        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolderName');
+        if (!await directory.exists()) {
+          await directory.create(recursive: true);
+        }
+        final file = File("${directory.path}/$fileName.$ext");
+        await file.writeAsBytes(bytes);
+        _scanMedia(file.path);
+        messenger.showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("이미지가 앱 폴더에 저장되었습니다."),
+          ),
+        );
+        notifyListeners();
+        return;
+      }
+    } catch (e) {
+      debugPrint("앱 디렉토리 수동 저장 실패: $e");
+    }
+
+    messenger.showSnackBar(
+      SnackBar(
+        duration: const Duration(milliseconds: 2400),
+        content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요."),
+      ),
+    );
     notifyListeners();
+  }
+
+  void _scanMedia(String filePath) {
+    if (Platform.isAndroid) {
+      try {
+        MediaScanner.loadMedia(path: filePath);
+      } catch (_) {}
+    }
   }
 
   Future<void> fetchAnlas() async {
@@ -2920,5 +3247,97 @@ class AppState extends ChangeNotifier {
 
     saveAllSettings();
     notifyListeners();
+  }
+}
+
+// ============================================================================
+// 조건부 트리거 파서 (재귀 하강)
+// ============================================================================
+class _ConditionParser {
+  final String _input;
+  final List<String> _tags;
+  final String _rating;
+  final AppState _state;
+  int _pos = 0;
+
+  _ConditionParser(this._input, this._tags, this._rating, this._state);
+
+  void _skipSpaces() {
+    while (_pos < _input.length && _input[_pos] == ' ') {
+      _pos++;
+    }
+  }
+
+  // or_expr = and_expr ('|' and_expr)*
+  bool parseOrExpr() {
+    bool result = _parseAndExpr();
+    while (_pos < _input.length) {
+      _skipSpaces();
+      if (_pos < _input.length && _input[_pos] == '|') {
+        _pos++;
+        bool right = _parseAndExpr();
+        result = result || right;
+      } else {
+        break;
+      }
+    }
+    return result;
+  }
+
+  // and_expr = atom ('&' atom)*
+  bool _parseAndExpr() {
+    bool result = _parseAtom();
+    while (_pos < _input.length) {
+      _skipSpaces();
+      if (_pos < _input.length && _input[_pos] == '&') {
+        _pos++;
+        bool right = _parseAtom();
+        result = result && right;
+      } else {
+        break;
+      }
+    }
+    return result;
+  }
+
+  // atom = '!' atom | '(' or_expr ')' | pattern
+  bool _parseAtom() {
+    _skipSpaces();
+    if (_pos >= _input.length) {
+      return false;
+    }
+
+    // 부정 연산자
+    if (_input[_pos] == '!') {
+      _pos++;
+      return !_parseAtom();
+    }
+
+    // 괄호 그룹
+    if (_input[_pos] == '(') {
+      _pos++; // '(' 건너뛰기
+      bool result = parseOrExpr();
+      _skipSpaces();
+      if (_pos < _input.length && _input[_pos] == ')') {
+        _pos++; // ')' 건너뛰기
+      }
+      return result;
+    }
+
+    // 패턴 (& | ) 까지 읽기)
+    StringBuffer buf = StringBuffer();
+    while (_pos < _input.length &&
+        _input[_pos] != '&' &&
+        _input[_pos] != '|' &&
+        _input[_pos] != ')') {
+      buf.write(_input[_pos]);
+      _pos++;
+    }
+    String pattern = buf.toString().trim();
+    if (pattern.isEmpty) {
+      return false;
+    }
+
+    return _state._matchAtom(pattern, _tags, _rating);
   }
 }

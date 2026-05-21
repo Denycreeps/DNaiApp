@@ -48,7 +48,13 @@ class CharacterTab extends StatelessWidget {
               int lastComma = beforeCursor.lastIndexOf(',');
               int lastColon = beforeCursor.lastIndexOf(':');
               int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
+              int lastParen = max(
+                beforeCursor.lastIndexOf(')'),
+                max(
+                  beforeCursor.lastIndexOf('('),
+                  max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
+                ),
+              );
               int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
               String currentWord = lastDelimiter == -1
@@ -366,7 +372,12 @@ class CharacterTab extends StatelessWidget {
 
                       return GestureDetector(
                         onTap: () {
-                          state.selectedCharIndex = index;
+                          if (isSelected) {
+                            // 이미 선택된 상태에서 한 번 더 누르면 ON/OFF
+                            state.characters[index].isActive = !state.characters[index].isActive;
+                          } else {
+                            state.selectedCharIndex = index;
+                          }
                           state.refreshUI();
                         },
                         child: Container(

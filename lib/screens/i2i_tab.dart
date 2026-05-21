@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'dart:math';
 import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
@@ -42,11 +41,17 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
 
   // 모자이크 설정
   String _mosaicType = 'pixel'; // 'pixel' or 'blur'
-  double _mosaicStrength = 15.0; // 2~50
+  double _mosaicStrength = 5.0; // 2~50
   bool _isMosaicProcessing = false;
 
   // i2i 모드: 'inpaint', 'mosaic', 'upscale'
   String _i2iMode = 'inpaint';
+
+  // 캔버스/프롬프트 뷰 토글
+  bool _showCanvasView = true;
+
+  // 시스템 네비게이션 바 높이 (한 번만 계산)
+  double? _systemBottomPadding;
 
   // 모자이크 미리보기
   Uint8List? _mosaicPreviewImage;
@@ -593,17 +598,17 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
         state.targetI2iImage = pngBytes;
         _strokes.clear();
 
-        // 히스토리에 저장
+        // 히스토리에 저장 (메타데이터 없이 — 모자이크 처리 결과)
         await state.addImageToHistory(
           image: pngBytes,
-          metadata: state.targetI2iMetadata,
+          metadata: null,
           context: mounted ? context : null,
           forceSave: true,
         );
 
         state.refreshUI();
 
-        if (mounted) {
+        if (mounted && state.showGenerationMessage) {
           final label = _getMosaicTypeLabel();
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(duration: const Duration(milliseconds: 2400), content: Text("$label 적용 완료!")),
@@ -711,7 +716,7 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
       }
     }
 
-    return Uint8List.fromList(img.encodePng(result));
+    return Uint8List.fromList(img.encodeJpg(result, quality: 95));
   }
 
   // 모자이크 미리보기 (축소 이미지로 빠르게 처리)
@@ -1061,7 +1066,13 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
               int lastComma = beforeCursor.lastIndexOf(',');
               int lastColon = beforeCursor.lastIndexOf(':');
               int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = max(beforeCursor.lastIndexOf(')'), beforeCursor.lastIndexOf('('));
+              int lastParen = max(
+                beforeCursor.lastIndexOf(')'),
+                max(
+                  beforeCursor.lastIndexOf('('),
+                  max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
+                ),
+              );
               int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
               String currentWord = lastDelimiter == -1
@@ -1341,60 +1352,42 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
     );
   }
 
-  Widget _buildScrollToggleArea(Widget child, bool disableScroll, AppState state) {
-    return Listener(
-      onPointerDown: (_) {
-        if (_localScrollDisabled != disableScroll) {
-          setState(() {
-            _localScrollDisabled = disableScroll;
-          });
-        }
-      },
-      behavior: HitTestBehavior.opaque,
-      child: child,
-    );
-  }
-
-  bool _localScrollDisabled = false;
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final state = context.watch<AppState>();
 
-    // 새 이미지가 i2i로 전송되면 마스크 자동 초기화
+    // 새 이미지가 i2i로 전송되면 상태 초기화 (모드는 유지)
     if (state.targetI2iImage != null && state.targetI2iImage != _lastI2iImage) {
       _lastI2iImage = state.targetI2iImage;
-      if (_strokes.isNotEmpty) {
-        _strokes.clear();
-        _transformController.value = Matrix4.identity();
-      }
+      _strokes.clear();
+      _mosaicPreviewImage = null;
+      _isPreviewLoading = false;
+      _transformController.value = Matrix4.identity(); // 확대/이동 초기화
     }
 
-    bool isPanTool = _currentTool == 'pan';
     bool canDraw = _currentTool == 'pencil' || _currentTool == 'eraser';
 
-    double aspect = 832 / 1216;
-    if (state.targetI2iMetadata != null &&
-        state.targetI2iMetadata!.width > 0 &&
-        state.targetI2iMetadata!.height > 0) {
-      aspect = state.targetI2iMetadata!.width / state.targetI2iMetadata!.height;
-    }
+    if (_showCanvasView) {
+      // ===== 캔버스 뷰 (풀 스크린, 스크롤 없음) =====
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          // 시스템 네비게이션 바 높이 캐싱 (최초 1회)
+          _systemBottomPadding ??= MediaQuery.of(context).viewPadding.bottom;
+          final bottomPad = _systemBottomPadding!;
 
-    return SingleChildScrollView(
-      physics: _localScrollDisabled
-          ? const NeverScrollableScrollPhysics()
-          : const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _buildScrollToggleArea(
-            Column(
+          final toolbarHeight = _i2iMode == 'upscale' ? 0.0 : 58.0; // 46(버튼) + 12(간격)
+          final canvasHeight =
+              constraints.maxHeight - 60 - 12 - toolbarHeight - 44 - bottomPad - 32;
+          // 60=모드+실행 / 12=간격 / toolbarHeight / 44=토글버튼 / bottomPad=네비바 / 32=패딩
+
+          return Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Row(
                   children: [
-                    // 모드 선택
                     Container(
                       decoration: BoxDecoration(
                         color: const Color(0xFF1E1E1E),
@@ -1416,7 +1409,6 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    // 실행 버튼
                     Expanded(
                       child: ElevatedButton.icon(
                         onPressed: _getExecuteOnPressed(state, context),
@@ -1442,41 +1434,47 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                   ],
                 ),
                 const SizedBox(height: 12),
-              ],
-            ),
-            true, // 버튼 영역도 스크롤 비활성 (캔버스와 같은 영역)
-            state,
-          ),
-
-          _buildScrollToggleArea(
-            Column(
-              children: [
+                // 캔버스 (남은 공간 채우기)
                 Container(
-                  height: 480,
+                  height: canvasHeight.clamp(200, 800),
                   decoration: BoxDecoration(
                     color: const Color(0xFF121212),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(
-                      color: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                      width: 2,
+                      color: state.isInpaintLoading ? Colors.amber : Colors.white24,
+                      width: state.isInpaintLoading ? 2 : 1,
                     ),
                   ),
-                  child: state.targetI2iImage != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: InteractiveViewer(
-                            transformationController: _transformController,
-                            panEnabled: isPanTool,
-                            scaleEnabled: isPanTool || _currentTool.startsWith('zoom'),
-                            boundaryMargin: const EdgeInsets.all(double.infinity),
-                            minScale: 1.0,
-                            maxScale: 10.0,
-                            child: Center(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: state.targetI2iImage == null
+                        ? const Center(
+                            child: Text(
+                              "히스토리에서 이미지를 선택하세요.",
+                              style: TextStyle(color: Colors.white30),
+                            ),
+                          )
+                        : Center(
+                            child: InteractiveViewer(
+                              transformationController: _transformController,
+                              panEnabled:
+                                  _currentTool == 'pan' ||
+                                  _currentTool == 'zoom_in' ||
+                                  _currentTool == 'zoom_out',
+                              scaleEnabled: false,
                               child: AspectRatio(
-                                aspectRatio: aspect,
-                                child: ClipRect(
+                                aspectRatio:
+                                    (state.targetI2iMetadata?.width ?? 832) /
+                                    (state.targetI2iMetadata?.height ?? 1216),
+                                child: GestureDetector(
+                                  onPanStart: canDraw ? _onPanStart : null,
+                                  onPanUpdate: canDraw ? _onPanUpdate : null,
+                                  onPanEnd: canDraw ? _onPanEnd : null,
+                                  onTapDown:
+                                      (_currentTool == 'zoom_in' || _currentTool == 'zoom_out')
+                                      ? _onZoomTap
+                                      : null,
                                   child: Stack(
-                                    key: _canvasKey,
                                     fit: StackFit.expand,
                                     children: [
                                       Image.memory(
@@ -1485,15 +1483,9 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                                             : state.targetI2iImage!,
                                         fit: BoxFit.fill,
                                       ),
-                                      GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onPanStart: canDraw ? _onPanStart : null,
-                                        onPanUpdate: canDraw ? _onPanUpdate : null,
-                                        onPanEnd: canDraw ? _onPanEnd : null,
-                                        onTapDown: _currentTool.startsWith('zoom')
-                                            ? _onZoomTap
-                                            : null,
+                                      Positioned.fill(
                                         child: CustomPaint(
+                                          key: _canvasKey,
                                           painter: MaskPainter(
                                             strokes:
                                                 (_mosaicPreviewImage != null &&
@@ -1511,234 +1503,277 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                               ),
                             ),
                           ),
-                        )
-                      : const Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(Icons.image_search, size: 48, color: Colors.white24),
-                              SizedBox(height: 16),
-                              Text(
-                                "생성된 이미지를 꾹 눌러\n'이미지 수정하기'를 선택하세요.",
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white30),
-                              ),
-                            ],
-                          ),
-                        ),
+                  ),
                 ),
                 const SizedBox(height: 12),
-
-                // 도구 버튼 (업스케일 모드에서는 숨김)
+                // 도구 버튼 (업스케일 모드에서는 숨김) — 고정 높이
                 if (_i2iMode != 'upscale') ...[
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
-                        SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
-                        _buildToolIcon('eraser', Icons.cleaning_services, "지우개 (한 번 더 누르면 크기 변경)"),
-                        SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
-                        _buildToolIcon('zoom', Icons.zoom_in, "돋보기 (누를 때마다 확대/축소 변경)"),
-                        SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
-                        _buildToolIcon('pan', Icons.pan_tool, "손 (화면 이동)"),
-                        // 인페인트 모드: 강도 버튼
-                        if (_i2iMode == 'inpaint') ...[
-                          const SizedBox(width: 8),
-                          _buildStrengthButton(state),
-                        ],
-                        // 모자이크 모드: 강도 + 픽셀화/블러/선
-                        if (_i2iMode == 'mosaic') ...[
-                          const SizedBox(width: 6),
-                          _buildMosaicStrengthButton(),
-                          const SizedBox(width: 6),
-                          GestureDetector(
-                            onTap: () => setState(() {
-                              if (_mosaicType == 'pixel') {
-                                _mosaicType = 'blur';
-                              } else if (_mosaicType == 'blur') {
-                                _mosaicType = 'line';
-                              } else {
-                                _mosaicType = 'pixel';
-                              }
-                            }),
-                            child: Container(
-                              width: 44,
-                              height: 40,
-                              decoration: BoxDecoration(
-                                color: _getMosaicTypeColor().withValues(alpha: 0.2),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(color: _getMosaicTypeColor(), width: 1.5),
-                              ),
-                              child: Center(
-                                child: Text(
-                                  _getMosaicTypeLabel(),
-                                  style: TextStyle(
-                                    color: _getMosaicTypeColor(),
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
+                  SizedBox(
+                    height: 46,
+                    child: Center(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
+                            SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                            _buildToolIcon(
+                              'eraser',
+                              Icons.cleaning_services,
+                              "지우개 (한 번 더 누르면 크기 변경)",
                             ),
-                          ),
-                          // 미리보기 버튼
-                          const SizedBox(width: 6),
-                          Tooltip(
-                            message: "모자이크 미리보기",
-                            child: InkWell(
-                              onTap: _isPreviewLoading
-                                  ? null
-                                  : () {
-                                      if (_mosaicPreviewImage != null) {
-                                        setState(() => _mosaicPreviewImage = null);
-                                      } else {
-                                        _generateMosaicPreview(state);
-                                      }
-                                    },
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                width: 40,
-                                height: 40,
-                                decoration: BoxDecoration(
-                                  color: _mosaicPreviewImage != null
-                                      ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
-                                      : Colors.transparent,
-                                  border: Border.all(
-                                    color: _mosaicPreviewImage != null
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white24,
-                                    width: 1.5,
+                            SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                            _buildToolIcon('zoom', Icons.zoom_in, "돋보기"),
+                            SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                            _buildToolIcon('pan', Icons.pan_tool, "손 (화면 이동)"),
+                            if (_i2iMode == 'inpaint') ...[
+                              const SizedBox(width: 8),
+                              _buildStrengthButton(state),
+                            ],
+                            if (_i2iMode == 'mosaic') ...[
+                              const SizedBox(width: 6),
+                              _buildMosaicStrengthButton(),
+                              const SizedBox(width: 6),
+                              GestureDetector(
+                                onTap: () => setState(() {
+                                  if (_mosaicType == 'pixel') {
+                                    _mosaicType = 'blur';
+                                  } else if (_mosaicType == 'blur') {
+                                    _mosaicType = 'line';
+                                  } else {
+                                    _mosaicType = 'pixel';
+                                  }
+                                }),
+                                child: Container(
+                                  width: 44,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: _getMosaicTypeColor().withValues(alpha: 0.2),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: _getMosaicTypeColor(), width: 1.5),
                                   ),
-                                  borderRadius: BorderRadius.circular(8),
+                                  child: Center(
+                                    child: Text(
+                                      _getMosaicTypeLabel(),
+                                      style: TextStyle(
+                                        color: _getMosaicTypeColor(),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                                child: _isPreviewLoading
-                                    ? const Padding(
-                                        padding: EdgeInsets.all(10),
-                                        child: CircularProgressIndicator(
-                                          color: Colors.deepPurpleAccent,
-                                          strokeWidth: 2,
-                                        ),
-                                      )
-                                    : Icon(
-                                        _mosaicPreviewImage != null
-                                            ? Icons.visibility
-                                            : Icons.visibility_outlined,
+                              ),
+                              const SizedBox(width: 6),
+                              Tooltip(
+                                message: "모자이크 미리보기",
+                                child: InkWell(
+                                  onTap: _isPreviewLoading
+                                      ? null
+                                      : () {
+                                          if (_mosaicPreviewImage != null) {
+                                            setState(() => _mosaicPreviewImage = null);
+                                          } else {
+                                            _generateMosaicPreview(state);
+                                          }
+                                        },
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    width: 40,
+                                    height: 40,
+                                    decoration: BoxDecoration(
+                                      color: _mosaicPreviewImage != null
+                                          ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
+                                          : Colors.transparent,
+                                      border: Border.all(
                                         color: _mosaicPreviewImage != null
                                             ? Colors.deepPurpleAccent
-                                            : Colors.white54,
-                                        size: 18,
+                                            : Colors.white24,
+                                        width: 1.5,
                                       ),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: _isPreviewLoading
+                                        ? const Padding(
+                                            padding: EdgeInsets.all(10),
+                                            child: CircularProgressIndicator(
+                                              color: Colors.deepPurpleAccent,
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : Icon(
+                                            _mosaicPreviewImage != null
+                                                ? Icons.visibility
+                                                : Icons.visibility_outlined,
+                                            color: _mosaicPreviewImage != null
+                                                ? Colors.deepPurpleAccent
+                                                : Colors.white54,
+                                            size: 18,
+                                          ),
+                                  ),
+                                ),
                               ),
-                            ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ), // Center
+                  ), // SizedBox
+                  const SizedBox(height: 12),
+                ],
+                // 프롬프트 보기 토글 (전 모드)
+                GestureDetector(
+                  onTap: () => setState(() => _showCanvasView = false),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    margin: EdgeInsets.only(bottom: bottomPad),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.expand_more, color: Colors.white54, size: 20),
+                        SizedBox(width: 4),
+                        Text(
+                          "프롬프트 보기",
+                          style: TextStyle(
+                            color: Colors.white54,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
                           ),
-                        ],
+                        ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
-                ] else
-                  const SizedBox(height: 16),
+                ),
               ],
             ),
-            true,
-            state,
-          ),
+          );
+        },
+      );
+    }
 
-          _buildScrollToggleArea(
-            Column(
-              children: [
-                _buildPromptCard(
-                  context,
-                  state,
-                  title: "긍정적 프롬프트 (Inpaint 전용)",
-                  icon: Icons.add_circle_outline,
-                  color: const Color(0xFF00BFA5),
-                  controller: state.inpaintPositiveController,
-                  hint: "태그를 입력하세요...",
-                ),
-                const SizedBox(height: 12),
-                _buildPromptCard(
-                  context,
-                  state,
-                  title: "선행 프롬프트 (Inpaint 전용)",
-                  icon: Icons.arrow_right_alt,
-                  color: const Color(0xFF29B6F6),
-                  controller: state.inpaintPrefixController,
-                  hint: "1girl, solo...",
-                ),
-                const SizedBox(height: 12),
-                _buildPromptCard(
-                  context,
-                  state,
-                  title: "후행 프롬프트 (Inpaint 전용)",
-                  icon: Icons.keyboard_double_arrow_right,
-                  color: const Color(0xFFFFA000),
-                  controller: state.inpaintSuffixController,
-                  hint: "고정으로 맨 뒤에 들어갈 태그...",
-                ),
-                const SizedBox(height: 16),
-                _buildPromptCard(
-                  context,
-                  state,
-                  title: "부정적 프롬프트 (Inpaint 전용)",
-                  icon: Icons.remove_circle_outline,
-                  color: const Color(0xFFFF5252),
-                  controller: state.inpaintNegativeController,
-                  hint: "text, logo...",
-                ),
-                const SizedBox(height: 16),
-
-                Row(
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          state.inpaintPositiveController.text = state.positiveController.text;
-                          state.inpaintPrefixController.text = state.prefixController.text;
-                          state.inpaintSuffixController.text = state.suffixController.text;
-                          state.inpaintNegativeController.text = state.negativeController.text;
-                        });
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            duration: const Duration(milliseconds: 2400),
-                            content: Text("프롬프트 탭의 값을 가져왔습니다!"),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.content_copy, color: Colors.white70, size: 18),
-                      label: const Text(
-                        "프롬값 가져오기",
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                        side: const BorderSide(color: Colors.white24),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      ),
+    // ===== 프롬프트 뷰 (스크롤 가능) =====
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          GestureDetector(
+            onTap: () => setState(() => _showCanvasView = true),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.expand_less, color: Colors.white54, size: 20),
+                  SizedBox(width: 4),
+                  Text(
+                    "캔버스 보기",
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                     ),
-                    const SizedBox(width: 8),
-                    OutlinedButton.icon(
-                      onPressed: () => showDetailSettingsModal(context),
-                      icon: const Icon(Icons.tune, color: Colors.white70, size: 18),
-                      label: const Text(
-                        "상세 환경",
-                        style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                        side: const BorderSide(color: Colors.white24),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 80),
-              ],
+                  ),
+                ],
+              ),
             ),
-            false,
-            state,
           ),
+          _buildPromptCard(
+            context,
+            state,
+            title: "긍정적 프롬프트 (Inpaint 전용)",
+            icon: Icons.add_circle_outline,
+            color: const Color(0xFF00BFA5),
+            controller: state.inpaintPositiveController,
+            hint: "프롬프트를 입력하세요...",
+          ),
+          const SizedBox(height: 12),
+          _buildPromptCard(
+            context,
+            state,
+            title: "선행 프롬프트 (Inpaint 전용)",
+            icon: Icons.arrow_right_alt,
+            color: const Color(0xFF29B6F6),
+            controller: state.inpaintPrefixController,
+            hint: "프롬프트를 입력하세요...",
+          ),
+          const SizedBox(height: 12),
+          _buildPromptCard(
+            context,
+            state,
+            title: "후행 프롬프트 (Inpaint 전용)",
+            icon: Icons.keyboard_double_arrow_right,
+            color: const Color(0xFFFFA000),
+            controller: state.inpaintSuffixController,
+            hint: "프롬프트를 입력하세요...",
+          ),
+          const SizedBox(height: 16),
+          _buildPromptCard(
+            context,
+            state,
+            title: "부정적 프롬프트 (Inpaint 전용)",
+            icon: Icons.remove_circle_outline,
+            color: const Color(0xFFFF5252),
+            controller: state.inpaintNegativeController,
+            hint: "프롬프트를 입력하세요...",
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: () {
+                  setState(() {
+                    state.inpaintPositiveController.text = state.positiveController.text;
+                    state.inpaintPrefixController.text = state.prefixController.text;
+                    state.inpaintSuffixController.text = state.suffixController.text;
+                    state.inpaintNegativeController.text = state.negativeController.text;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      duration: const Duration(milliseconds: 2400),
+                      content: Text("프롬프트 탭의 값을 가져왔습니다!"),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.content_copy, color: Colors.white70, size: 18),
+                label: const Text(
+                  "프롬값 가져오기",
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                ),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                  side: const BorderSide(color: Colors.white24),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: () => showDetailSettingsModal(context),
+                icon: const Icon(Icons.tune, color: Colors.white70, size: 18),
+                label: const Text(
+                  "상세 환경",
+                  style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                ),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                  side: const BorderSide(color: Colors.white24),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 80),
         ],
       ),
     );

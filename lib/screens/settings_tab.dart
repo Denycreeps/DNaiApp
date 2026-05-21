@@ -239,12 +239,12 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             const SizedBox(height: 16),
 
-            // ✅ 3번: '다른 탭에서 이미지 보이기' → 저장 경로 아래로 이동
+            // 이미지 생성 시 하단 메세지 출력
             Container(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                 border: Border.all(color: Colors.white10),
               ),
               child: Row(
@@ -252,27 +252,127 @@ class _SettingsTabState extends State<SettingsTab> {
                 children: [
                   const Row(
                     children: [
-                      Icon(Icons.image_outlined, color: Colors.deepPurpleAccent),
+                      Icon(Icons.chat_bubble_outline, color: Colors.deepPurpleAccent, size: 20),
                       SizedBox(width: 8),
                       Text(
-                        "다른 탭에서 이미지 보이기",
+                        "생성 시 메세지",
                         style: TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
-                          fontSize: 15,
+                          fontSize: 14,
                         ),
                       ),
                     ],
                   ),
-                  Switch(
-                    value: state.showImageInOtherTabs,
-                    activeThumbColor: Colors.deepPurpleAccent,
-                    activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                    onChanged: (val) {
-                      state.showImageInOtherTabs = val;
-                      state.saveAllSettings();
-                      state.refreshUI();
-                    },
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.showGenerationMessage,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.showGenerationMessage = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 연속 생성 딜레이
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent, size: 20),
+                  const SizedBox(width: 8),
+                  const Text(
+                    "연속 생성 딜레이",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    "${state.batchDelay.toStringAsFixed(1)}초",
+                    style: const TextStyle(
+                      color: Colors.deepPurpleAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderThemeData(
+                        trackHeight: 3,
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                        activeTrackColor: Colors.deepPurpleAccent,
+                        inactiveTrackColor: Colors.white12,
+                        thumbColor: Colors.deepPurpleAccent,
+                      ),
+                      child: Slider(
+                        value: state.batchDelay,
+                        min: 0.0,
+                        max: 5.0,
+                        divisions: 10,
+                        onChanged: (v) {
+                          state.batchDelay = v;
+                          state.refreshUI();
+                        },
+                        onChangeEnd: (_) => state.saveAllSettings(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 좌우 스와이프 탭 전환
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.swipe, color: Colors.deepPurpleAccent, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        "좌우 스와이프",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.horizontalSwipeEnabled,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.horizontalSwipeEnabled = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -446,10 +546,13 @@ class _SettingsTabState extends State<SettingsTab> {
                               ),
                             );
                             try {
-                              final data = state.exportSettings();
+                              final data = await state.exportSettings();
                               final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
                               final dir = await getTemporaryDirectory();
-                              final file = File('${dir.path}/dnaiapp_settings.json');
+                              final now = DateTime.now();
+                              final dateStr =
+                                  "${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}";
+                              final file = File('${dir.path}/dnaiapp_settings_$dateStr.json');
                               await file.writeAsString(jsonStr);
                               await SharePlus.instance.share(
                                 ShareParams(files: [XFile(file.path)]),

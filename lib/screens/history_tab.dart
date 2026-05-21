@@ -867,7 +867,7 @@ class _HistoryTabState extends State<HistoryTab> {
               ),
             ),
             Text(
-              isEmpty ? "0 / 0" : "${displayIndex + 1} / ${images.length}",
+              isEmpty ? "0 / 0" : "${images.length - displayIndex} / ${images.length}",
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
@@ -949,6 +949,20 @@ class _HistoryTabState extends State<HistoryTab> {
     final images = state.historyImages;
     final bool isEmpty = images.isEmpty;
     final bool isGridView = state.isHistoryGridView;
+
+    // 히스토리 로딩 중이면 로딩 표시
+    if (state.isHistoryLoading) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(color: Colors.deepPurpleAccent),
+            SizedBox(height: 16),
+            Text("히스토리 로딩 중...", style: TextStyle(color: Colors.white54)),
+          ],
+        ),
+      );
+    }
 
     if (!isGridView && state.scrollToThumbnailEnd) {
       state.scrollToThumbnailEnd = false;

@@ -332,15 +332,27 @@ class NovelAiService {
     // 로컬 제외 태그 Set (빠른 검색용)
     final Set<String> localExcludeSet = localExcludeTags.map((t) => t.toLowerCase()).toSet();
 
-    List<String> apiTags = [...incTags];
-    for (var t in excTags) {
-      apiTags.add('-$t');
+    // OR 태그(~접두사)와 일반 태그 분리
+    List<String> fixedTags = [];
+    List<String> orTags = [];
+    for (var t in incTags) {
+      if (t.startsWith('~')) {
+        orTags.add(t.substring(1)); // ~ 제거
+      } else {
+        fixedTags.add(t);
+      }
     }
 
-    if (!rG) apiTags.add("-rating:general");
-    if (!rS) apiTags.add("-rating:sensitive");
-    if (!rQ) apiTags.add("-rating:questionable");
-    if (!rE) apiTags.add("-rating:explicit");
+    // 공통 태그: 고정 태그 + 제외 태그 + 레이팅 필터
+    List<String> baseTags = [...fixedTags];
+    for (var t in excTags) {
+      baseTags.add('-$t');
+    }
+
+    if (!rG) baseTags.add("-rating:general");
+    if (!rS) baseTags.add("-rating:sensitive");
+    if (!rQ) baseTags.add("-rating:questionable");
+    if (!rE) baseTags.add("-rating:explicit");
 
     const String fallbackUserId = "1939815";
     const String fallbackApiKey =
@@ -350,68 +362,108 @@ class NovelAiService {
     String effectiveUserId = hasCredentials ? gelbooruUserId : fallbackUserId;
     String effectiveApiKey = hasCredentials ? gelbooruApiKey : fallbackApiKey;
 
-    if (!apiTags.contains("sort:random")) {
-      apiTags.add("sort:random");
+    // OR 태그가 있으면 각 옵션별로 검색 → 합치기
+    // 없으면 단일 검색
+    List<List<String>> queryVariants = [];
+    if (orTags.isEmpty) {
+      queryVariants.add([...baseTags, "sort:random"]);
+    } else {
+      // 각 OR 옵션 + 고정 태그로 별도 쿼리 생성
+      for (var orTag in orTags) {
+        queryVariants.add([...baseTags, orTag, "sort:random"]);
+      }
     }
 
-    String tagQuery = Uri.encodeQueryComponent(
-      apiTags.join(' '),
-    ).replaceAll('%7E', '~'); // ~ (OR 연산자) 보존
+    // 각 변형별 페이지 수 분배
+    int pagesPerVariant = (maxPagesToFetch / queryVariants.length).ceil();
 
     List<dynamic> allValidPosts = [];
     Set<String> allUniqueTags = {};
     Set<int> seenIds = {};
 
-    // Gelbooru 페이지 병렬 요청: 모든 페이지를 동시에 가져옴
-    final pageResponses = await Future.wait(
-      List.generate(maxPagesToFetch, (page) async {
-        String gelbooruUrl =
-            "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
-        gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
+    // 각 쿼리 변형별로 병렬 페이지 요청
+    int totalRequests = 0;
+    int failedRequests = 0;
+    int timeoutRequests = 0;
+    int serverErrors = 0;
+    String? lastErrorDetail;
+
+    for (var apiTags in queryVariants) {
+      String tagQuery = Uri.encodeQueryComponent(apiTags.join(' '));
+
+      final pageResponses = await Future.wait(
+        List.generate(pagesPerVariant, (page) async {
+          totalRequests++;
+          String gelbooruUrl =
+              "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
+          gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
+          try {
+            return await http
+                .get(
+                  Uri.parse(gelbooruUrl),
+                  headers: {
+                    'User-Agent':
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+                  },
+                )
+                .timeout(const Duration(seconds: 10));
+          } on TimeoutException {
+            timeoutRequests++;
+            lastErrorDetail = "서버 응답 시간 초과 (10초)";
+            return null;
+          } catch (e) {
+            failedRequests++;
+            lastErrorDetail = e.toString();
+            debugPrint("겔보루 요청 에러: $e");
+            return null;
+          }
+        }),
+      );
+
+      for (var response in pageResponses) {
+        if (response == null) continue;
+        if (response.statusCode != 200) {
+          serverErrors++;
+          lastErrorDetail = "서버 응답 코드: ${response.statusCode}";
+          continue;
+        }
         try {
-          return await http
-              .get(
-                Uri.parse(gelbooruUrl),
-                headers: {
-                  'User-Agent':
-                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-                },
-              )
-              .timeout(const Duration(seconds: 10));
+          final decoded = jsonDecode(response.body);
+          if (decoded['post'] == null) continue;
+
+          List<dynamic> posts = decoded['post'];
+          for (var post in posts) {
+            if (post['id'] == null) continue;
+            int postId = post['id'];
+
+            if (seenIds.contains(postId)) continue;
+            seenIds.add(postId);
+
+            int width = int.tryParse(post['width'].toString()) ?? 0;
+            int height = int.tryParse(post['height'].toString()) ?? 0;
+            if (width < 512 || height < 512) continue;
+
+            String tagString = post['tags'] ?? "";
+            if (tagString.isEmpty) continue;
+
+            allValidPosts.add(post);
+            allUniqueTags.addAll(tagString.split(' ').where((e) => e.isNotEmpty));
+          }
         } catch (e) {
-          debugPrint("겔보루 요청 에러: $e");
-          return null;
+          debugPrint("겔보루 파싱 에러: $e");
         }
-      }),
-    );
-
-    for (var response in pageResponses) {
-      if (response == null || response.statusCode != 200) continue;
-      try {
-        final decoded = jsonDecode(response.body);
-        if (decoded['post'] == null) continue;
-
-        List<dynamic> posts = decoded['post'];
-        for (var post in posts) {
-          if (post['id'] == null) continue;
-          int postId = post['id'];
-
-          if (seenIds.contains(postId)) continue;
-          seenIds.add(postId);
-
-          int width = int.tryParse(post['width'].toString()) ?? 0;
-          int height = int.tryParse(post['height'].toString()) ?? 0;
-          if (width < 512 || height < 512) continue;
-
-          String tagString = post['tags'] ?? "";
-          if (tagString.isEmpty) continue;
-
-          allValidPosts.add(post);
-          allUniqueTags.addAll(tagString.split(' ').where((e) => e.isNotEmpty));
-        }
-      } catch (e) {
-        debugPrint("겔보루 파싱 에러: $e");
       }
+    } // queryVariants 루프 끝
+
+    // 전부 실패했으면 상세 에러 throw
+    if (allValidPosts.isEmpty && (failedRequests + timeoutRequests + serverErrors) > 0) {
+      List<String> errorParts = [];
+      if (timeoutRequests > 0) errorParts.add("시간 초과: $timeoutRequests건");
+      if (serverErrors > 0) errorParts.add("서버 오류: $serverErrors건");
+      if (failedRequests > 0) errorParts.add("연결 실패: $failedRequests건");
+      errorParts.add("총 요청: $totalRequests건");
+      if (lastErrorDetail != null) errorParts.add("상세: $lastErrorDetail");
+      throw Exception(errorParts.join('\n'));
     }
 
     if (allValidPosts.isEmpty) return [];
