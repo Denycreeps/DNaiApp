@@ -33,6 +33,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 <img width="379" height="768" alt="image" src="https://github.com/user-attachments/assets/9a2c9a49-97b5-4b2c-b475-1d940c9371a0" />
 
+<br />
 
 처음 어플을 켠 뒤 "설정"탭으로 가서 아래로 내리면 NovelAi Api랑 Gelbooru Api가 필요하다고 나옴
 
@@ -68,6 +69,8 @@ Gelbooru 토큰은 겔부루 사이트에서 My Account 를 누르고
 
 여기서 맨 아래 Option을 누르면 되는데
 
+<br />
+
 <img width="420" height="297" alt="image" src="https://github.com/user-attachments/assets/faf74e6b-bf9a-4d99-ab84-a21348c25400" />
 <img width="447" height="313" alt="image" src="https://github.com/user-attachments/assets/8b14c12a-ff16-44a7-be31-44160d6f75a1" />
 
@@ -98,6 +101,7 @@ NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥
 ---
 
 ### 1. 톱니바퀴(검색창 열고 닫기)
+
 <img width="376" height="199" alt="image" src="https://github.com/user-attachments/assets/2252f263-0d5f-459c-891a-c70b8f871c4f" />
 
 
@@ -115,6 +119,8 @@ NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥
 | `skirt` | skirt 프롬프트 검색 |
 | `*skirt` | skirt로 끝나는 프롬프트 |
 | `skirt*` | skirt로 시작하는 프롬프트 |
+
+<br />
 
 <img width="369" height="255" alt="image" src="https://github.com/user-attachments/assets/a2c636e5-a2f6-46d5-9cb3-a77798695046" />
 
@@ -153,20 +159,27 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 ---
 
 ### 4. 프리셋 관리
+
 <img width="384" height="253" alt="image" src="https://github.com/user-attachments/assets/5e27bafc-9039-4e62-914a-8579bd6f83f3" />
 
 
 말 그대로 프리셋을 저장할 수 있음. 종류는 긍정적, 부정적, 선행, 후행, 캐릭터, 설정 총 6가지
+
+<br />
 
 <img width="248" height="369" alt="image" src="https://github.com/user-attachments/assets/c79c10e8-444f-43e4-8709-bb1ac33a69ae" />
 
 
 오른쪽 위 저장을 누르면 이렇게 프리셋 이름과 무엇을 저장할지 나오고 긍정적, 선행, 캐릭터만 저장한 경우 개별 탭에 표시가 됨. 그 외에는 전부 기타 탭
 
+<br />
+
 <img width="298" height="501" alt="image" src="https://github.com/user-attachments/assets/7930aa85-834b-4d38-ab07-eb5454622c5d" />
 
 
 저장된 프리셋을 누르면 이런 화면이 나오고 위에 그림이 있는 칸을 누르면 미리보기 이미지를 지정할 수 있음
+
+<br />
 
 <img width="296" height="306" alt="image" src="https://github.com/user-attachments/assets/4f8b55bc-3241-457c-823d-cb272b21b8b7" />
 <img width="252" height="241" alt="image" src="https://github.com/user-attachments/assets/3d3e0e57-47a5-4b2b-96a3-2a487016df3f" />
@@ -202,6 +215,8 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 
 
 네모를 누르면 1 2 3 4 ∞ 순으로 바뀌고 이미지 생성을 누르면 옆에 남은 숫자가 나옴
+
+<br />
 
 <img width="222" height="54" alt="image" src="https://github.com/user-attachments/assets/6fd963e4-b25d-4be4-8008-dc9db6be4742" />
 
