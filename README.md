@@ -7,11 +7,6 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 사실상 99.9% 정도를 Claude와 Gemini가 만든 말하자면 Ai가 만든 Ai 이미지 만들기를 돕는 어플리케이션
 
 미래는 Ai가 책임진다.
-<br />
-<br />
-
-추가가 필요한 기능이나 궁금한건 원본 글에 써주세용
-https://arca.live/b/aiart/165652667
 
 <br />
 <br />
