@@ -36,6 +36,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 <img width="379" height="768" alt="image" src="https://github.com/user-attachments/assets/9a2c9a49-97b5-4b2c-b475-1d940c9371a0" />
 
+
 처음 어플을 켠 뒤 "설정"탭으로 가서 아래로 내리면 NovelAi Api랑 Gelbooru Api가 필요하다고 나옴
 
 Gelbooru Api는 랜덤 프롬프트 검색기능을 사용안하면 필요 없지만 이 어플을 쓰는 목적이라 가급적 추천함
@@ -45,6 +46,7 @@ Danbooru에서만 검색하는거보다 훨씬 효율적인걸로 판명되서 G
 다른 앱이나 프로그램에서 쓰는 방식(Danbooru 만으로 api없이 검색)으로도 잘 돌아가는 방법을 찾으면 그땐 없어질 것 같음
 
 근데 만들면서 계속 써봤지만 지금도 충분히 속도도 나오고 불만 없는듯
+
 <br />
 <br />
 
@@ -63,9 +65,17 @@ Gelbooru 토큰은 겔부루 사이트에서 My Account 를 누르고
 
 <img width="424" height="631" alt="006" src="https://github.com/user-attachments/assets/1d62747d-280a-41f0-a479-3c639176bc5e" />
 
+
 여기서 맨 아래 Option을 누르면 되는데
 
-아이디가 없으면 맨 위에가 Login으로 되어있고 누르면 가입하는 화면으로 갈 수 있음
+
+<img width="420" height="297" alt="image" src="https://github.com/user-attachments/assets/faf74e6b-bf9a-4d99-ab84-a21348c25400" />
+
+
+<img width="447" height="313" alt="image" src="https://github.com/user-attachments/assets/8b14c12a-ff16-44a7-be31-44160d6f75a1" />
+
+
+아이디가 없으면 이렇게 뜨니까 빨간 동그라미를 따라가서 새로 가입하면 됨
 <br />
 <br />
 
