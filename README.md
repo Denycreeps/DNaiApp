@@ -89,7 +89,7 @@ Option 맨 아래에 Api 토큰이 있는데 형식은
 <br />
 <br />
 
-Nai 토큰은 "저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으면 알아서 인식함
+NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으면 알아서 인식함
 
 여기까지 했으면 이제 바로 사용 가능
 <br />
@@ -100,7 +100,8 @@ Nai 토큰은 "저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으�
 
 # 프롬프트 탭 설명 - 1
 
-<img width="381" height="657" alt="p001" src="https://github.com/user-attachments/assets/4213eb00-7f65-4df9-bffa-d434864a2812" />
+<img width="379" height="674" alt="image" src="https://github.com/user-attachments/assets/9c47f869-bd85-4da9-b9ea-f53d499d8adf" />
+
 
 다른건 딱 보면 알것이고 설명이 필요한 부분만 말하자면
 <br />
@@ -110,15 +111,20 @@ Nai 토큰은 "저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으�
 
 ## 1. 톱니바퀴(검색창 열고 닫기).
 
-<img width="375" height="246" alt="p001_" src="https://github.com/user-attachments/assets/403cbcbf-5953-4cc3-9bcd-2eb1329e9ce3" />
+<img width="376" height="199" alt="image" src="https://github.com/user-attachments/assets/2252f263-0d5f-459c-891a-c70b8f871c4f" />
+
 
 열면 스크린샷처럼 화면이 나옴. NAIA를 매우 강하게 배꼈습니다. 감사합니다.
 
+윗칸은 찾을 프롬프트, 아래칸은 제거할 프롬프트임
+
 아래 E, Q, S, G 는 생각하는 그것이고
 
-검색은 NAIA에서 *이나 !가 없고 단어 그대로만 검색한다고 생각하면 됨
+검색할때 *을 붙인 곳에 따라 범위가 바뀌고(skirt = skirt 프롬프트 검색, 
+*skirt = skirt로 끝나는 프롬프트, skirt * = skirt로 시작하는 프롬프트 등 (별 붙일떄 띄어쓰기 안해도됨))
 
-'ex) skirt가 포함된 모든 프롬프트를 검색' 같은 기능은 아직 안만들었음... 사용량 거의다써서...
+윗칸 아래칸 모두 사용 가능함.
+
 <br />
 <br />
 
@@ -130,7 +136,13 @@ Nai 토큰은 "저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으�
 
 Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프롬프트는 다 있을 것
 
-그리고 "검색" 버튼을 누르면 지가 찾아서 "검색 : n" 이랑 "남음 : n" 을 표시해줌
+
+
+만약 검색량을 넘게되면 그 뒤로는 단어앞에 *을 붙여서 검색한 단어를 포함한 또는 단어로 끝나는 프롬프트들을 표시해줌
+
+그리고 띄어쓰기 하면 눈치있게 잘 찾아주게 해뒀음 (pla ski = plaid skirt가 나옴)
+
+다 정하고 "검색" 버튼을 누르면 "검색 : n" 이랑 "남음 : n" 을 표시해줌
 <br />
 <br />
 
@@ -164,17 +176,38 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 
 ## 4. 프리셋 관리
 
-<img width="383" height="282" alt="image" src="https://github.com/user-attachments/assets/8ae6806a-4608-41df-a17a-8f3f035b143e" />
+<img width="384" height="253" alt="image" src="https://github.com/user-attachments/assets/5e27bafc-9039-4e62-914a-8579bd6f83f3" />
 
-말 그대로 현재 저장된 프롬프트(긍정적, 선행, 후행, 부정적)를 저장하는 프리셋 기능임
 
-누르면 위 스샷처럼 나오고 각 목록을 터치함으로써 현재 프리셋에 저장된 프롬프트를 간단히 볼 수 있음
+말 그대로 프리셋을 저장할 수 있음. 종류는 긍정적, 부정적, 선행, 후행, 캐릭터, 설정 총 6가지
 
-<img width="378" height="497" alt="image" src="https://github.com/user-attachments/assets/5771c8c1-bf30-4206-99a7-df59df207a05" />
 
-바로 이렇게
-<br />
-<br />
+<img width="248" height="369" alt="image" src="https://github.com/user-attachments/assets/c79c10e8-444f-43e4-8709-bb1ac33a69ae" />
+
+오른쪽 위 저장을 누르면 이렇게 프리셋 이름과 무엇을 저장할지 나오고
+
+긍정적, 선행, 캐릭터만 저장한 경우 개별 탭에 표시가 됨. 그 외에는 전부 기타 탭
+
+
+
+<img width="298" height="501" alt="image" src="https://github.com/user-attachments/assets/7930aa85-834b-4d38-ab07-eb5454622c5d" />
+
+저장된 프리셋을 누르면 이런 화면이 나오고 위에 그림이 있는 칸을 누르면 미리보기 이미지를 지정할 수 있음.
+
+
+<img width="296" height="306" alt="image" src="https://github.com/user-attachments/assets/4f8b55bc-3241-457c-823d-cb272b21b8b7" />
+
+기타 탭에 있는 프리셋은 이렇게 나오고 해당하는 항목을 누르면 펼칠 수 있음.
+
+앞에 3개는 복사하거나 적용할때 그 프롬프트만 나오지만
+
+
+<img width="252" height="241" alt="image" src="https://github.com/user-attachments/assets/3d3e0e57-47a5-4b2b-96a3-2a487016df3f" />
+
+기타 탭에 있는 프리셋을 불러올땐 내가 원하는 것만 가져올 수 있게 해뒀음.
+
+단, 복사는 시스템상 한 종류만 복사 가능함. 어쩔 수 업슴...
+
 
 ---
 
@@ -194,6 +227,19 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 
 체크되면 생성 완료될때마다 저장됨니다.
 <br />
+
+---
+
+## 7. 연속 생성 기능
+
+<img width="223" height="55" alt="image" src="https://github.com/user-attachments/assets/4a4bb56b-47ea-480e-a092-99cdf64c363f" />
+
+네모를 누르면 1 2 3 4 ∞ 순으로 바뀌고 이미지 생성을 누르면 옆에 남은 숫자가 나옴
+
+
+<img width="222" height="54" alt="image" src="https://github.com/user-attachments/assets/6fd963e4-b25d-4be4-8008-dc9db6be4742" />
+
+만약 중간에 생성을 멈추고 싶을때는 "생성중(n)..." 으로 변한 버튼을 누르면 뒤에 숫자가 사라지면서 추가 생성을 취소함
 
 ---
 ---
