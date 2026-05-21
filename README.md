@@ -24,7 +24,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 * [히스토리 탭](#히스토리-탭)
 * [img2img 탭](#img2img-탭)
 * [캐릭터 탭](#캐릭터-탭)
-* [와일드카드 탭](#와일드-카드-탭)
+* [와일드 카드 탭](#와일드-카드-탭)
 * [설정 탭](#설정-탭)
 
 ---
@@ -458,6 +458,7 @@ Danbooru 기준 사용량 100이상은 모두 넣어뒀으니 애지간한 프�
 ---
 ---
 
+<a id="와일드-카드-탭"></a>
 ## 🃏 와일드 카드 탭
 
 <img width="377" height="470" alt="image" src="https://github.com/user-attachments/assets/bd14c22d-a93a-4e61-8d46-e458f487d818" />
