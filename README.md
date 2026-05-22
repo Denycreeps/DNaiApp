@@ -98,29 +98,48 @@ NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥
 <img width="379" height="674" alt="image" src="https://github.com/user-attachments/assets/9c47f869-bd85-4da9-b9ea-f53d499d8adf" />
 
 
-다른건 딱 보면 알것이고 설명이 필요한 부분만 말하자면
+하나씩 설명하면
 
 ---
 
 ### 1. 톱니바퀴(검색창 열고 닫기)
 
-<img width="376" height="199" alt="image" src="https://github.com/user-attachments/assets/2252f263-0d5f-459c-891a-c70b8f871c4f" />
+<img width="376" height="200" alt="image" src="https://github.com/user-attachments/assets/2de96084-6b2f-4ce7-ba41-9f0e29ffa9c5" />
 
 
-열면 스크린샷처럼 화면이 나옴. NAIA를 매우 강하게 배꼈습니다. 감사합니다.
+열면 스크린샷처럼 화면이 나옴. NAIA를 만드신 분께는 언제나 감사합니다.
 
 
 윗칸은 찾을 프롬프트, 아래칸은 제거할 프롬프트임
 
-아래 E, Q, S, G 는 생각하는 그것이고
+아래 E, Q, S, G 는 각각 
 
-검색할때 `*`을 붙인 곳에 따라 범위가 바뀌고 윗칸 아래칸에서 모두 사용 가능함.
+| Rating | 설명 |
+| :--- | :--- |
+| `Explicit` | 성행위를 포함한 수위 |
+| `Questionable` | 중요부위 노출이 있는 수위 |
+| `Sensitive` | 속옷이 보기는 정도의 수위 |
+| `General` | 건전한 그림 |
+
+이고 체크한 Rating이 포함된 그림을 찾게해줌.
+
+윗칸에 1girl, skirt 로 하면 1girl, skirt가 포함된 모든 결과가 검색되고
+
+아랫칸에 serafuku를 넣으면 1girl, skirt가 둘 다 포함되어있는 결과 중 serafuku가 포함된 결과를 제외함.
+
+<br />
+
+또한 검색할때 `*`을 붙인 곳에 따라 범위가 바뀌고 윗칸 아래칸에서 모두 사용 가능함.
 
 | 입력 예시 | 검색 방식 |
 | :--- | :--- |
 | `skirt` | skirt 프롬프트 검색 |
 | `*skirt` | skirt로 끝나는 프롬프트 |
 | `skirt*` | skirt로 시작하는 프롬프트 |
+
+그리고 여러 프롬프트를 동시에 찾고싶은 경우가 있는데 그런 경우엔
+
+`{A|B}` 식으로 검색하면 A가 포함된 결과와 B가 포함된 결과를 모두 찾아줌.
 
 <br />
 
