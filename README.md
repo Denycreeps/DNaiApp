@@ -32,21 +32,15 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 <a id="초기-설정-방법"></a>
 ## ⚙️ 초기 설정 방법
 
-<img width="379" height="768" alt="image" src="https://github.com/user-attachments/assets/9a2c9a49-97b5-4b2c-b475-1d940c9371a0" />
+<img width="374" height="389" alt="image" src="https://github.com/user-attachments/assets/2320be40-b18f-482f-b05d-c2e045ad1481" />
 
 <br />
 
-처음 어플을 켠 뒤 "설정"탭으로 가서 아래로 내리면 NovelAi Api랑 Gelbooru Api가 필요하다고 나옴
+처음 어플을 켠 뒤 `설정탭`으로 가서 아래로 내리면 NovelAi API랑 Gelbooru API를 입력하는 창이 있음.
 
-Gelbooru Api는 랜덤 프롬프트 검색기능을 사용안하면 필요 없지만 이 어플을 쓰는 목적이라 가급적 추천함
+Gelbooru API가 필요한 이유는 앱 특성상 검색 기능을 최대한 효율적으로 쓰기 위해서 필요한거라고 생각해주셈.
 
-<br />
-
-Danbooru에서만 검색하는거보다 훨씬 효율적인걸로 판명되서 Gelbooru Api를 쓰는건데
-
-다른 앱이나 프로그램에서 쓰는 방식(Danbooru 만으로 api없이 검색)으로도 잘 돌아가는 방법을 찾으면 그땐 없어질 것 같음
-
-근데 만들면서 계속 써봤지만 지금도 충분히 속도도 나오고 불만 없는듯
+검색 기능에만 필요한 API라 없어도 다른 기능에는 지장없지만 사실 이 앱을 쓰는 이유중 하나라 쓰는걸 추천함.
 
 <br />
 
@@ -54,7 +48,7 @@ Danbooru에서만 검색하는거보다 훨씬 효율적인걸로 판명되서 G
 <img width="717" height="541" alt="004" src="https://github.com/user-attachments/assets/fc30cb73-561d-43be-8aea-e60727f1dce8" />
 
 
-NovelAi Api는 모두가 아는 그 방법을 쓰면 얻을 수 있고
+NovelAi API는 검색해보면 금방 나오니까 한번 찾아보면 되고
 
 <br />
 
@@ -68,7 +62,18 @@ Gelbooru 토큰은 겔부루 사이트에서 My Account 를 누르고
 <img width="424" height="631" alt="006" src="https://github.com/user-attachments/assets/1d62747d-280a-41f0-a479-3c639176bc5e" />
 
 
-여기서 맨 아래 Option을 누르면 되는데
+계정이 있고 이미 로그인 되어있다면 여기서 Option을 눌러서
+
+<br />
+
+<img width="332" height="205" alt="007" src="https://github.com/user-attachments/assets/064c13e4-6149-4584-833d-89c38e744c96" />
+
+
+맨 아래에 Api~로 시작하는 창에 API가 있음.
+
+형식은 `&api_key="내 API 키"&user_id="내 ID 숫자"` 로 되어 있고 이거 전체를 그대로 복사해서 넣으면 됨
+
+NovelAi API는 넣는 순간 알아서 인증되니까 따로 버튼을 누를 필요는 없음
 
 <br />
 
@@ -76,16 +81,10 @@ Gelbooru 토큰은 겔부루 사이트에서 My Account 를 누르고
 <img width="447" height="313" alt="image" src="https://github.com/user-attachments/assets/8b14c12a-ff16-44a7-be31-44160d6f75a1" />
 
 
-아이디가 없으면 이렇게 뜨니까 빨간 동그라미를 따라가서 새로 가입하면 됨
+만약 아이디가 없으면 My Account를 눌렀을때 이렇게(왼쪽 스샷) 뜨니까 빨간 동그라미를 따라가서 새로 가입하면 됨
 
 <br />
-
-<img width="332" height="205" alt="007" src="https://github.com/user-attachments/assets/064c13e4-6149-4584-833d-89c38e744c96" />
-
-
-Option 맨 아래에 Api 토큰이 있는데 형식은 `&api_key="내 API 키"&user_id="내 ID 숫자"` 로 되어 있고 이거 전체를 그대로 복사해서 넣으면 됨
-
-NovelAi Api는 "토큰 저장 및 연결"을 누르면 되고 Gelbooru는 그냥 넣으면 알아서 인식함
+<br />
 
 여기까지 했으면 이제 바로 사용 가능
 
