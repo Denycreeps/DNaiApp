@@ -408,9 +408,64 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 ### 상세 환경
 
-<img width="375" height="431" alt="image" src="https://github.com/user-attachments/assets/c1965fdf-6480-4c3c-9074-8cefc4ab3bf4" />
+<img width="367" height="445" alt="image" src="https://github.com/user-attachments/assets/632232cc-e669-491e-8bc5-45c90203e1f7" />
 
-잘 아는 그거임
+
+대부분 기본적인 NovelAi 이미지 생성 설정이랑 같고 몇가지 특이한거만 설명함
+
+
+
+<img width="201" height="113" alt="image" src="https://github.com/user-attachments/assets/b0be6c3b-50e0-4e05-a43a-9399e7ef9fe0" />
+
+
+해상도 아래에 `1.0x`, `1.5x`, `2.0x` 는 각각 현재 골라져있는 해상도의 1배율, 1.5배율, 2배율 크기의 이미지를 생성함.
+
+이건 아래에 설명할 `해상도 모드`를 바꿔도 적용되고 당연하지만 1.5배랑 2.0배는 Anals를 소모함.
+
+<br />
+
+<img width="174" height="172" alt="image" src="https://github.com/user-attachments/assets/ee9b965c-ab44-4ace-9b6d-7ea2cb556dec" />
+
+해상도 모드에는 3가지가 있고
+
+| 해상도 | 설명 |
+| :--- | :--- |
+| `수동` | 현재 선택되어있는 해상도로 이미지를 생성 |
+| `랜덤` | 커스텀 해상도를 제외한 해상도중 임의의 해상도로 생성 |
+| `자동` | 랜덤 프롬프트가 만들어질 때 저장된 해상도로 생성 |
+
+`자동` 모드가 햇갈릴텐데 NAIA에도 있는 기능이고 Danbooru에서 프롬프트를 가져올때
+
+그 포스트가 가진 해상도를 64px 기준으로 저장해서 그걸 맞춰서 출력함.
+
+즉 Danbooru에 세로로 긴 이미지가 있고 그 이미지의 프롬프트를 생성시키면
+
+자동으로 768x1344 또는 832x1216 정도의 해상도가 출력된다는 거임.
+
+그냥 생각없이 랜덤프롬프트 돌리면서 할때는 유용할지도
+
+<br />
+
+<img width="199" height="451" alt="image" src="https://github.com/user-attachments/assets/e4b6732d-481d-4cef-9b30-55be43777d0a" />
+
+
+해상도 선택 맨 아래에는 `직접 입력`이 있음. 이걸 누르면 목록에 없는 해상도를 64px 기준으로 작성 가능함
+
+<br />
+
+<img width="246" height="252" alt="image" src="https://github.com/user-attachments/assets/ff71b825-fcf7-40ec-aeac-cfe0b1157e65" />
+
+이런식으로 창이 나와서 내가 추가하거나 이미 추가된 해상도를 제거할 수 있음.
+
+<br />
+
+<img width="198" height="272" alt="image" src="https://github.com/user-attachments/assets/1d36455a-145f-4620-b2b0-cf08d4eaf2a0" />
+
+추가된 해상도는 이렇게 해상도 목록 맨 아래에 점점 누적되고
+
+이 `커스텀 해상도`는 위의 해상도 모드에 있는 `랜덤`이나 `자동`에 포함되지 않음.
+
+순수하게 내가 직접 조정할때만 쓰는것
 
 ---
 
