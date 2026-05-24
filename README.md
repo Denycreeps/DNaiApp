@@ -408,23 +408,25 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 ### 상세 환경
 
-<img width="367" height="445" alt="image" src="https://github.com/user-attachments/assets/632232cc-e669-491e-8bc5-45c90203e1f7" />
+<img width="364" height="398" alt="image" src="https://github.com/user-attachments/assets/94618019-8c12-4fcd-8d7e-9a683cf92b2e" />
 
 
 대부분 기본적인 NovelAi 이미지 생성 설정이랑 같고 몇가지 특이한거만 설명함
 
 
 
-<img width="201" height="113" alt="image" src="https://github.com/user-attachments/assets/b0be6c3b-50e0-4e05-a43a-9399e7ef9fe0" />
+<img width="367" height="77" alt="image" src="https://github.com/user-attachments/assets/2a067a73-eb41-41e3-8d35-e685624a528b" />
 
 
-해상도 아래에 `1.0x`, `1.5x`, `2.0x` 는 각각 현재 골라져있는 해상도의 1배율, 1.5배율, 2배율 크기의 이미지를 생성함.
+해상도 옆에 `1.5x`는 체크되어있으면 왼쪽에 정해진 해상도의 1.5배 크기의 이미지를 생성함
 
-이건 아래에 설명할 `해상도 모드`를 바꿔도 적용되고 당연하지만 1.5배랑 2.0배는 Anals를 소모함.
+이건 아래에 설명할 `해상도 모드`를 바꿔도 적용되고 당연하지만 생성시 Anals를 소모함.
 
-참고로 `2.0x`를 골라도 진짜 2배가 아닌 경우가 있는데 NovelAi가 최대 3,145,728px 한계가 있어서 그거 보다 크면 자동으로 조절되게 해뒀음.
+<br />
 
-저 px를 초과하면 아예 생성 안된다고 오류를 내더라고...
+<img width="213" height="76" alt="image" src="https://github.com/user-attachments/assets/de5dae2f-c616-431b-91be-59d6eb1a0140" />
+
+이런식으로 되어있으면 체크 된거임
 
 <br />
 
