@@ -518,6 +518,28 @@ class AppState extends ChangeNotifier {
   bool get hasUpdate =>
       latestVersion != null && _compareVersions(latestVersion!, currentVersion) > 0;
 
+  /// 릴리즈 노트를 미리보기 형태로 변환
+  List<String> get releaseNotePreview {
+    if (updateNotes == null || updateNotes!.isEmpty) {
+      return [];
+    }
+    return updateNotes!
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty && !line.startsWith('![')) // 이미지 라인 제외
+        .map((line) {
+          // 마크다운 헤더 정리
+          line = line.replaceAll(RegExp(r'^#+\s*'), '');
+          // 30자 넘으면 자르기
+          if (line.length > 40) {
+            return '${line.substring(0, 40)}...';
+          }
+          return line;
+        })
+        .take(10) // 최대 10줄
+        .toList();
+  }
+
   static int _compareVersions(String a, String b) {
     final pa = a.replaceFirst('v', '').split('.').map((e) => int.tryParse(e) ?? 0).toList();
     final pb = b.replaceFirst('v', '').split('.').map((e) => int.tryParse(e) ?? 0).toList();
@@ -720,6 +742,8 @@ class AppState extends ChangeNotifier {
   String selectedSampler = "k_euler_ancestral";
   String selectedScheduler = "karras";
   String selectedResolution = "832 x 1216";
+  double resolutionScale = 1.0; // 1.0, 1.5, 2.0
+  List<String> customResolutions = []; // 사용자 추가 해상도
 
   List<NaiCharacter> characters = [NaiCharacter()];
   int selectedCharIndex = 0;
@@ -813,7 +837,17 @@ class AppState extends ChangeNotifier {
 
     apiToken = prefs.getString('api_token') ?? "";
     apiTokenController.text = apiToken;
-    isApiConnected = apiToken.isNotEmpty;
+    // 토큰이 있으면 실제 서버에 검증 (Anlas 조회)
+    if (apiToken.isNotEmpty) {
+      try {
+        await fetchAnlas();
+        isApiConnected = currentAnlas >= 0;
+      } catch (_) {
+        isApiConnected = false;
+      }
+    } else {
+      isApiConnected = false;
+    }
     customSavePathController.text =
         prefs.getString('custom_save_path') ?? "/storage/emulated/0/Download";
     customFileNameController.text =
@@ -878,6 +912,11 @@ class AppState extends ChangeNotifier {
     selectedSampler = prefs.getString('sampler') ?? "k_euler_ancestral";
     selectedScheduler = prefs.getString('scheduler') ?? "karras";
     selectedResolution = prefs.getString('resolution') ?? "832 x 1216";
+    resolutionScale = prefs.getDouble('resolutionScale') ?? 1.0;
+    if (resolutionScale != 1.5) {
+      resolutionScale = 1.0;
+    } // 1.0 또는 1.5만 허용
+    customResolutions = prefs.getStringList('customResolutions') ?? [];
 
     String? charJson = prefs.getString('characters');
     if (charJson != null) {
@@ -998,6 +1037,8 @@ class AppState extends ChangeNotifier {
       'useGelbooruApiKey': useGelbooruApiKey,
       'gelbooru_api_input': gelbooruApiController.text,
       'resolution': selectedResolution,
+      'resolutionScale': resolutionScale,
+      'customResolutions': customResolutions,
       'autoCheckUpdate': autoCheckUpdate,
       'collapsedSections': collapsedSections.toList(),
       'characters': characters.map((c) => c.toJson()).toList(),
@@ -1047,7 +1088,8 @@ class AppState extends ChangeNotifier {
     if (data['api_token'] != null && data['api_token'].toString().isNotEmpty) {
       apiToken = data['api_token'];
       apiTokenController.text = apiToken;
-      isApiConnected = true;
+      // 토큰만 복원, 연결 상태는 다음 기동 시 검증
+      isApiConnected = false;
     }
 
     positiveController.text = data['positive'] ?? '';
@@ -1104,7 +1146,16 @@ class AppState extends ChangeNotifier {
       gelbooruApiController.text = data['gelbooru_api_input'];
       parseGelbooruApi();
     }
-    if (data['resolution'] != null) selectedResolution = data['resolution'];
+    if (data['resolution'] != null) {
+      selectedResolution = data['resolution'];
+    }
+    resolutionScale = (data['resolutionScale'] ?? 1.0).toDouble();
+    if (resolutionScale != 1.5) {
+      resolutionScale = 1.0;
+    }
+    if (data['customResolutions'] != null) {
+      customResolutions = List<String>.from(data['customResolutions']);
+    }
     if (data['autoCheckUpdate'] != null) autoCheckUpdate = data['autoCheckUpdate'];
     if (data['collapsedSections'] != null) {
       collapsedSections = Set<String>.from(data['collapsedSections']);
@@ -1212,6 +1263,8 @@ class AppState extends ChangeNotifier {
       await prefs.setString('sampler', selectedSampler);
       await prefs.setString('scheduler', selectedScheduler);
       await prefs.setString('resolution', selectedResolution);
+      await prefs.setDouble('resolutionScale', resolutionScale);
+      await prefs.setStringList('customResolutions', customResolutions);
       await prefs.setString('characters', jsonEncode(characters.map((e) => e.toJson()).toList()));
       await prefs.setString('wildcards', jsonEncode(wildcards.map((e) => e.toJson()).toList()));
       await prefs.setString('presets', jsonEncode(presets.map((e) => e.toJson()).toList()));
@@ -1943,6 +1996,26 @@ class AppState extends ChangeNotifier {
       height = int.parse(resParts[1]);
     }
 
+    // 해상도 배율 적용
+    if (resolutionScale != 1.0) {
+      width = ((width * resolutionScale) / 64).round() * 64;
+      height = ((height * resolutionScale) / 64).round() * 64;
+    }
+
+    // 64px 단위 정렬 (NovelAI 필수 요구사항)
+    width = ((width / 64).round() * 64).clamp(64, 9999);
+    height = ((height / 64).round() * 64).clamp(64, 9999);
+
+    // NovelAI 최대 픽셀 수 제한 (3,145,728px ≈ 1536×2048)
+    const int maxPixels = 3145728;
+    while (width * height > maxPixels) {
+      if (width > height) {
+        width -= 64;
+      } else {
+        height -= 64;
+      }
+    }
+
     String combined =
         "${prefixController.text},${positiveController.text},${suffixController.text}";
     String step1 = _processWildcards(combined);
@@ -2054,7 +2127,12 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     while (batchRemaining > 0) {
-      if (!context.mounted) break;
+      if (!context.mounted) {
+        break;
+      }
+      if (!isApiConnected) {
+        break;
+      } // API 끊기면 중지
 
       await handleGenerate(context, onScrollToHistoryEnd);
 
@@ -3209,6 +3287,26 @@ class AppState extends ChangeNotifier {
       List<String> resParts = selectedResolution.replaceAll(" ", "").split("x");
       width = int.parse(resParts[0]);
       height = int.parse(resParts[1]);
+    }
+
+    // 배율 적용
+    if (resolutionScale != 1.0) {
+      width = ((width * resolutionScale) / 64).round() * 64;
+      height = ((height * resolutionScale) / 64).round() * 64;
+    }
+
+    // 64px 단위 정렬
+    width = ((width / 64).round() * 64).clamp(64, 9999);
+    height = ((height / 64).round() * 64).clamp(64, 9999);
+
+    // NovelAI 최대 픽셀 수 제한
+    const int maxPixels = 3145728;
+    while (width * height > maxPixels) {
+      if (width > height) {
+        width -= 64;
+      } else {
+        height -= 64;
+      }
     }
 
     int steps = int.tryParse(stepsController.text) ?? 28;

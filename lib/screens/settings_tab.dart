@@ -16,6 +16,7 @@ class SettingsTab extends StatefulWidget {
 
 class _SettingsTabState extends State<SettingsTab> {
   bool _isGelbooruExpanded = false;
+  bool _gelbooruExpandChecked = false;
 
   InputDecoration _settingsInputDecoration(String hint, IconData icon, {Widget? suffixIcon}) {
     return InputDecoration(
@@ -94,6 +95,14 @@ class _SettingsTabState extends State<SettingsTab> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+
+    // Gelbooru API 미인증 시 기본 열림 (최초 1회)
+    if (!_gelbooruExpandChecked) {
+      _gelbooruExpandChecked = true;
+      if (state.gelbooruApiController.text.trim().isEmpty) {
+        _isGelbooruExpanded = true;
+      }
+    }
 
     return Padding(
       padding: const EdgeInsets.all(16.0),
@@ -428,81 +437,7 @@ class _SettingsTabState extends State<SettingsTab> {
                 ],
               ),
             ),
-            const SizedBox(height: 24),
-
-            // API 토큰 설정 (미연결 시)
-            if (!state.isApiConnected) ...[
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white10),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "API 토큰 설정",
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: state.apiTokenController,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: _settingsInputDecoration(
-                        "NovelAI 토큰을 붙여넣으세요",
-                        Icons.vpn_key_outlined,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          state.apiToken = state.apiTokenController.text.trim();
-                          if (state.apiToken.isNotEmpty) {
-                            await state.fetchAnlas();
-                            state.isApiConnected = true;
-                            await state.saveAllSettings();
-                            state.refreshUI();
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                duration: const Duration(milliseconds: 2400),
-                                content: Text("계정 정보(Anlas/구독 등급) 동기화 완료!"),
-                              ),
-                            );
-                          } else {
-                            state.isApiConnected = false;
-                            await state.saveAllSettings();
-                            state.refreshUI();
-                            if (!context.mounted) return;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                duration: const Duration(milliseconds: 2400),
-                                content: Text("API 토큰을 입력해주세요."),
-                              ),
-                            );
-                          }
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.deepPurpleAccent,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        child: const Text(
-                          "토큰 저장 및 연결",
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
-
+            const SizedBox(height: 16),
             // ✅ 1번: 설정 백업 (margin 제거 → 다른 항목과 동일한 가로 크기)
             Container(
               padding: const EdgeInsets.all(16),
@@ -626,43 +561,111 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             const SizedBox(height: 16),
 
-            // API 연결 상태
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: state.isApiConnected
-                    ? Colors.tealAccent.withValues(alpha: 0.05)
-                    : Colors.redAccent.withValues(alpha: 0.05),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: state.isApiConnected
-                      ? Colors.tealAccent.withValues(alpha: 0.3)
-                      : Colors.redAccent.withValues(alpha: 0.3),
+            // NovelAi API 토큰 설정 (미연결 시)
+            if (!state.isApiConnected) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1E1E),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      "NovelAi API 토큰 설정",
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      "API 토큰 입력이 필요합니다.",
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: state.apiTokenController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: _settingsInputDecoration(
+                        "NovelAI 토큰을 붙여넣으세요",
+                        Icons.vpn_key_outlined,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          state.apiToken = state.apiTokenController.text.trim();
+                          if (state.apiToken.isNotEmpty) {
+                            await state.fetchAnlas();
+                            state.isApiConnected = true;
+                            await state.saveAllSettings();
+                            state.refreshUI();
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                duration: const Duration(milliseconds: 2400),
+                                content: Text("계정 정보(Anlas/구독 등급) 동기화 완료!"),
+                              ),
+                            );
+                          } else {
+                            state.isApiConnected = false;
+                            await state.saveAllSettings();
+                            state.refreshUI();
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                duration: const Duration(milliseconds: 2400),
+                                content: Text("API 토큰을 입력해주세요."),
+                              ),
+                            );
+                          }
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.deepPurpleAccent,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        child: const Text(
+                          "토큰 저장 및 연결",
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              child: Column(
-                children: [
-                  Icon(
-                    state.isApiConnected ? Icons.check_circle_outline : Icons.error_outline,
-                    color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
-                    size: 48,
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    state.isApiConnected ? "NovelAI 서버에 연결되어 있습니다." : "API 토큰 입력이 필요합니다.",
-                    style: TextStyle(
-                      color: state.isApiConnected ? Colors.tealAccent : Colors.redAccent,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
+              const SizedBox(height: 16),
+            ],
 
-            // ✅ 5번: 연결 해제 버튼 → 버전 바로 위로 이동
+            // API 연결 상태 (연결됨일 때만)
             if (state.isApiConnected) ...[
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.tealAccent.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.tealAccent.withValues(alpha: 0.3)),
+                ),
+                child: const Column(
+                  children: [
+                    Icon(Icons.check_circle_outline, color: Colors.tealAccent, size: 40),
+                    SizedBox(height: 8),
+                    Text(
+                      "NovelAI 서버에 연결되어 있습니다.",
+                      style: TextStyle(
+                        color: Colors.tealAccent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              // 연결 해제 버튼
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
@@ -913,17 +916,19 @@ class _SettingsTabState extends State<SettingsTab> {
                         : OutlinedButton.icon(
                             onPressed: () async {
                               await state.checkForUpdate();
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  duration: const Duration(milliseconds: 2400),
-                                  content: Text(
-                                    state.hasUpdate
-                                        ? "v${state.latestVersion} 업데이트가 있습니다!"
-                                        : "최신 버전입니다.",
+                              if (!context.mounted) {
+                                return;
+                              }
+                              if (state.hasUpdate) {
+                                _showUpdateDialog(context, state);
+                              } else {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    duration: const Duration(milliseconds: 2400),
+                                    content: Text("최신 버전입니다."),
                                   ),
-                                ),
-                              );
+                                );
+                              }
                             },
                             icon: const Icon(Icons.refresh, size: 18),
                             label: const Text(
@@ -968,6 +973,79 @@ class _SettingsTabState extends State<SettingsTab> {
             const SizedBox(height: 40),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showUpdateDialog(BuildContext context, AppState state) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.system_update, color: Colors.deepPurpleAccent, size: 24),
+            const SizedBox(width: 8),
+            Text(
+              "v${state.latestVersion} 업데이트",
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (state.releaseNotePreview.isNotEmpty) ...[
+                const Text(
+                  "변경 사항",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...state.releaseNotePreview.map(
+                  (line) => Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      line,
+                      style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+              ] else
+                const Text("새로운 업데이트가 있습니다.", style: TextStyle(color: Colors.white70)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("닫기", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx);
+              state.downloadAndInstallUpdate(context);
+            },
+            icon: const Icon(Icons.download, color: Colors.white, size: 16),
+            label: const Text(
+              "업데이트",
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+          ),
+        ],
       ),
     );
   }

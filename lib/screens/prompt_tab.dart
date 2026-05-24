@@ -2238,7 +2238,7 @@ class _PromptTabState extends State<PromptTab> {
                         context: context,
                         builder: (ctx) {
                           final ctrl = TextEditingController(
-                            text: state.batchCount == 0 ? '' : state.batchCount.toString(),
+                            text: state.batchCount <= 0 ? '' : state.batchCount.toString(),
                           );
                           return AlertDialog(
                             backgroundColor: const Color(0xFF1E1E1E),
@@ -2256,7 +2256,7 @@ class _PromptTabState extends State<PromptTab> {
                               keyboardType: TextInputType.number,
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
-                                hintText: "0 = 무한, 1~99",
+                                hintText: "1~999",
                                 hintStyle: const TextStyle(color: Colors.white30),
                                 filled: true,
                                 fillColor: const Color(0xFF121212),
@@ -2274,7 +2274,7 @@ class _PromptTabState extends State<PromptTab> {
                               ElevatedButton(
                                 onPressed: () {
                                   final val = int.tryParse(ctrl.text) ?? 1;
-                                  setState(() => state.batchCount = val.clamp(0, 99));
+                                  setState(() => state.batchCount = val.clamp(1, 999));
                                   Navigator.pop(ctx);
                                 },
                                 style: ElevatedButton.styleFrom(
@@ -2309,7 +2309,13 @@ class _PromptTabState extends State<PromptTab> {
                                 ? const Color(0xFF8B5CF6)
                                 : Colors.white54,
                             fontWeight: FontWeight.bold,
-                            fontSize: state.batchCount == 0 ? 18 : 14,
+                            fontSize: state.batchCount == 0
+                                ? 18
+                                : state.batchCount >= 100
+                                ? 10
+                                : state.batchCount >= 10
+                                ? 12
+                                : 14,
                           ),
                         ),
                       ),
@@ -2324,6 +2330,16 @@ class _PromptTabState extends State<PromptTab> {
                             }
                           }
                         : () async {
+                            // API 연결 확인 먼저
+                            if (!state.isApiConnected) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  duration: const Duration(milliseconds: 2400),
+                                  content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
+                                ),
+                              );
+                              return;
+                            }
                             if (state.checkIfAnlasConsumed()) {
                               final batchInfo = state.batchCount > 1
                                   ? "\n${state.batchCount}회 연속 생성합니다."

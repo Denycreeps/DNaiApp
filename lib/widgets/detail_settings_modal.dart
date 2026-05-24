@@ -27,16 +27,16 @@ const Map<String, String> _samplerDisplayNames = {
   "ddim": "DDIM",
 };
 const List<String> _schedulers = ["native", "karras", "exponential", "polyexponential"];
-const List<String> _resolutions = [
-  "1344 x 768",
-  "1216 x 832",
-  "1152 x 896",
-  "1088 x 960",
-  "1024 x 1024",
-  "960 x 1088",
-  "896 x 1152",
-  "832 x 1216",
+const List<String> _defaultResolutions = [
   "768 x 1344",
+  "832 x 1216",
+  "896 x 1152",
+  "960 x 1088",
+  "1024 x 1024",
+  "1088 x 960",
+  "1152 x 896",
+  "1216 x 832",
+  "1344 x 768",
   "직접 입력",
 ];
 
@@ -188,16 +188,66 @@ void showDetailSettingsModal(BuildContext context) {
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // 해상도 드롭다운
                       Expanded(
-                        flex: 55,
+                        flex: 45,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            buildLabel("해상도"),
+                            // 해상도 라벨 + 실제 해상도
+                            Row(
+                              children: [
+                                buildLabel("해상도"),
+                                if (state.resolutionScale == 1.5 &&
+                                    state.selectedResolution != "직접 입력" &&
+                                    state.selectedResolution.contains("x"))
+                                  Expanded(
+                                    child: Text(
+                                      () {
+                                        final resParts = state.selectedResolution
+                                            .replaceAll(" ", "")
+                                            .split("x");
+                                        if (resParts.length < 2) {
+                                          return "";
+                                        }
+                                        var w =
+                                            ((int.tryParse(resParts[0]) ?? 832) * 1.5 / 64)
+                                                .round() *
+                                            64;
+                                        var h =
+                                            ((int.tryParse(resParts[1]) ?? 1216) * 1.5 / 64)
+                                                .round() *
+                                            64;
+                                        while (w * h > 3145728) {
+                                          if (w > h) {
+                                            w -= 64;
+                                          } else {
+                                            h -= 64;
+                                          }
+                                        }
+                                        final anlas = (w * h > 1048576) ? " Anlas" : "";
+                                        return " → $w x $h$anlas";
+                                      }(),
+                                      style: TextStyle(
+                                        color: Colors.amber.withValues(alpha: 0.8),
+                                        fontSize: 10,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                              ],
+                            ),
                             buildInputContainer(
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
-                                  value: state.selectedResolution,
+                                  value:
+                                      (state.selectedResolution != "직접 입력" &&
+                                          [
+                                            ..._defaultResolutions,
+                                            ...state.customResolutions,
+                                          ].contains(state.selectedResolution))
+                                      ? state.selectedResolution
+                                      : "832 x 1216",
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: const Color(0xFF2A2A2D),
@@ -207,13 +257,39 @@ void showDetailSettingsModal(BuildContext context) {
                                     size: 20,
                                   ),
                                   style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                  items: _resolutions
-                                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                                      .toList(),
+                                  items: [
+                                    ..._defaultResolutions.map(
+                                      (e) => DropdownMenuItem(value: e, child: Text(e)),
+                                    ),
+                                    if (state.customResolutions.isNotEmpty)
+                                      const DropdownMenuItem(
+                                        enabled: false,
+                                        value: null,
+                                        child: Divider(color: Colors.white24, height: 1),
+                                      ),
+                                    ...state.customResolutions.map(
+                                      (e) => DropdownMenuItem(
+                                        value: e,
+                                        child: Row(
+                                          children: [
+                                            const Icon(Icons.star, color: Colors.amber, size: 14),
+                                            const SizedBox(width: 6),
+                                            Text(e),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
                                   onChanged: state.resolutionMode != "수동"
                                       ? null
                                       : (val) {
-                                          if (val != null) {
+                                          if (val == "직접 입력") {
+                                            _showCustomResolutionDialog(
+                                              context,
+                                              state,
+                                              setModalState,
+                                            );
+                                          } else if (val != null) {
                                             setModalState(() => state.selectedResolution = val);
                                           }
                                         },
@@ -228,56 +304,51 @@ void showDetailSettingsModal(BuildContext context) {
                                 ),
                               ),
                             ),
-                            if (state.selectedResolution == "직접 입력" &&
-                                state.resolutionMode == "수동") ...[
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: buildInputContainer(
-                                      TextField(
-                                        controller: state.customWidthController,
-                                        keyboardType: TextInputType.number,
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                        decoration: const InputDecoration(
-                                          border: InputBorder.none,
-                                          isCollapsed: true,
-                                          hintText: "가로",
-                                          hintStyle: TextStyle(color: Colors.white30),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(horizontal: 6),
-                                    child: Text("x", style: TextStyle(color: Colors.white54)),
-                                  ),
-                                  Expanded(
-                                    child: buildInputContainer(
-                                      TextField(
-                                        controller: state.customHeightController,
-                                        keyboardType: TextInputType.number,
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                        decoration: const InputDecoration(
-                                          border: InputBorder.none,
-                                          isCollapsed: true,
-                                          hintText: "세로",
-                                          hintStyle: TextStyle(color: Colors.white30),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ],
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 6),
+                      // 1.5x 토글 버튼
+                      Padding(
+                        padding: const EdgeInsets.only(top: 26),
+                        child: GestureDetector(
+                          onTap: () {
+                            setModalState(() {
+                              state.resolutionScale = state.resolutionScale == 1.5 ? 1.0 : 1.5;
+                            });
+                            state.saveAllSettings();
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: state.resolutionScale == 1.5
+                                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
+                                  : const Color(0xFF2A2A2D),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: state.resolutionScale == 1.5
+                                    ? const Color(0xFF8B5CF6)
+                                    : Colors.white12,
+                                width: state.resolutionScale == 1.5 ? 1.5 : 1,
+                              ),
+                            ),
+                            child: Text(
+                              "1.5x",
+                              style: TextStyle(
+                                color: state.resolutionScale == 1.5
+                                    ? const Color(0xFF8B5CF6)
+                                    : Colors.white54,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      // 해상도 모드
                       Expanded(
-                        flex: 45,
+                        flex: 40,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -890,7 +961,7 @@ void _applyMetadata(
     }
 
     String resString = "${meta.width} x ${meta.height}";
-    if (_resolutions.contains(resString)) {
+    if (_defaultResolutions.contains(resString) || state.customResolutions.contains(resString)) {
       state.selectedResolution = resString;
       state.resolutionMode = "수동";
     }
@@ -913,4 +984,200 @@ void _applyMetadata(
       ),
     );
   }
+}
+
+void _showCustomResolutionDialog(BuildContext context, AppState state, StateSetter setModalState) {
+  final wCtrl = TextEditingController();
+  final hCtrl = TextEditingController();
+
+  showDialog(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          "커스텀 해상도",
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 입력 영역
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: wCtrl,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: "가로",
+                        hintStyle: const TextStyle(color: Colors.white30),
+                        filled: true,
+                        fillColor: const Color(0xFF121212),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8),
+                    child: Text("x", style: TextStyle(color: Colors.white54, fontSize: 16)),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: hCtrl,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: "세로",
+                        hintStyle: const TextStyle(color: Colors.white30),
+                        filled: true,
+                        fillColor: const Color(0xFF121212),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () {
+                      final w = int.tryParse(wCtrl.text);
+                      final h = int.tryParse(hCtrl.text);
+                      if (w != null && h != null && w > 0 && h > 0) {
+                        // 64px 정렬
+                        var aw = ((w / 64).round() * 64).clamp(64, 9999);
+                        var ah = ((h / 64).round() * 64).clamp(64, 9999);
+                        // 최대 픽셀 제한 (3,145,728px)
+                        while (aw * ah > 3145728) {
+                          if (aw > ah) {
+                            aw -= 64;
+                          } else {
+                            ah -= 64;
+                          }
+                        }
+                        final res = "$aw x $ah";
+                        final adjusted = (aw != w || ah != h);
+                        final warning = (aw * ah > 1048576) ? " (Anlas 소모)" : "";
+                        if (!state.customResolutions.contains(res)) {
+                          state.customResolutions.add(res);
+                          state.saveAllSettings();
+                        }
+                        setModalState(() => state.selectedResolution = res);
+                        setDialogState(() {});
+                        wCtrl.clear();
+                        hCtrl.clear();
+                        final adjustNote = adjusted ? "\n입력: $w x $h → 조정됨" : "";
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            duration: const Duration(milliseconds: 2400),
+                            content: Text("$res 추가됨$warning$adjustNote"),
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF8B5CF6),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    child: const Text(
+                      "추가",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              // 저장된 목록
+              if (state.customResolutions.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  "저장된 해상도",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                ...state.customResolutions.map((res) {
+                  final parts = res.replaceAll(" ", "").split("x");
+                  final pixels =
+                      (int.tryParse(parts[0]) ?? 0) *
+                      (int.tryParse(parts.length > 1 ? parts[1] : "0") ?? 0);
+                  final consumesAnlas = pixels > 1048576;
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 4),
+                    decoration: BoxDecoration(
+                      color: state.selectedResolution == res
+                          ? const Color(0xFF8B5CF6).withValues(alpha: 0.1)
+                          : Colors.transparent,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: state.selectedResolution == res
+                            ? const Color(0xFF8B5CF6).withValues(alpha: 0.4)
+                            : Colors.white12,
+                      ),
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      visualDensity: const VisualDensity(vertical: -3),
+                      title: Row(
+                        children: [
+                          Text("⭐ $res", style: const TextStyle(color: Colors.white, fontSize: 13)),
+                          if (consumesAnlas)
+                            Text(
+                              "  (Anlas)",
+                              style: TextStyle(
+                                color: Colors.amber.withValues(alpha: 0.8),
+                                fontSize: 10,
+                              ),
+                            ),
+                        ],
+                      ),
+                      trailing: GestureDetector(
+                        onTap: () {
+                          state.customResolutions.remove(res);
+                          if (state.selectedResolution == res) {
+                            state.selectedResolution = "832 x 1216";
+                          }
+                          state.saveAllSettings();
+                          setModalState(() {});
+                          setDialogState(() {});
+                        },
+                        child: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+                      ),
+                      onTap: () {
+                        setModalState(() => state.selectedResolution = res);
+                        setDialogState(() {});
+                      },
+                    ),
+                  );
+                }),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("닫기", style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    ),
+  );
 }

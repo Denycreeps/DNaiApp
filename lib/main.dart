@@ -74,51 +74,79 @@ class _NovelAiAppState extends State<NovelAiApp>
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1E1E1E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.system_update, color: Colors.deepPurpleAccent),
-            SizedBox(width: 8),
+            const Icon(Icons.system_update, color: Colors.deepPurpleAccent, size: 24),
+            const SizedBox(width: 8),
             Text(
-              "새 버전이 있어요!",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              "v${state.latestVersion} 업데이트",
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              "v${AppState.currentVersion} → v${state.latestVersion}",
-              style: const TextStyle(
-                color: Colors.deepPurpleAccent,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            if (state.updateNotes != null && state.updateNotes!.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF121212),
-                  borderRadius: BorderRadius.circular(8),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "v${AppState.currentVersion} → v${state.latestVersion}",
+                style: const TextStyle(
+                  color: Colors.deepPurpleAccent,
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
                 ),
-                constraints: const BoxConstraints(maxHeight: 200),
-                child: SingleChildScrollView(
-                  child: Text(
-                    state.updateNotes!,
-                    style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+              ),
+              if (state.releaseNotePreview.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                const Text(
+                  "변경 사항",
+                  style: TextStyle(
+                    color: Colors.white54,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
-              ),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF121212),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: state.releaseNotePreview
+                        .map(
+                          (line) => Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Text(
+                              line,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                height: 1.4,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                  ),
+                ),
+              ],
             ],
-          ],
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("나중에", style: TextStyle(color: Colors.grey)),
+            child: const Text("닫기", style: TextStyle(color: Colors.grey)),
           ),
           if (state.apkDownloadUrl != null)
             ElevatedButton.icon(
@@ -126,11 +154,13 @@ class _NovelAiAppState extends State<NovelAiApp>
                 Navigator.pop(ctx);
                 state.downloadAndInstallUpdate(context);
               },
-              icon: const Icon(Icons.download, size: 16),
-              label: const Text("다운로드", style: TextStyle(fontWeight: FontWeight.bold)),
+              icon: const Icon(Icons.download, color: Colors.white, size: 16),
+              label: const Text(
+                "업데이트",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.deepPurpleAccent,
-                foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),
