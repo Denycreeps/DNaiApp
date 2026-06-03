@@ -2175,9 +2175,9 @@ class AppState extends ChangeNotifier {
         variancePlus: isVariancePlus,
         useCharacterPosition: useCharacterPosition,
         vibeTransfers:
-            (vibeTransfers.isNotEmpty &&
+            (vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).isNotEmpty &&
                 preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).isEmpty)
-            ? vibeTransfers
+            ? vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList()
             : null,
         preciseRefs: preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList().isNotEmpty
             ? preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList()
@@ -3696,10 +3696,11 @@ class AppState extends ChangeNotifier {
       return true;
     }
 
-    // Vibe Transfer: 인코딩 안 된 것이 있거나 4개 초과면 Anlas 소모
-    if (vibeTransfers.isNotEmpty) {
-      bool hasUnencodedVibe = vibeTransfers.any((v) => v['_encoded'] == null);
-      bool tooManyVibes = vibeTransfers.length > 4;
+    // Vibe Transfer: 활성화된 것만, 인코딩 안 된 것이 있거나 4개 초과면 Anlas 소모
+    final activeVibes = vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList();
+    if (activeVibes.isNotEmpty) {
+      bool hasUnencodedVibe = activeVibes.any((v) => v['_encoded'] == null);
+      bool tooManyVibes = activeVibes.length > 4;
       if (hasUnencodedVibe || tooManyVibes) {
         return true;
       }
@@ -3715,19 +3716,20 @@ class AppState extends ChangeNotifier {
 
   // Vibe Transfer Anlas 비용 계산 (UI 표시용)
   int calculateVibeAnlas() {
-    if (vibeTransfers.isEmpty) {
+    final activeVibes = vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList();
+    if (activeVibes.isEmpty) {
       return 0;
     }
     int cost = 0;
     // 인코딩 안 된 vibe당 2 Anlas
-    for (final v in vibeTransfers) {
+    for (final v in activeVibes) {
       if (v['_encoded'] == null) {
         cost += 2;
       }
     }
     // 4개 초과 시 추가 vibe당 2 Anlas
-    if (vibeTransfers.length > 4) {
-      cost += (vibeTransfers.length - 4) * 2;
+    if (activeVibes.length > 4) {
+      cost += (activeVibes.length - 4) * 2;
     }
     return cost;
   }

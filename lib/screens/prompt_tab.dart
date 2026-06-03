@@ -1732,6 +1732,7 @@ class _PromptTabState extends State<PromptTab> {
                               (idx) {
                                 if (idx < state.vibeTransfers.length) {
                                   final vibe = state.vibeTransfers[idx];
+                                  final isEnabled = (vibe['enabled'] as bool?) ?? true;
                                   return GestureDetector(
                                     onTap: () => _showVibeSettingsDialog(
                                       parentContext,
@@ -1743,7 +1744,9 @@ class _PromptTabState extends State<PromptTab> {
                                       decoration: BoxDecoration(
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
-                                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.5),
+                                          color: isEnabled
+                                              ? const Color(0xFF8B5CF6).withValues(alpha: 0.5)
+                                              : Colors.white12,
                                         ),
                                       ),
                                       child: Column(
@@ -1755,16 +1758,58 @@ class _PromptTabState extends State<PromptTab> {
                                                   borderRadius: const BorderRadius.vertical(
                                                     top: Radius.circular(7),
                                                   ),
-                                                  child: Image.memory(
-                                                    base64Decode(vibe['image']),
-                                                    width: double.infinity,
-                                                    fit: BoxFit.cover,
-                                                    cacheWidth: 200,
+                                                  child: ColorFiltered(
+                                                    colorFilter: isEnabled
+                                                        ? const ColorFilter.mode(
+                                                            Colors.transparent,
+                                                            BlendMode.multiply,
+                                                          )
+                                                        : const ColorFilter.mode(
+                                                            Colors.black54,
+                                                            BlendMode.darken,
+                                                          ),
+                                                    child: Image.memory(
+                                                      base64Decode(vibe['image']),
+                                                      width: double.infinity,
+                                                      fit: BoxFit.cover,
+                                                      cacheWidth: 200,
+                                                    ),
+                                                  ),
+                                                ),
+                                                // 눈 아이콘 (좌상단) - enable/disable
+                                                Positioned(
+                                                  top: 4,
+                                                  left: 4,
+                                                  child: GestureDetector(
+                                                    onTap: () {
+                                                      setDialogState(
+                                                        () => state.vibeTransfers[idx]['enabled'] =
+                                                            !isEnabled,
+                                                      );
+                                                      state.refreshUI();
+                                                      state.saveReferencesToLocal();
+                                                    },
+                                                    child: Container(
+                                                      padding: const EdgeInsets.all(4),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius: BorderRadius.circular(12),
+                                                      ),
+                                                      child: Icon(
+                                                        isEnabled
+                                                            ? Icons.visibility
+                                                            : Icons.visibility_off,
+                                                        color: isEnabled
+                                                            ? const Color(0xFF8B5CF6)
+                                                            : Colors.white38,
+                                                        size: 18,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
                                                 Positioned(
-                                                  top: 2,
-                                                  right: 2,
+                                                  top: 4,
+                                                  right: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
                                                       setDialogState(
@@ -1774,15 +1819,15 @@ class _PromptTabState extends State<PromptTab> {
                                                       state.saveReferencesToLocal();
                                                     },
                                                     child: Container(
-                                                      padding: const EdgeInsets.all(2),
+                                                      padding: const EdgeInsets.all(4),
                                                       decoration: BoxDecoration(
                                                         color: Colors.black54,
-                                                        borderRadius: BorderRadius.circular(10),
+                                                        borderRadius: BorderRadius.circular(12),
                                                       ),
                                                       child: const Icon(
                                                         Icons.close,
                                                         color: Colors.white,
-                                                        size: 12,
+                                                        size: 18,
                                                       ),
                                                     ),
                                                   ),
@@ -1829,6 +1874,7 @@ class _PromptTabState extends State<PromptTab> {
                                             'image': base64Img,
                                             'strength': 0.6,
                                             'infoExtracted': 1.0,
+                                            'enabled': true,
                                           });
                                         });
                                         state.refreshUI();
@@ -2011,8 +2057,8 @@ class _PromptTabState extends State<PromptTab> {
                                                 ),
                                                 // 눈 아이콘 (좌상단) - enable/disable
                                                 Positioned(
-                                                  top: 2,
-                                                  left: 2,
+                                                  top: 4,
+                                                  left: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
                                                       setDialogState(
@@ -2023,10 +2069,10 @@ class _PromptTabState extends State<PromptTab> {
                                                       state.saveReferencesToLocal();
                                                     },
                                                     child: Container(
-                                                      padding: const EdgeInsets.all(2),
+                                                      padding: const EdgeInsets.all(4),
                                                       decoration: BoxDecoration(
                                                         color: Colors.black54,
-                                                        borderRadius: BorderRadius.circular(10),
+                                                        borderRadius: BorderRadius.circular(12),
                                                       ),
                                                       child: Icon(
                                                         isEnabled
@@ -2035,14 +2081,14 @@ class _PromptTabState extends State<PromptTab> {
                                                         color: isEnabled
                                                             ? const Color(0xFF8B5CF6)
                                                             : Colors.white38,
-                                                        size: 12,
+                                                        size: 18,
                                                       ),
                                                     ),
                                                   ),
                                                 ),
                                                 Positioned(
-                                                  top: 2,
-                                                  right: 2,
+                                                  top: 4,
+                                                  right: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
                                                       setDialogState(
@@ -2052,15 +2098,15 @@ class _PromptTabState extends State<PromptTab> {
                                                       state.saveReferencesToLocal();
                                                     },
                                                     child: Container(
-                                                      padding: const EdgeInsets.all(2),
+                                                      padding: const EdgeInsets.all(4),
                                                       decoration: BoxDecoration(
                                                         color: Colors.black54,
-                                                        borderRadius: BorderRadius.circular(10),
+                                                        borderRadius: BorderRadius.circular(12),
                                                       ),
                                                       child: const Icon(
                                                         Icons.close,
                                                         color: Colors.white,
-                                                        size: 12,
+                                                        size: 18,
                                                       ),
                                                     ),
                                                   ),
