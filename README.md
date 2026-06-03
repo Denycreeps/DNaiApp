@@ -289,12 +289,15 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 <img width="304" height="442" alt="image" src="https://github.com/user-attachments/assets/a7dfd0f5-8e73-4cf9-b595-e1db33777c3f" />
 
+<br />
 
 팔레트 모양을 누르면 해당 기능을 사용할 수 있음. (적용중이라면 팔레트가 보라색이 됨)
 
 <br />
 
-`Vibe Transfer`는 그림체를 얼마나 적용할지 정하는 `Reference Strength`(이하 강도)와 구도, 세부묘사를 얼마나 적용할지 정하는 `Information Extracted`(이하 정보량)이 있음
+`Vibe Transfer`는 그림체를 얼마나 적용할지 정하는 `Reference Strength`(이하 강도)와 
+
+구도, 세부묘사를 얼마나 적용할지 정하는 `Information Extracted`(이하 정보량)이 있음
 
 사실 이게 정확한지 아닌지는 공식에서도 조금 애매하게 말한 구석이 있어서 그냥 올린 이미지의 그림체를 비슷하게 적용할 수 있다. 정도로 보면 됨. 
 
