@@ -94,7 +94,8 @@ NovelAi API는 넣는 순간 알아서 인증되니까 따로 버튼을 누를 �
 <a id="프롬프트-탭-설명---1"></a>
 ## 📝 프롬프트 탭 설명 - 1
 
-<img width="379" height="674" alt="image" src="https://github.com/user-attachments/assets/9c47f869-bd85-4da9-b9ea-f53d499d8adf" />
+<img width="379" height="674" alt="image" src="https://github.com/user-attachments/assets/7afe6a30-e3d1-4077-b1a6-e32d5fa31d26" />
+
 
 
 하나씩 설명하면
@@ -281,6 +282,50 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 
 만약 연속으로 생성 중에 멈추고 싶을때는 `생성중(n)...` 으로 변한 버튼을 누르면 뒤에 숫자가 사라지면서 추가 생성을 취소함
+
+---
+
+### 8. Vibe Transfer 및 Character Reference 
+
+<img width="304" height="442" alt="image" src="https://github.com/user-attachments/assets/a7dfd0f5-8e73-4cf9-b595-e1db33777c3f" />
+
+
+팔레트 모양을 누르면 해당 기능을 사용할 수 있음. (적용중이라면 팔레트가 보라색이 됨)
+
+<br />
+
+`Vibe Transfer`는 그림체를 얼마나 적용할지 정하는 `Reference Strength`(이하 강도)와 구도, 세부묘사를 얼마나 적용할지 정하는 `Information Extracted`(이하 정보량)이 있음
+
+사실 이게 정확한지 아닌지는 공식에서도 조금 애매하게 말한 구석이 있어서 그냥 올린 이미지의 그림체를 비슷하게 적용할 수 있다. 정도로 보면 됨. 
+
+로컬에서 쓰는 분위기 or 그림체 로라와 유사한느낌?
+
+<br />
+
+<img width="306" height="441" alt="image" src="https://github.com/user-attachments/assets/fd4bd752-f50a-45d0-bb17-a3cc6be72608" />
+
+
+`Character Reference`는 Vibe와 비슷하지만 캐릭터에 중점을 둔 기능으로 
+
+캐릭터의 묘사를 얼마나 적용할지 정하는 `Strength`(이하 강도)와 해당 캐릭터 이미지를 얼마나 충실하게 적용할지 정하는 `Fidelity`(이하 충실도)가 있음
+
+사실 이것도 Vibe처럼 좀 애매한 구석이 있는데 아무튼 로컬에서 쓰는 캐릭터 로라와 비슷한 기능을 함.
+
+근데 최근에 뭐 업데이트로 적용이 이상하게 된다는 말이 있으니 주의
+
+
+<br />
+
+`Vibe Transfer`는 내보내기, 불러오기로 내가 적용한 파일을 다른곳에 옮기거나 백업할 수 있음. 다른 사람의 Vibe를 가져오는 것도 가능
+
+한번 적용에 각각 2 Anals를 사용하지만 한 번 이미지를 생성하면 적용된 Vibe를 변경하지 않는 한 추가적인 Anals 소모 없이 계속 적용이 가능함.
+
+
+`Character Reference`는 내보내기, 불러오기 같은 기능도 없고
+
+한번 적용에 5 Anals를 사용하는데 이미지 생성을 할 때마다 계속 5 Anals가 소모됨. 서버였나 연산에 부담이된다나 뭐라나
+
+방심하다간 어느세 잔뜩 써버릴 수 있으니 주의해야됨.
 
 ---
 ---
