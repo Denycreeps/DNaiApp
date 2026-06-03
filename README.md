@@ -288,12 +288,16 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 ### 8. Vibe Transfer 및 Character Reference 
 
 <img width="304" height="442" alt="image" src="https://github.com/user-attachments/assets/a7dfd0f5-8e73-4cf9-b595-e1db33777c3f" />
+<img width="306" height="441" alt="image" src="https://github.com/user-attachments/assets/fd4bd752-f50a-45d0-bb17-a3cc6be72608" />
 
 <br />
 
 팔레트 모양을 누르면 해당 기능을 사용할 수 있음. (적용중이라면 팔레트가 보라색이 됨)
 
 <br />
+
+<img width="245" height="356" alt="image" src="https://github.com/user-attachments/assets/c0325393-46bc-4f9b-a012-0a03f19a08d4" />
+
 
 `Vibe Transfer`는 그림체를 얼마나 적용할지 정하는 `Reference Strength`(이하 강도)와 
 
@@ -305,7 +309,7 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 <br />
 
-<img width="306" height="441" alt="image" src="https://github.com/user-attachments/assets/fd4bd752-f50a-45d0-bb17-a3cc6be72608" />
+<img width="244" height="359" alt="image" src="https://github.com/user-attachments/assets/29ff1833-3448-4616-ab59-06b2459f40f4" />
 
 
 `Character Reference`는 Vibe와 비슷하지만 캐릭터에 중점을 둔 기능으로 
@@ -314,8 +318,9 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 
 사실 이것도 Vibe처럼 좀 애매한 구석이 있는데 아무튼 로컬에서 쓰는 캐릭터 로라와 비슷한 기능을 함.
 
-근데 최근에 뭐 업데이트로 적용이 이상하게 된다는 말이 있으니 주의
+얘는 Vibe랑 다르게 `캐릭터/스타일/둘 다` 중에 고를 수 있는데 그래서 실질적으로 Vibe 상위호환이라는 느낌임
 
+다만 최근에 뭐 업데이트로 적용이 이상하게 된다는 말이 있으니 주의
 
 <br />
 
@@ -329,6 +334,18 @@ Anals 아래에 `검색` 옆에 숫자가 있어야 작동되고 누를때마다
 한번 적용에 5 Anals를 사용하는데 이미지 생성을 할 때마다 계속 5 Anals가 소모됨. 서버였나 연산에 부담이된다나 뭐라나
 
 방심하다간 어느세 잔뜩 써버릴 수 있으니 주의해야됨.
+
+<br />
+
+<img width="100" height="35" alt="image" src="https://github.com/user-attachments/assets/ea6ea0f2-0ff0-488e-9e7d-c8532b6cec92" />
+
+각각 이미지 왼쪽위, 오른쪽위를 잘보면 눈깔모양이랑 X모양이 있는데
+
+눈깔모양을 눌러서 끄면 해당 이미지는 적용되지 않게되고(Anals 소모도 X)
+
+X모양을 누르면 그것만 삭제할 수 있음.
+
+스크린샷에서는 아이콘이 많이 작은데 크게 바꿔서 다시 올릴 예정임.
 
 ---
 ---
