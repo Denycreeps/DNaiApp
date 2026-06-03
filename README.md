@@ -15,6 +15,8 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 
 미래는 Ai가 책임진다.
 
+[APK 다운로드](#https://github.com/Denycreeps/DNaiApp/releases)
+
 <br />
 
 ## 📖 목차
