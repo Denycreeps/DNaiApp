@@ -4,6 +4,10 @@ import 'dart:math';
 import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'dart:io';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
@@ -821,9 +825,9 @@ class _PromptTabState extends State<PromptTab> {
                                         String text = '';
                                         if (category == 'positive') {
                                           text = preset.positive;
-                                        } else if (category == 'prefix')
+                                        } else if (category == 'prefix') {
                                           text = preset.prefix;
-                                        else if (category == 'characters' &&
+                                        } else if (category == 'characters' &&
                                             preset.characters != null) {
                                           text = preset.characters!
                                               .map((c) => c['positive'] ?? '')
@@ -1417,9 +1421,14 @@ class _PromptTabState extends State<PromptTab> {
       for (int i = 0; i < preset.characters!.length; i++) {
         final c = preset.characters![i];
         final pos = c['positive']?.toString() ?? '';
-        if (pos.isNotEmpty) available['char_${i}_pos'] = pos;
+        if (pos.isNotEmpty) {
+          available['char_${i}_pos'] = pos;
+        }
         final neg = (c['uc'] ?? c['negative'])?.toString() ?? '';
-        if (neg.isNotEmpty) available['char_${i}_neg'] = neg;
+        if (neg.isNotEmpty) {
+          available['char_${i}_neg'] = neg;
+        }
+        // 참고: char_${i}_pos는 _가 뒤따르므로 ${i} 중괄호 필수 ($i_pos는 i_pos 변수로 오인)
       }
     }
 
@@ -1480,6 +1489,1156 @@ class _PromptTabState extends State<PromptTab> {
               );
             }).toList(),
           ),
+        ),
+      ),
+    );
+  }
+
+  // ============================================================================
+  // Vibe Transfer 다이얼로그
+  // ============================================================================
+  // Vibe 내보내기 선택 다이얼로그
+  void _showVibeExportDialog(BuildContext parentContext, AppState state) {
+    final selected = <int>{};
+
+    Future<void> doExport(List<int> indices) async {
+      try {
+        final dir = await getTemporaryDirectory();
+        final now = DateTime.now();
+        final dateStr =
+            "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
+        if (indices.length == 1) {
+          final jsonStr = state.exportVibeToNaiv4(state.vibeTransfers[indices[0]]);
+          final file = File('${dir.path}/vibe_$dateStr.naiv4vibe');
+          await file.writeAsString(jsonStr);
+          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+        } else {
+          final vibes = indices
+              .map((i) => jsonDecode(state.exportVibeToNaiv4(state.vibeTransfers[i])))
+              .toList();
+          final jsonStr = jsonEncode({
+            "identifier": "novelai-vibe-transfer-bundle",
+            "version": 1,
+            "vibes": vibes,
+          });
+          final file = File('${dir.path}/vibes_$dateStr.naiv4vibebundle');
+          await file.writeAsString(jsonStr);
+          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+        }
+      } catch (e) {
+        if (parentContext.mounted) {
+          ScaffoldMessenger.of(parentContext).showSnackBar(
+            SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
+          );
+        }
+      }
+    }
+
+    // vibe가 1개면 바로 내보내기
+    if (state.vibeTransfers.length == 1) {
+      doExport([0]);
+      return;
+    }
+
+    showDialog(
+      context: parentContext,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            "내보낼 Vibe 선택",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  "1개 선택 시 .naiv4vibe,\n2개 이상 선택 시 .naiv4vibebundle로 저장됩니다.",
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
+                const SizedBox(height: 12),
+                ...state.vibeTransfers.asMap().entries.map((entry) {
+                  final idx = entry.key;
+                  final vibe = entry.value;
+                  final isSel = selected.contains(idx);
+                  return GestureDetector(
+                    onTap: () {
+                      setDialogState(() {
+                        if (isSel) {
+                          selected.remove(idx);
+                        } else {
+                          selected.add(idx);
+                        }
+                      });
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 6),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: isSel
+                            ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: isSel ? const Color(0xFF8B5CF6) : Colors.white24),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isSel ? Icons.check_box : Icons.check_box_outline_blank,
+                            color: isSel ? const Color(0xFF8B5CF6) : Colors.white38,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: Image.memory(
+                              base64Decode(vibe['image']),
+                              width: 40,
+                              height: 40,
+                              fit: BoxFit.cover,
+                              cacheWidth: 80,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            "Vibe ${idx + 1}",
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          actions: [
+            Row(
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("취소", style: TextStyle(color: Colors.grey)),
+                ),
+                const Spacer(),
+                ElevatedButton(
+                  onPressed: selected.isEmpty
+                      ? null
+                      : () {
+                          Navigator.pop(ctx);
+                          final sorted = selected.toList()..sort();
+                          doExport(sorted);
+                        },
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+                  child: Text(
+                    selected.length <= 1 ? "내보내기" : "${selected.length}개 묶음 내보내기",
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Vibe 다이얼로그용 색 테두리 탭
+  Widget _buildVibeTab(String title, Color color) {
+    return Builder(
+      builder: (ctx) {
+        final controller = DefaultTabController.of(ctx);
+        return AnimatedBuilder(
+          animation: controller,
+          builder: (_, _) {
+            // 현재 탭 인덱스로 active 판정
+            final myIndex = title == "Vibe" ? 0 : 1;
+            final isActive = controller.index == myIndex;
+            return Container(
+              height: 34,
+              decoration: BoxDecoration(
+                color: isActive ? color.withValues(alpha: 0.15) : Colors.transparent,
+                border: Border.all(
+                  color: isActive ? color : color.withValues(alpha: 0.4),
+                  width: isActive ? 1.5 : 1,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Center(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    color: isActive ? color : Colors.white54,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showVibeTransferDialog(BuildContext parentContext, AppState state) {
+    showDialog(
+      context: parentContext,
+      builder: (ctx) => DefaultTabController(
+        length: 2,
+        child: StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              titlePadding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              title: SizedBox(
+                height: 38,
+                child: TabBar(
+                  indicator: const BoxDecoration(),
+                  dividerColor: Colors.transparent,
+                  labelPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  tabs: [
+                    _buildVibeTab("Vibe", const Color(0xFF8B5CF6)),
+                    _buildVibeTab("Character", const Color(0xFF00BFA5)),
+                  ],
+                ),
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                height: 360,
+                child: TabBarView(
+                  children: [
+                    // === Vibe Transfer 탭 ===
+                    SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // 3x3 그리드 (최대 9개)
+                          GridView.count(
+                            crossAxisCount: 3,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio: 0.85,
+                            children: List.generate(
+                              (state.vibeTransfers.length < 9) ? state.vibeTransfers.length + 1 : 9,
+                              (idx) {
+                                if (idx < state.vibeTransfers.length) {
+                                  final vibe = state.vibeTransfers[idx];
+                                  return GestureDetector(
+                                    onTap: () => _showVibeSettingsDialog(
+                                      parentContext,
+                                      state,
+                                      idx,
+                                      setDialogState,
+                                    ),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: const Color(0xFF8B5CF6).withValues(alpha: 0.5),
+                                        ),
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          Expanded(
+                                            child: Stack(
+                                              children: [
+                                                ClipRRect(
+                                                  borderRadius: const BorderRadius.vertical(
+                                                    top: Radius.circular(7),
+                                                  ),
+                                                  child: Image.memory(
+                                                    base64Decode(vibe['image']),
+                                                    width: double.infinity,
+                                                    fit: BoxFit.cover,
+                                                    cacheWidth: 200,
+                                                  ),
+                                                ),
+                                                Positioned(
+                                                  top: 2,
+                                                  right: 2,
+                                                  child: GestureDetector(
+                                                    onTap: () {
+                                                      setDialogState(
+                                                        () => state.vibeTransfers.removeAt(idx),
+                                                      );
+                                                      state.refreshUI();
+                                                      state.saveReferencesToLocal();
+                                                    },
+                                                    child: Container(
+                                                      padding: const EdgeInsets.all(2),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius: BorderRadius.circular(10),
+                                                      ),
+                                                      child: const Icon(
+                                                        Icons.close,
+                                                        color: Colors.white,
+                                                        size: 12,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(vertical: 5),
+                                            decoration: const BoxDecoration(
+                                              borderRadius: BorderRadius.vertical(
+                                                bottom: Radius.circular(7),
+                                              ),
+                                              color: Color(0xFF121212),
+                                            ),
+                                            child: Center(
+                                              child: Text(
+                                                "${((vibe['strength'] ?? 0.6) * 100).round()}% · ${((vibe['infoExtracted'] ?? 1.0) * 100).round()}%",
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  // 추가 버튼
+                                  return GestureDetector(
+                                    onTap: () async {
+                                      final picker = ImagePicker();
+                                      final picked = await picker.pickImage(
+                                        source: ImageSource.gallery,
+                                      );
+                                      if (picked != null) {
+                                        final bytes = await picked.readAsBytes();
+                                        final base64Img = _resizeVibeImage(bytes);
+                                        setDialogState(() {
+                                          state.vibeTransfers.add({
+                                            'image': base64Img,
+                                            'strength': 0.6,
+                                            'infoExtracted': 1.0,
+                                          });
+                                        });
+                                        state.refreshUI();
+                                        state.saveReferencesToLocal();
+                                      }
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.white24),
+                                        color: Colors.white.withValues(alpha: 0.03),
+                                      ),
+                                      child: const Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.add_photo_alternate_outlined,
+                                            color: Colors.white30,
+                                            size: 24,
+                                          ),
+                                          SizedBox(height: 2),
+                                          Text(
+                                            "추가",
+                                            style: TextStyle(color: Colors.white30, fontSize: 9),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          // 내보내기/불러오기 버튼
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: state.vibeTransfers.isEmpty
+                                      ? null
+                                      : () {
+                                          _showVibeExportDialog(parentContext, state);
+                                        },
+                                  icon: const Icon(Icons.upload_file, size: 16),
+                                  label: const Text("내보내기", style: TextStyle(fontSize: 12)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(color: Colors.white24),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () async {
+                                    final result = await FilePicker.platform.pickFiles(
+                                      type: FileType.any,
+                                    );
+                                    if (result == null || result.files.isEmpty) {
+                                      return;
+                                    }
+                                    try {
+                                      final file = File(result.files.single.path!);
+                                      final jsonStr = await file.readAsString();
+                                      final added = state.importVibeFromNaiv4(jsonStr);
+                                      setDialogState(() {});
+                                      if (parentContext.mounted) {
+                                        ScaffoldMessenger.of(parentContext).showSnackBar(
+                                          SnackBar(
+                                            duration: const Duration(milliseconds: 2400),
+                                            content: Text(
+                                              added > 0
+                                                  ? "$added개의 vibe를 불러왔습니다."
+                                                  : added == 0
+                                                  ? "유효한 vibe 파일이 아닙니다."
+                                                  : "파일을 읽는 데 실패했습니다.",
+                                            ),
+                                          ),
+                                        );
+                                      }
+                                    } catch (e) {
+                                      if (parentContext.mounted) {
+                                        ScaffoldMessenger.of(parentContext).showSnackBar(
+                                          SnackBar(
+                                            duration: const Duration(milliseconds: 2400),
+                                            content: Text("불러오기 실패"),
+                                          ),
+                                        );
+                                      }
+                                    }
+                                  },
+                                  icon: const Icon(Icons.download, size: 16),
+                                  label: const Text("불러오기", style: TextStyle(fontSize: 12)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(color: Colors.white24),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    // === Character (Precise Reference) 탭 ===
+                    SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          GridView.count(
+                            crossAxisCount: 3,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            mainAxisSpacing: 8,
+                            crossAxisSpacing: 8,
+                            childAspectRatio: 0.78,
+                            children: List.generate(
+                              (state.preciseRefs.length < 9) ? state.preciseRefs.length + 1 : 9,
+                              (idx) {
+                                if (idx < state.preciseRefs.length) {
+                                  final ref = state.preciseRefs[idx];
+                                  final typeLabel =
+                                      {
+                                        'character': '캐릭터',
+                                        'style': '스타일',
+                                        'character&style': '둘다',
+                                      }[ref['type']] ??
+                                      '캐릭터';
+                                  final isEnabled = (ref['enabled'] as bool?) ?? true;
+                                  return GestureDetector(
+                                    onTap: () => _showPreciseSettingsDialog(
+                                      parentContext,
+                                      state,
+                                      idx,
+                                      setDialogState,
+                                    ),
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: isEnabled
+                                              ? const Color(0xFF8B5CF6).withValues(alpha: 0.5)
+                                              : Colors.white12,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        children: [
+                                          Expanded(
+                                            child: Stack(
+                                              children: [
+                                                ClipRRect(
+                                                  borderRadius: const BorderRadius.vertical(
+                                                    top: Radius.circular(7),
+                                                  ),
+                                                  child: ColorFiltered(
+                                                    colorFilter: isEnabled
+                                                        ? const ColorFilter.mode(
+                                                            Colors.transparent,
+                                                            BlendMode.multiply,
+                                                          )
+                                                        : const ColorFilter.mode(
+                                                            Colors.black54,
+                                                            BlendMode.darken,
+                                                          ),
+                                                    child: Image.memory(
+                                                      base64Decode(ref['image']),
+                                                      width: double.infinity,
+                                                      fit: BoxFit.cover,
+                                                      cacheWidth: 200,
+                                                    ),
+                                                  ),
+                                                ),
+                                                // 눈 아이콘 (좌상단) - enable/disable
+                                                Positioned(
+                                                  top: 2,
+                                                  left: 2,
+                                                  child: GestureDetector(
+                                                    onTap: () {
+                                                      setDialogState(
+                                                        () => state.preciseRefs[idx]['enabled'] =
+                                                            !isEnabled,
+                                                      );
+                                                      state.refreshUI();
+                                                      state.saveReferencesToLocal();
+                                                    },
+                                                    child: Container(
+                                                      padding: const EdgeInsets.all(2),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius: BorderRadius.circular(10),
+                                                      ),
+                                                      child: Icon(
+                                                        isEnabled
+                                                            ? Icons.visibility
+                                                            : Icons.visibility_off,
+                                                        color: isEnabled
+                                                            ? const Color(0xFF8B5CF6)
+                                                            : Colors.white38,
+                                                        size: 12,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                Positioned(
+                                                  top: 2,
+                                                  right: 2,
+                                                  child: GestureDetector(
+                                                    onTap: () {
+                                                      setDialogState(
+                                                        () => state.preciseRefs.removeAt(idx),
+                                                      );
+                                                      state.refreshUI();
+                                                      state.saveReferencesToLocal();
+                                                    },
+                                                    child: Container(
+                                                      padding: const EdgeInsets.all(2),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black54,
+                                                        borderRadius: BorderRadius.circular(10),
+                                                      ),
+                                                      child: const Icon(
+                                                        Icons.close,
+                                                        color: Colors.white,
+                                                        size: 12,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 5,
+                                              horizontal: 2,
+                                            ),
+                                            decoration: const BoxDecoration(
+                                              borderRadius: BorderRadius.vertical(
+                                                bottom: Radius.circular(7),
+                                              ),
+                                              color: Color(0xFF121212),
+                                            ),
+                                            child: Center(
+                                              child: Text(
+                                                "$typeLabel\n${((ref['strength'] ?? 1.0) * 100).round()}% · ${((ref['fidelity'] ?? 0.5) * 100).round()}%",
+                                                style: const TextStyle(
+                                                  color: Colors.white70,
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.bold,
+                                                  height: 1.3,
+                                                ),
+                                                textAlign: TextAlign.center,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  return GestureDetector(
+                                    onTap: () async {
+                                      final picker = ImagePicker();
+                                      final picked = await picker.pickImage(
+                                        source: ImageSource.gallery,
+                                      );
+                                      if (picked != null) {
+                                        final bytes = await picked.readAsBytes();
+                                        final base64Img = _resizePrecise(bytes);
+                                        setDialogState(() {
+                                          state.preciseRefs.add({
+                                            'image': base64Img,
+                                            'type': 'character',
+                                            'strength': 1.0,
+                                            'fidelity': 0.5,
+                                            'enabled': true,
+                                          });
+                                        });
+                                        state.refreshUI();
+                                        state.saveReferencesToLocal();
+                                      }
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.white24),
+                                        color: Colors.white.withValues(alpha: 0.03),
+                                      ),
+                                      child: const Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Icon(
+                                            Icons.add_photo_alternate_outlined,
+                                            color: Colors.white30,
+                                            size: 24,
+                                          ),
+                                          SizedBox(height: 2),
+                                          Text(
+                                            "추가",
+                                            style: TextStyle(color: Colors.white30, fontSize: 9),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              actions: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Builder(
+                        builder: (innerCtx) {
+                          final controller = DefaultTabController.of(innerCtx);
+                          return AnimatedBuilder(
+                            animation: controller,
+                            builder: (_, _) {
+                              // Character 탭 + Vibe 있을 때: 동시 사용 불가 경고 (2줄)
+                              if (controller.index == 1 && state.vibeTransfers.isNotEmpty) {
+                                return Text(
+                                  "⚠ Vibe와 동시 사용 불가\n(Precise 우선 적용)",
+                                  style: TextStyle(
+                                    color: Colors.orangeAccent.withValues(alpha: 0.8),
+                                    fontSize: 10,
+                                  ),
+                                );
+                              }
+                              // Vibe 탭: Anlas 소모 상태 표시
+                              if (controller.index == 0 && state.vibeTransfers.isNotEmpty) {
+                                final cost = state.calculateVibeAnlas();
+                                if (cost > 0) {
+                                  return Text(
+                                    "Anlas가 $cost 소모됩니다.",
+                                    style: TextStyle(
+                                      color: Colors.amber.withValues(alpha: 0.8),
+                                      fontSize: 10,
+                                    ),
+                                  );
+                                } else {
+                                  return Text(
+                                    "Anlas가 소모되지 않습니다.",
+                                    style: TextStyle(
+                                      color: Colors.tealAccent.withValues(alpha: 0.7),
+                                      fontSize: 10,
+                                    ),
+                                  );
+                                }
+                              }
+                              return const Text(
+                                "이미지를 탭하여 설정을 변경하세요.",
+                                style: TextStyle(color: Colors.white38, fontSize: 10),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                    Builder(
+                      builder: (innerCtx) {
+                        final controller = DefaultTabController.of(innerCtx);
+                        return AnimatedBuilder(
+                          animation: controller,
+                          builder: (_, _) {
+                            final tabIdx = controller.index;
+                            final hasItems = tabIdx == 0
+                                ? state.vibeTransfers.isNotEmpty
+                                : state.preciseRefs.isNotEmpty;
+                            if (!hasItems) {
+                              return const SizedBox.shrink();
+                            }
+                            return GestureDetector(
+                              onTap: () {
+                                showDialog(
+                                  context: parentContext,
+                                  builder: (confirmCtx) => AlertDialog(
+                                    backgroundColor: const Color(0xFF1E1E1E),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                    title: Text(
+                                      tabIdx == 0 ? "Vibe 전체 삭제" : "Character 전체 삭제",
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    content: Text(
+                                      tabIdx == 0
+                                          ? "등록된 모든 Vibe를 삭제하시겠습니까?"
+                                          : "등록된 모든 Character Reference를 삭제하시겠습니까?",
+                                      style: const TextStyle(color: Colors.white70, fontSize: 14),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(confirmCtx),
+                                        child: const Text(
+                                          "취소",
+                                          style: TextStyle(color: Colors.grey),
+                                        ),
+                                      ),
+                                      ElevatedButton(
+                                        onPressed: () {
+                                          setDialogState(() {
+                                            if (tabIdx == 0) {
+                                              state.vibeTransfers.clear();
+                                            } else {
+                                              state.preciseRefs.clear();
+                                            }
+                                          });
+                                          state.refreshUI();
+                                          state.saveReferencesToLocal();
+                                          Navigator.pop(confirmCtx);
+                                        },
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.redAccent,
+                                        ),
+                                        child: const Text(
+                                          "삭제",
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                              child: const Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 12),
+                                child: Text(
+                                  "전체 삭제",
+                                  style: TextStyle(color: Colors.redAccent, fontSize: 12),
+                                ),
+                              ),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text("닫기", style: TextStyle(color: Colors.grey)),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showPreciseSettingsDialog(
+    BuildContext context,
+    AppState state,
+    int idx,
+    StateSetter setParentState,
+  ) {
+    String type = (state.preciseRefs[idx]['type'] as String?) ?? 'character';
+    double strength = (state.preciseRefs[idx]['strength'] ?? 1.0).toDouble();
+    double fidelity = (state.preciseRefs[idx]['fidelity'] ?? 0.5).toDouble();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            "Reference ${idx + 1} 설정",
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // 이미지 변경
+                Center(
+                  child: GestureDetector(
+                    onTap: () async {
+                      final picker = ImagePicker();
+                      final picked = await picker.pickImage(source: ImageSource.gallery);
+                      if (picked != null) {
+                        final bytes = await picked.readAsBytes();
+                        state.preciseRefs[idx]['image'] = _resizePrecise(bytes);
+                        setDialogState(() {});
+                        setParentState(() {});
+                        state.refreshUI();
+                        state.saveReferencesToLocal();
+                      }
+                    },
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        base64Decode(state.preciseRefs[idx]['image']),
+                        height: 80,
+                        width: 80,
+                        fit: BoxFit.cover,
+                        cacheWidth: 160,
+                      ),
+                    ),
+                  ),
+                ),
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.only(top: 4),
+                    child: Text(
+                      "탭하여 이미지 변경",
+                      style: TextStyle(color: Colors.white30, fontSize: 10),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // 참조 타입 선택
+                const Text(
+                  "참조 타입",
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Row(
+                  children:
+                      [
+                        {'key': 'character', 'label': '캐릭터'},
+                        {'key': 'style', 'label': '스타일'},
+                        {'key': 'character&style', 'label': '둘다'},
+                      ].map((t) {
+                        final isActive = type == t['key'];
+                        return Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: GestureDetector(
+                              onTap: () => setDialogState(() => type = t['key']!),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: isActive
+                                      ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
+                                      : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isActive ? const Color(0xFF8B5CF6) : Colors.white24,
+                                    width: isActive ? 1.5 : 1,
+                                  ),
+                                ),
+                                child: Center(
+                                  child: Text(
+                                    t['label']!,
+                                    style: TextStyle(
+                                      color: isActive ? const Color(0xFF8B5CF6) : Colors.white54,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Text(
+                      "강도 (Strength)",
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    const Spacer(),
+                    Text(
+                      "${(strength * 100).round()}%",
+                      style: const TextStyle(
+                        color: Color(0xFF8B5CF6),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: strength,
+                  min: 0.0,
+                  max: 1.0,
+                  divisions: 100,
+                  activeColor: const Color(0xFF8B5CF6),
+                  onChanged: (v) {
+                    setDialogState(() => strength = v);
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text(
+                      "충실도 (Fidelity)",
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    const Spacer(),
+                    Text(
+                      "${(fidelity * 100).round()}%",
+                      style: const TextStyle(
+                        color: Color(0xFF8B5CF6),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: fidelity,
+                  min: 0.0,
+                  max: 1.0,
+                  divisions: 100,
+                  activeColor: const Color(0xFF8B5CF6),
+                  onChanged: (v) {
+                    setDialogState(() => fidelity = v);
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("취소", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                state.preciseRefs[idx]['type'] = type;
+                state.preciseRefs[idx]['strength'] = strength;
+                state.preciseRefs[idx]['fidelity'] = fidelity;
+                setParentState(() {});
+                state.refreshUI();
+                state.saveReferencesToLocal();
+                Navigator.pop(ctx);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              child: const Text(
+                "확인",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showVibeSettingsDialog(
+    BuildContext context,
+    AppState state,
+    int idx,
+    StateSetter setParentState,
+  ) {
+    double strength = (state.vibeTransfers[idx]['strength'] ?? 0.6).toDouble();
+    double infoExtracted = (state.vibeTransfers[idx]['infoExtracted'] ?? 1.0).toDouble();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: Text(
+            "Vibe ${idx + 1} 설정",
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 이미지 변경
+              GestureDetector(
+                onTap: () async {
+                  final picker = ImagePicker();
+                  final picked = await picker.pickImage(source: ImageSource.gallery);
+                  if (picked != null) {
+                    final bytes = await picked.readAsBytes();
+                    state.vibeTransfers[idx]['image'] = _resizeVibeImage(bytes);
+                    // 이미지 변경 시 인코딩 캐시 무효화
+                    state.vibeTransfers[idx].remove('_encoded');
+                    state.vibeTransfers[idx].remove('_encodedInfoExt');
+                    state.vibeTransfers[idx].remove('_encodedModel');
+                    setDialogState(() {});
+                    setParentState(() {});
+                    state.refreshUI();
+                    state.saveReferencesToLocal();
+                  }
+                },
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.memory(
+                    base64Decode(state.vibeTransfers[idx]['image']),
+                    height: 80,
+                    width: 80,
+                    fit: BoxFit.cover,
+                    cacheWidth: 160,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text("탭하여 이미지 변경", style: TextStyle(color: Colors.white30, fontSize: 10)),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text(
+                    "강도 (Strength)",
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const Spacer(),
+                  Text(
+                    "${(strength * 100).round()}%",
+                    style: const TextStyle(
+                      color: Color(0xFF8B5CF6),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: strength,
+                min: 0.01,
+                max: 1.0,
+                divisions: 99,
+                activeColor: const Color(0xFF8B5CF6),
+                onChanged: (v) {
+                  setDialogState(() => strength = v);
+                },
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Text(
+                    "정보 추출 (Info Extracted)",
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const Spacer(),
+                  Text(
+                    "${(infoExtracted * 100).round()}%",
+                    style: const TextStyle(
+                      color: Color(0xFF8B5CF6),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+              Slider(
+                value: infoExtracted,
+                min: 0.01,
+                max: 1.0,
+                divisions: 99,
+                activeColor: const Color(0xFF8B5CF6),
+                onChanged: (v) {
+                  setDialogState(() => infoExtracted = v);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("취소", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                // 정보추출 값이 바뀌면 인코딩 캐시 무효화 (재인코딩 필요)
+                final oldInfoExt = (state.vibeTransfers[idx]['infoExtracted'] as double?) ?? 1.0;
+                if (oldInfoExt != infoExtracted) {
+                  state.vibeTransfers[idx].remove('_encoded');
+                  state.vibeTransfers[idx].remove('_encodedInfoExt');
+                  state.vibeTransfers[idx].remove('_encodedModel');
+                }
+                state.vibeTransfers[idx]['strength'] = strength;
+                state.vibeTransfers[idx]['infoExtracted'] = infoExtracted;
+                setParentState(() {});
+                state.refreshUI();
+                state.saveReferencesToLocal();
+                Navigator.pop(ctx);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              child: const Text(
+                "확인",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -2502,7 +3661,19 @@ class _PromptTabState extends State<PromptTab> {
                       minimumSize: const Size(120, 36),
                     ),
                   ),
-                  const Spacer(flex: 3),
+                  const Spacer(),
+                  // Vibe Transfer
+                  GestureDetector(
+                    onTap: () => _showVibeTransferDialog(context, state),
+                    child: Icon(
+                      Icons.palette_outlined,
+                      color: (state.vibeTransfers.isNotEmpty || state.preciseRefs.isNotEmpty)
+                          ? const Color(0xFF8B5CF6)
+                          : Colors.grey,
+                      size: 22,
+                    ),
+                  ),
+                  const Spacer(),
                   // 톱니바퀴 (상세 환경) — 컴팩트
                   GestureDetector(
                     onTap: () {
@@ -2515,7 +3686,7 @@ class _PromptTabState extends State<PromptTab> {
                       size: 22,
                     ),
                   ),
-                  const Spacer(flex: 1),
+                  const Spacer(flex: 2),
                   Row(
                     children: [
                       SizedBox(
@@ -2664,4 +3835,78 @@ class _PromptTabState extends State<PromptTab> {
       ),
     );
   }
+}
+
+// Vibe Transfer용 이미지 리사이즈 + base64 인코딩 (백그라운드 isolate)
+String _resizeVibeImage(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) {
+    return base64Encode(bytes);
+  }
+  // 긴 변 기준 최대 1024px로 축소 (Vibe Transfer는 큰 해상도 불필요)
+  img.Image resized = decoded;
+  if (decoded.width > 1024 || decoded.height > 1024) {
+    if (decoded.width >= decoded.height) {
+      resized = img.copyResize(decoded, width: 1024);
+    } else {
+      resized = img.copyResize(decoded, height: 1024);
+    }
+  }
+  final jpg = img.encodeJpg(resized, quality: 90);
+  return base64Encode(jpg);
+}
+
+// Precise Reference용 이미지 리사이즈 + 패딩
+// NovelAI는 반드시 1024x1536 / 1472x1472 / 1536x1024 중 하나여야 함
+String _resizePrecise(Uint8List bytes) {
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) {
+    return base64Encode(bytes);
+  }
+
+  // 3가지 타겟 크기
+  const targets = [
+    [1024, 1536], // 세로
+    [1472, 1472], // 정사각
+    [1536, 1024], // 가로
+  ];
+
+  // 원본 비율과 가장 가까운 타겟 선택
+  final ratio = decoded.width / decoded.height;
+  int bestW = 1024, bestH = 1536;
+  double minDiff = double.infinity;
+  for (final t in targets) {
+    final tRatio = t[0] / t[1];
+    final diff = (ratio - tRatio).abs();
+    if (diff < minDiff) {
+      minDiff = diff;
+      bestW = t[0];
+      bestH = t[1];
+    }
+  }
+
+  // 비율 유지하며 축소
+  final scaleX = bestW / decoded.width;
+  final scaleY = bestH / decoded.height;
+  final scale = scaleX < scaleY ? scaleX : scaleY;
+  final newW = (decoded.width * scale).round();
+  final newH = (decoded.height * scale).round();
+  final resized = img.copyResize(decoded, width: newW, height: newH);
+
+  // 검은 배경에 중앙 배치 (패딩) - 픽셀 직접 복사로 버전 호환성 확보
+  final padded = img.Image(width: bestW, height: bestH, numChannels: 3);
+  for (final p in padded) {
+    p.setRgb(0, 0, 0);
+  }
+  final xOff = (bestW - newW) ~/ 2;
+  final yOff = (bestH - newH) ~/ 2;
+  for (int y = 0; y < newH; y++) {
+    for (int x = 0; x < newW; x++) {
+      final pixel = resized.getPixel(x, y);
+      padded.setPixelRgb(x + xOff, y + yOff, pixel.r, pixel.g, pixel.b);
+    }
+  }
+
+  final jpg = img.encodeJpg(padded, quality: 90);
+  return base64Encode(jpg);
 }

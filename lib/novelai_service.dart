@@ -21,7 +21,9 @@ String _processImage3Channel(Uint8List bytes) {
   img.Image? decoded = img.decodeImage(bytes);
   if (decoded == null) {
     String b64 = base64Encode(bytes);
-    if (b64.contains(',')) return b64.split(',').last.trim();
+    if (b64.contains(',')) {
+      return b64.split(',').last.trim();
+    }
     return b64.trim();
   }
 
@@ -54,13 +56,17 @@ String _processImage3Channel(Uint8List bytes) {
 // Infill 마스크 처리: 1/8 격자 → 8배 확대 → 풀 해상도 RGB 3채널 PNG
 // ============================================================================
 String _processMaskForInfill(Uint8List bytes) {
-  if (bytes.length < 9) return base64Encode(bytes);
+  if (bytes.length < 9) {
+    return base64Encode(bytes);
+  }
 
   final header = ByteData.view(bytes.buffer);
   final int w = header.getUint32(0);
   final int h = header.getUint32(4);
   final int expectedSize = 8 + w * h;
-  if (bytes.length < expectedSize) return base64Encode(bytes);
+  if (bytes.length < expectedSize) {
+    return base64Encode(bytes);
+  }
 
   // 1단계: 풀 해상도 raw → 1/8 격자로 축소
   final int smallW = w ~/ 8;
@@ -72,7 +78,9 @@ String _processMaskForInfill(Uint8List bytes) {
       if (bytes[idx++] > 0) {
         final int gx = x ~/ 8;
         final int gy = y ~/ 8;
-        if (gx < smallW && gy < smallH) grid[gy][gx] = true;
+        if (gx < smallW && gy < smallH) {
+          grid[gy][gx] = true;
+        }
       }
     }
   }
@@ -101,6 +109,7 @@ String _processMaskForInfill(Uint8List bytes) {
 
 class NovelAiService {
   static const String apiUrl = "https://image.novelai.net/ai/generate-image";
+  static const String encodeVibeUrl = "https://image.novelai.net/ai/encode-vibe";
   static const String upscaleUrl = "https://api.novelai.net/ai/upscale"; // 업스케일만 api 도메인 유지
 
   // ── Cloudflare Workers 프록시 ──────────────────────────────────────────
@@ -114,7 +123,9 @@ class NovelAiService {
 
   // Gelbooru rating 정규화: "explicit" → "e", "questionable" → "q" 등
   static String _normalizeRating(String? raw) {
-    if (raw == null || raw.isEmpty) return "g";
+    if (raw == null || raw.isEmpty) {
+      return "g";
+    }
     return raw.substring(0, 1).toLowerCase();
   }
 
@@ -217,7 +228,9 @@ class NovelAiService {
 
   bool _isBackgroundTag(String lower) {
     // 접미사 매칭: ~background, ~sky 패턴
-    if (lower.endsWith('background') || lower.endsWith(' sky')) return true;
+    if (lower.endsWith('background') || lower.endsWith(' sky')) {
+      return true;
+    }
     // 고정 목록 매칭
     return TagFilters.backgroundTags.contains(lower);
   }
@@ -234,7 +247,9 @@ class NovelAiService {
     List<String> tagsToFetch = [];
 
     for (String tag in uniqueTags) {
-      if (tag.isEmpty) continue;
+      if (tag.isEmpty) {
+        continue;
+      }
       if (persistentCache.containsKey(tag)) {
         finalCategoryMap[tag] = int.tryParse(persistentCache[tag].toString()) ?? 0;
       } else {
@@ -242,7 +257,9 @@ class NovelAiService {
       }
     }
 
-    if (tagsToFetch.isEmpty) return finalCategoryMap;
+    if (tagsToFetch.isEmpty) {
+      return finalCategoryMap;
+    }
 
     int chunkSize = 100;
     bool isCacheUpdated = false;
@@ -349,10 +366,18 @@ class NovelAiService {
       baseTags.add('-$t');
     }
 
-    if (!rG) baseTags.add("-rating:general");
-    if (!rS) baseTags.add("-rating:sensitive");
-    if (!rQ) baseTags.add("-rating:questionable");
-    if (!rE) baseTags.add("-rating:explicit");
+    if (!rG) {
+      baseTags.add("-rating:general");
+    }
+    if (!rS) {
+      baseTags.add("-rating:sensitive");
+    }
+    if (!rQ) {
+      baseTags.add("-rating:questionable");
+    }
+    if (!rE) {
+      baseTags.add("-rating:explicit");
+    }
 
     const String fallbackUserId = "1939815";
     const String fallbackApiKey =
@@ -421,7 +446,9 @@ class NovelAiService {
       );
 
       for (var response in pageResponses) {
-        if (response == null) continue;
+        if (response == null) {
+          continue;
+        }
         if (response.statusCode != 200) {
           serverErrors++;
           lastErrorDetail = "서버 응답 코드: ${response.statusCode}";
@@ -429,22 +456,32 @@ class NovelAiService {
         }
         try {
           final decoded = jsonDecode(response.body);
-          if (decoded['post'] == null) continue;
+          if (decoded['post'] == null) {
+            continue;
+          }
 
           List<dynamic> posts = decoded['post'];
           for (var post in posts) {
-            if (post['id'] == null) continue;
+            if (post['id'] == null) {
+              continue;
+            }
             int postId = post['id'];
 
-            if (seenIds.contains(postId)) continue;
+            if (seenIds.contains(postId)) {
+              continue;
+            }
             seenIds.add(postId);
 
             int width = int.tryParse(post['width'].toString()) ?? 0;
             int height = int.tryParse(post['height'].toString()) ?? 0;
-            if (width < 512 || height < 512) continue;
+            if (width < 512 || height < 512) {
+              continue;
+            }
 
             String tagString = post['tags'] ?? "";
-            if (tagString.isEmpty) continue;
+            if (tagString.isEmpty) {
+              continue;
+            }
 
             allValidPosts.add(post);
             allUniqueTags.addAll(tagString.split(' ').where((e) => e.isNotEmpty));
@@ -458,15 +495,25 @@ class NovelAiService {
     // 전부 실패했으면 상세 에러 throw
     if (allValidPosts.isEmpty && (failedRequests + timeoutRequests + serverErrors) > 0) {
       List<String> errorParts = [];
-      if (timeoutRequests > 0) errorParts.add("시간 초과: $timeoutRequests건");
-      if (serverErrors > 0) errorParts.add("서버 오류: $serverErrors건");
-      if (failedRequests > 0) errorParts.add("연결 실패: $failedRequests건");
+      if (timeoutRequests > 0) {
+        errorParts.add("시간 초과: $timeoutRequests건");
+      }
+      if (serverErrors > 0) {
+        errorParts.add("서버 오류: $serverErrors건");
+      }
+      if (failedRequests > 0) {
+        errorParts.add("연결 실패: $failedRequests건");
+      }
       errorParts.add("총 요청: $totalRequests건");
-      if (lastErrorDetail != null) errorParts.add("상세: $lastErrorDetail");
+      if (lastErrorDetail != null) {
+        errorParts.add("상세: $lastErrorDetail");
+      }
       throw Exception(errorParts.join('\n'));
     }
 
-    if (allValidPosts.isEmpty) return [];
+    if (allValidPosts.isEmpty) {
+      return [];
+    }
 
     // 로컬 제외 필터링: 포스트의 태그에 제외 태그가 하나라도 포함되면 제거
     if (localExcludeSet.isNotEmpty) {
@@ -478,7 +525,9 @@ class NovelAiService {
       debugPrint("🔍 로컬 제외 후: ${allValidPosts.length}개 포스트");
     }
 
-    if (allValidPosts.isEmpty) return [];
+    if (allValidPosts.isEmpty) {
+      return [];
+    }
 
     // 로컬 사전 필터링: metadata/copyright 태그를 Danbooru API에 보내기 전에 제거
     // → API 청크 수 감소 → 네트워크 호출 절감
@@ -499,13 +548,19 @@ class NovelAiService {
       List<String> finalTags = [];
 
       for (String t in rawTags.toSet()) {
-        if (t.isEmpty) continue;
+        if (t.isEmpty) {
+          continue;
+        }
 
         String rawCleanTag = t.replaceAll('_', ' ');
 
         // 로컬 필터: metadata, copyright, commonGarbage
-        if (TagFilters.metadataTags.contains(rawCleanTag)) continue;
-        if (TagFilters.copyrightTags.contains(rawCleanTag)) continue;
+        if (TagFilters.metadataTags.contains(rawCleanTag)) {
+          continue;
+        }
+        if (TagFilters.copyrightTags.contains(rawCleanTag)) {
+          continue;
+        }
         if (TagFilters.commonGarbage.contains(t) ||
             TagFilters.commonGarbage.contains(rawCleanTag)) {
           continue;
@@ -513,7 +568,9 @@ class NovelAiService {
 
         // Danbooru API 카테고리 필터: artist(1), copyright(3), character(4), metadata(5)
         int? category = tagCategories[t];
-        if (category != null && category != 0) continue;
+        if (category != null && category != 0) {
+          continue;
+        }
 
         String cleanTag = t.replaceAll('_', ' ').replaceAll('(', r'\(').replaceAll(')', r'\)');
         if (removeCharacteristics &&
@@ -527,7 +584,9 @@ class NovelAiService {
         }
 
         finalTags.add(cleanTag);
-        if (finalTags.length >= 40) break;
+        if (finalTags.length >= 40) {
+          break;
+        }
       }
 
       if (finalTags.isNotEmpty) {
@@ -550,6 +609,35 @@ class NovelAiService {
   // ============================================================================
   // 이미지 생성/인페인트 API 호출 (지수 백오프 적용 완료)
   // ============================================================================
+  // V4 모델용 Vibe 이미지 인코딩 (encode-vibe 엔드포인트)
+  Future<String?> _encodeVibe(
+    String base64Image,
+    double infoExtracted,
+    String model,
+    String token,
+  ) async {
+    try {
+      final response = await http.post(
+        Uri.parse(encodeVibeUrl),
+        headers: {"Authorization": "Bearer $token", "Content-Type": "application/json"},
+        body: jsonEncode({
+          "image": base64Image,
+          "information_extracted": infoExtracted,
+          "model": model,
+        }),
+      );
+      if (response.statusCode == 200) {
+        // 응답은 바이너리, base64로 인코딩
+        return base64Encode(response.bodyBytes);
+      }
+      debugPrint("encode-vibe 실패: ${response.statusCode} ${response.body}");
+      return null;
+    } catch (e) {
+      debugPrint("encode-vibe 오류: $e");
+      return null;
+    }
+  }
+
   Future<NaiResponse> generateImage({
     required String positive,
     required String negative,
@@ -570,6 +658,9 @@ class NovelAiService {
     String action = "generate",
     double infillStrength = 0.7,
     bool variancePlus = false,
+    bool useCharacterPosition = true,
+    List<Map<String, dynamic>>? vibeTransfers,
+    List<Map<String, dynamic>>? preciseRefs,
     int maxAttempts = 6,
     void Function(String)? onStatus,
   }) async {
@@ -701,8 +792,8 @@ class NovelAiService {
 
       parameters["v4_prompt"] = {
         "caption": {"base_caption": finalPrompt, "char_captions": posCharCaptions},
-        // 하나라도 기본 위치(C3)가 아닌 캐릭터가 있을 때만 좌표 사용
-        "use_coords": action == "infill" ? false : hasCustomPosition,
+        // 하나라도 기본 위치(C3)가 아닌 캐릭터가 있고, 배치 적용이 켜져있을 때만 좌표 사용
+        "use_coords": action == "infill" ? false : (hasCustomPosition && useCharacterPosition),
         "use_order": true,
       };
       parameters["v4_negative_prompt"] = {
@@ -711,6 +802,85 @@ class NovelAiService {
       };
       // PC 프로그램과 동일: uc에도 네거티브 프롬프트를 넣어야 메타데이터에 표시됨
       parameters["uc"] = negative;
+
+      // Vibe Transfer
+      if (vibeTransfers != null && vibeTransfers.isNotEmpty) {
+        if (apiModel.startsWith("nai-diffusion-4")) {
+          // V4: encode-vibe로 인코딩 필요 (캐시 활용)
+          List<String> encodedVibes = [];
+          List<double> vibeStrengths = [];
+          for (final v in vibeTransfers) {
+            final infoExt = (v['infoExtracted'] as double?) ?? 1.0;
+            // 캐시 확인: 같은 정보추출 값으로 이미 인코딩됐으면 재사용 (Anlas 절약)
+            final cachedEnc = v['_encoded'] as String?;
+            final cachedInfoExt = v['_encodedInfoExt'] as double?;
+            final cachedModel = v['_encodedModel'] as String?;
+
+            String? encoded;
+            if (cachedEnc != null && cachedInfoExt == infoExt && cachedModel == apiModel) {
+              encoded = cachedEnc; // 캐시 재사용 (무료)
+            } else {
+              encoded = await _encodeVibe(v['image'] as String, infoExt, apiModel, token);
+              if (encoded != null) {
+                // 캐시 저장
+                v['_encoded'] = encoded;
+                v['_encodedInfoExt'] = infoExt;
+                v['_encodedModel'] = apiModel;
+              }
+            }
+            if (encoded != null) {
+              encodedVibes.add(encoded);
+              vibeStrengths.add((v['strength'] as double?) ?? 0.6);
+            }
+          }
+          if (encodedVibes.isNotEmpty) {
+            parameters["reference_image_multiple"] = encodedVibes;
+            parameters["reference_strength_multiple"] = vibeStrengths;
+            parameters["normalize_reference_strength_multiple"] = true;
+          }
+        } else {
+          // V3: raw 이미지 직접 전송
+          parameters["reference_image_multiple"] = vibeTransfers
+              .map((v) => v['image'] as String)
+              .toList();
+          parameters["reference_information_extracted_multiple"] = vibeTransfers
+              .map((v) => (v['infoExtracted'] as double?) ?? 1.0)
+              .toList();
+          parameters["reference_strength_multiple"] = vibeTransfers
+              .map((v) => (v['strength'] as double?) ?? 0.6)
+              .toList();
+          parameters["normalize_reference_strength_multiple"] = true;
+        }
+      }
+
+      // Precise Reference (V4.5 전용, Vibe Transfer와 동시 사용 불가)
+      if (preciseRefs != null && preciseRefs.isNotEmpty && apiModel.startsWith("nai-diffusion-4")) {
+        parameters["params_version"] = 3;
+        parameters["director_reference_images"] = preciseRefs
+            .map((r) => r['image'] as String)
+            .toList();
+        parameters["director_reference_descriptions"] = preciseRefs
+            .map(
+              (r) => {
+                "caption": {
+                  "base_caption": (r['type'] as String?) ?? "character",
+                  "char_captions": [],
+                },
+                "legacy_uc": false,
+              },
+            )
+            .toList();
+        parameters["director_reference_strength_values"] = preciseRefs
+            .map((r) => (r['strength'] as double?) ?? 1.0)
+            .toList();
+        // Fidelity는 1에서 빼서 secondary_strength로 전송
+        parameters["director_reference_secondary_strength_values"] = preciseRefs
+            .map((r) => 1.0 - ((r['fidelity'] as double?) ?? 0.5))
+            .toList();
+        parameters["director_reference_information_extracted"] = preciseRefs
+            .map((r) => 1.0)
+            .toList();
+      }
 
       final Map<String, dynamic> requestBody = {
         // T5 토크나이저 파싱 크래시 방지를 위해 소문자화
@@ -745,7 +915,9 @@ class NovelAiService {
           if (response.statusCode == 201 || response.statusCode == 200) {
             onStatus?.call("이미지 수신 완료!");
             final archive = ZipDecoder().decodeBytes(response.bodyBytes);
-            if (archive.isNotEmpty) return NaiResponse(image: archive.first.content as Uint8List);
+            if (archive.isNotEmpty) {
+              return NaiResponse(image: archive.first.content as Uint8List);
+            }
             throw Exception('서버가 빈 아카이브를 반환했습니다.');
           } else if (response.statusCode == 429) {
             String errorMessage = '';

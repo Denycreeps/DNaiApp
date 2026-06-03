@@ -5,8 +5,15 @@ import 'package:provider/provider.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
 
-class CharacterTab extends StatelessWidget {
+class CharacterTab extends StatefulWidget {
   const CharacterTab({super.key});
+
+  @override
+  State<CharacterTab> createState() => _CharacterTabState();
+}
+
+class _CharacterTabState extends State<CharacterTab> {
+  bool _isGridActive = false; // 그리드에서 캐릭터 선택됨 (이동 대기)
 
   void _showPromptEditDialog(
     BuildContext context,
@@ -32,7 +39,9 @@ class CharacterTab extends StatelessWidget {
             focusNode.addListener(() {
               if (!focusNode.hasFocus) {
                 Future.delayed(const Duration(milliseconds: 150), () {
-                  if (ctx.mounted) setModalState(() => suggestions.clear());
+                  if (ctx.mounted) {
+                    setModalState(() => suggestions.clear());
+                  }
                 });
               }
             });
@@ -41,7 +50,9 @@ class CharacterTab extends StatelessWidget {
             void onTextChanged() {
               String text = tc.text;
               int cursor = tc.selection.baseOffset;
-              if (cursor < 0) cursor = text.length;
+              if (cursor < 0) {
+                cursor = text.length;
+              }
 
               String beforeCursor = text.substring(0, cursor);
 
@@ -96,7 +107,9 @@ class CharacterTab extends StatelessWidget {
               String tag = rawTag.replaceFirst(kContainsMarker, '');
               String text = tc.text;
               int cursor = tc.selection.baseOffset;
-              if (cursor < 0) cursor = text.length;
+              if (cursor < 0) {
+                cursor = text.length;
+              }
 
               String beforeCursor = text.substring(0, cursor);
               String afterCursor = text.substring(cursor);
@@ -372,13 +385,16 @@ class CharacterTab extends StatelessWidget {
 
                       return GestureDetector(
                         onTap: () {
-                          if (isSelected) {
-                            // 이미 선택된 상태에서 한 번 더 누르면 ON/OFF
-                            state.characters[index].isActive = !state.characters[index].isActive;
-                          } else {
-                            state.selectedCharIndex = index;
-                          }
-                          state.refreshUI();
+                          setState(() {
+                            if (isSelected) {
+                              // 이미 선택된 상태에서 한 번 더 누르면 ON/OFF
+                              state.characters[index].isActive = !state.characters[index].isActive;
+                            } else {
+                              state.selectedCharIndex = index;
+                            }
+                            _isGridActive = false; // 상단 목록에서 선택 시 그리드 선택 해제
+                            state.refreshUI();
+                          });
                         },
                         child: Container(
                           width: double.infinity,
@@ -685,6 +701,40 @@ class CharacterTab extends StatelessWidget {
                       ),
                     ),
                     const Spacer(),
+                    // 배치 적용 ON/OFF
+                    GestureDetector(
+                      onTap: () {
+                        state.useCharacterPosition = !state.useCharacterPosition;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          color: state.useCharacterPosition
+                              ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                              : Colors.transparent,
+                          border: Border.all(
+                            color: state.useCharacterPosition
+                                ? const Color(0xFF8B5CF6)
+                                : Colors.white24,
+                          ),
+                        ),
+                        child: Text(
+                          "배치 적용",
+                          style: TextStyle(
+                            color: state.useCharacterPosition
+                                ? const Color(0xFF8B5CF6)
+                                : Colors.white54,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    // 위치 초기화
                     GestureDetector(
                       onTap: () {
                         for (final char in state.characters) {
@@ -727,45 +777,60 @@ class CharacterTab extends StatelessWidget {
                       int gx = index % 5;
                       int gy = index ~/ 5;
 
+                      // 활성 캐릭터만 그리드에 표시
                       List<int> charsHere = [];
                       for (int ci = 0; ci < state.characters.length; ci++) {
-                        if (state.characters[ci].gridX == gx && state.characters[ci].gridY == gy) {
+                        if (state.characters[ci].isActive &&
+                            state.characters[ci].gridX == gx &&
+                            state.characters[ci].gridY == gy) {
                           charsHere.add(ci);
                         }
                       }
 
-                      bool isSelected = charsHere.contains(state.selectedCharIndex);
+                      bool isSelected =
+                          _isGridActive && charsHere.contains(state.selectedCharIndex);
 
                       return GestureDetector(
                         onTap: () {
-                          if (charsHere.isNotEmpty) {
-                            if (isSelected && charsHere.length > 1) {
-                              // 같은 칸에 여러 캐릭터 → 순환 선택
-                              int curIdx = charsHere.indexOf(state.selectedCharIndex);
-                              state.selectedCharIndex = charsHere[(curIdx + 1) % charsHere.length];
-                            } else if (!isSelected && state.characters.isNotEmpty) {
-                              // 다른 캐릭터가 있는 칸 → 자리 교환
-                              final myChar = state.characters[state.selectedCharIndex];
-                              final otherChar = state.characters[charsHere.first];
-                              final tempX = myChar.gridX;
-                              final tempY = myChar.gridY;
-                              myChar.gridX = otherChar.gridX;
-                              myChar.gridY = otherChar.gridY;
-                              otherChar.gridX = tempX;
-                              otherChar.gridY = tempY;
-                              state.saveAllSettings();
+                          setState(() {
+                            if (charsHere.isNotEmpty) {
+                              if (isSelected && charsHere.length > 1) {
+                                // 같은 칸에 여러 캐릭터 → 순환 선택
+                                int curIdx = charsHere.indexOf(state.selectedCharIndex);
+                                state.selectedCharIndex =
+                                    charsHere[(curIdx + 1) % charsHere.length];
+                              } else if (isSelected) {
+                                // 이미 선택된 캐릭터 다시 탭 → 선택 해제
+                                _isGridActive = false;
+                              } else if (_isGridActive) {
+                                // 다른 캐릭터 탭 → 자리 교환 + 선택 해제
+                                final myChar = state.characters[state.selectedCharIndex];
+                                final otherChar = state.characters[charsHere.first];
+                                final tempX = myChar.gridX;
+                                final tempY = myChar.gridY;
+                                myChar.gridX = otherChar.gridX;
+                                myChar.gridY = otherChar.gridY;
+                                otherChar.gridX = tempX;
+                                otherChar.gridY = tempY;
+                                _isGridActive = false;
+                                state.saveAllSettings();
+                              } else {
+                                // 선택 안 된 상태 → 선택
+                                state.selectedCharIndex = charsHere.first;
+                                _isGridActive = true;
+                              }
                             } else {
-                              state.selectedCharIndex = charsHere.first;
+                              // 빈 칸 탭: 선택된 캐릭터가 있으면 이동
+                              if (_isGridActive &&
+                                  state.selectedCharIndex < state.characters.length) {
+                                state.characters[state.selectedCharIndex].gridX = gx;
+                                state.characters[state.selectedCharIndex].gridY = gy;
+                                _isGridActive = false;
+                                state.saveAllSettings();
+                              }
                             }
                             state.refreshUI();
-                          } else {
-                            if (state.characters.isNotEmpty) {
-                              state.characters[state.selectedCharIndex].gridX = gx;
-                              state.characters[state.selectedCharIndex].gridY = gy;
-                              state.saveAllSettings();
-                              state.refreshUI();
-                            }
-                          }
+                          });
                         },
                         child: Container(
                           decoration: BoxDecoration(
@@ -784,16 +849,24 @@ class CharacterTab extends StatelessWidget {
                           ),
                           child: Center(
                             child: charsHere.isNotEmpty
-                                ? Text(
-                                    charsHere.map((i) => "C${i + 1}").join("\n"),
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: charsHere.any((i) => state.characters[i].isActive)
-                                          ? Colors.white
-                                          : Colors.white38,
-                                      fontSize: charsHere.length > 1 ? 9 : 11,
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                                ? Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: charsHere
+                                        .map(
+                                          (i) => Text(
+                                            "C${i + 1}",
+                                            style: TextStyle(
+                                              color: (_isGridActive && state.selectedCharIndex == i)
+                                                  ? Colors.white
+                                                  : Colors.white38,
+                                              fontSize: charsHere.length > 2
+                                                  ? 8
+                                                  : (charsHere.length > 1 ? 9 : 11),
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        )
+                                        .toList(),
                                   )
                                 : null,
                           ),

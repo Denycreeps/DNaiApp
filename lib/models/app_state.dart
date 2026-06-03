@@ -35,7 +35,9 @@ const String kContainsMarker = '* ';
 // (콤마·괄호·가중치 구문 모두 토큰으로 소비됨)
 // ============================================================================
 int estimateTokenCount(String prompt) {
-  if (prompt.trim().isEmpty) return 0;
+  if (prompt.trim().isEmpty) {
+    return 0;
+  }
   return (prompt.trim().length / 3.1).round();
 }
 
@@ -43,7 +45,9 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
   // 트레일링 스페이스 감지 (trim 전에!)
   final hasTrailingSpace = query.endsWith(' ');
   final lower = query.toLowerCase().trim();
-  if (lower.isEmpty) return [];
+  if (lower.isEmpty) {
+    return [];
+  }
 
   final fragments = lower.split(RegExp(r'\s+'));
 
@@ -59,7 +63,9 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
   // 🔒 트레일링 스페이스 = "확정 모드": startsWith만 → 없으면 contains fallback
   if (hasTrailingSpace) {
     final startsResults = tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
-    if (startsResults.isNotEmpty) return startsResults;
+    if (startsResults.isNotEmpty) {
+      return startsResults;
+    }
     // startsWith 결과 없음 → contains fallback (연한 스타일)
     return tags
         .where((t) => t.toLowerCase().contains(lower))
@@ -89,7 +95,9 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
       // 단어 중간에 포함 (최후순위)
       midWordResults.add(tag);
     }
-    if (wordBoundaryResults.length >= limit && midWordResults.length >= limit) break;
+    if (wordBoundaryResults.length >= limit && midWordResults.length >= limit) {
+      break;
+    }
   }
 
   // 점진적 할당: 쿼리가 길수록 midWord 비중 증가
@@ -111,7 +119,9 @@ List<String> _multiWordMatch(List<String> tags, List<String> fragments, int limi
   return tags
       .where((tag) {
         final tagLower = tag.toLowerCase();
-        if (!tagLower.startsWith(first)) return false;
+        if (!tagLower.startsWith(first)) {
+          return false;
+        }
 
         final words = tagLower.split(RegExp(r'[_ ]'));
         int wordIdx = 1;
@@ -125,7 +135,9 @@ List<String> _multiWordMatch(List<String> tags, List<String> fragments, int limi
             }
             wordIdx++;
           }
-          if (!found) return false;
+          if (!found) {
+            return false;
+          }
         }
         return true;
       })
@@ -546,7 +558,9 @@ class AppState extends ChangeNotifier {
     for (int i = 0; i < 3; i++) {
       final va = i < pa.length ? pa[i] : 0;
       final vb = i < pb.length ? pb[i] : 0;
-      if (va != vb) return va.compareTo(vb);
+      if (va != vb) {
+        return va.compareTo(vb);
+      }
     }
     return 0;
   }
@@ -701,6 +715,7 @@ class AppState extends ChangeNotifier {
   double infillStrength = 0.7;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
+  bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
 
   // 배치 생성
   int batchCount = 1; // 1, 2, 3, 4, 0(무한)
@@ -747,6 +762,15 @@ class AppState extends ChangeNotifier {
 
   List<NaiCharacter> characters = [NaiCharacter()];
   int selectedCharIndex = 0;
+  bool useCharacterPosition = true; // 캐릭터 배치 적용 ON/OFF
+
+  // Vibe Transfer
+  List<Map<String, dynamic>> vibeTransfers =
+      []; // [{image: base64, strength: 0.6, infoExtracted: 1.0}]
+
+  // Precise Reference (V4.5 전용)
+  List<Map<String, dynamic>> preciseRefs =
+      []; // [{image: base64, type: 'character', strength: 1.0, fidelity: 0.5}]
   List<NaiWildcard> wildcards = [
     NaiWildcard(name: "의상", content: "school uniform\nmaid outfit\nbikini"),
   ];
@@ -891,12 +915,14 @@ class AppState extends ChangeNotifier {
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
+    historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
     showGenerationMessage = prefs.getBool('showGenerationMessage') ?? true;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
     characterTabEnabled = prefs.getBool('characterTabEnabled') ?? true;
+    useCharacterPosition = prefs.getBool('useCharacterPosition') ?? true;
     wildcardTabEnabled = prefs.getBool('wildcardTabEnabled') ?? true;
     useGelbooruApiKey = prefs.getBool('useGelbooruApiKey') ?? true;
     resolutionMode = prefs.getString('resolutionMode') ?? "수동";
@@ -950,6 +976,7 @@ class AppState extends ChangeNotifier {
 
     await fetchAnlas();
     await _loadHistoryFromLocal();
+    await loadReferencesFromLocal();
     notifyListeners();
 
     // 업데이트 체크 (조건부, 앱 시작을 블로킹하지 않음)
@@ -1028,11 +1055,13 @@ class AppState extends ChangeNotifier {
       'infillStrength': infillStrength,
       'variancePlus': isVariancePlus,
       'horizontalSwipeEnabled': horizontalSwipeEnabled,
+      'historySlideEnabled': historySlideEnabled,
       'batchDelay': batchDelay,
       'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
       'i2iTabEnabled': i2iTabEnabled,
       'characterTabEnabled': characterTabEnabled,
+      'useCharacterPosition': useCharacterPosition,
       'wildcardTabEnabled': wildcardTabEnabled,
       'useGelbooruApiKey': useGelbooruApiKey,
       'gelbooru_api_input': gelbooruApiController.text,
@@ -1133,11 +1162,47 @@ class AppState extends ChangeNotifier {
     infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
+    historySlideEnabled = data['historySlideEnabled'] ?? false;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
     showGenerationMessage = data['showGenerationMessage'] ?? true;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     characterTabEnabled = data['characterTabEnabled'] ?? true;
+    useCharacterPosition = data['useCharacterPosition'] ?? true;
+    // 구버전 백업 호환: vibe/precise가 설정 파일에 있으면 불러옴 (현재는 references.json에 별도 저장)
+    bool hadRefs = false;
+    if (data['vibeTransfers'] != null) {
+      vibeTransfers = (data['vibeTransfers'] as List).map((e) {
+        final m = Map<String, dynamic>.from(e);
+        if (m['strength'] != null) {
+          m['strength'] = (m['strength'] as num).toDouble();
+        }
+        if (m['infoExtracted'] != null) {
+          m['infoExtracted'] = (m['infoExtracted'] as num).toDouble();
+        }
+        if (m['_encodedInfoExt'] != null) {
+          m['_encodedInfoExt'] = (m['_encodedInfoExt'] as num).toDouble();
+        }
+        return m;
+      }).toList();
+      hadRefs = true;
+    }
+    if (data['preciseRefs'] != null) {
+      preciseRefs = (data['preciseRefs'] as List).map((e) {
+        final m = Map<String, dynamic>.from(e);
+        if (m['strength'] != null) {
+          m['strength'] = (m['strength'] as num).toDouble();
+        }
+        if (m['fidelity'] != null) {
+          m['fidelity'] = (m['fidelity'] as num).toDouble();
+        }
+        return m;
+      }).toList();
+      hadRefs = true;
+    }
+    if (hadRefs) {
+      saveReferencesToLocal();
+    }
     wildcardTabEnabled = data['wildcardTabEnabled'] ?? true;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
@@ -1156,14 +1221,18 @@ class AppState extends ChangeNotifier {
     if (data['customResolutions'] != null) {
       customResolutions = List<String>.from(data['customResolutions']);
     }
-    if (data['autoCheckUpdate'] != null) autoCheckUpdate = data['autoCheckUpdate'];
+    if (data['autoCheckUpdate'] != null) {
+      autoCheckUpdate = data['autoCheckUpdate'];
+    }
     if (data['collapsedSections'] != null) {
       collapsedSections = Set<String>.from(data['collapsedSections']);
     }
 
     if (data['characters'] != null) {
       characters = (data['characters'] as List).map((e) => NaiCharacter.fromJson(e)).toList();
-      if (characters.isEmpty) characters.add(NaiCharacter());
+      if (characters.isEmpty) {
+        characters.add(NaiCharacter());
+      }
     }
     if (data['wildcards'] != null) {
       wildcards = (data['wildcards'] as List).map((e) => NaiWildcard.fromJson(e)).toList();
@@ -1248,12 +1317,14 @@ class AppState extends ChangeNotifier {
       await prefs.setDouble('infillStrength', infillStrength);
       await prefs.setBool('variancePlus', isVariancePlus);
       await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
+      await prefs.setBool('historySlideEnabled', historySlideEnabled);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('showGenerationMessage', showGenerationMessage);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
       await prefs.setBool('historyTabEnabled', historyTabEnabled);
       await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
       await prefs.setBool('characterTabEnabled', characterTabEnabled);
+      await prefs.setBool('useCharacterPosition', useCharacterPosition);
       await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
       await prefs.setStringList('promptSectionOrder', promptSectionOrder);
       await prefs.setStringList('collapsedSections', collapsedSections.toList());
@@ -1296,7 +1367,9 @@ class AppState extends ChangeNotifier {
     try {
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/settings_backup.json');
-      if (!file.existsSync()) return false;
+      if (!file.existsSync()) {
+        return false;
+      }
 
       final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
       // importSettings로 전부 복원 (히스토리는 별도 로컬 저장소에서 복구)
@@ -1330,16 +1403,36 @@ class AppState extends ChangeNotifier {
   }
 
   void applySettingsSnapshot(Map<String, dynamic> s) {
-    if (s['steps'] != null) stepsController.text = s['steps'];
-    if (s['cfg'] != null) cfgScaleController.text = s['cfg'];
-    if (s['cfgRescale'] != null) cfgRescaleController.text = s['cfgRescale'];
-    if (s['seed'] != null) seedController.text = s['seed'];
-    if (s['sampler'] != null) selectedSampler = s['sampler'];
-    if (s['scheduler'] != null) selectedScheduler = s['scheduler'];
-    if (s['model'] != null) selectedModel = s['model'];
-    if (s['resolution'] != null) selectedResolution = s['resolution'];
-    if (s['seedLocked'] != null) isSeedLocked = s['seedLocked'];
-    if (s['variancePlus'] != null) isVariancePlus = s['variancePlus'];
+    if (s['steps'] != null) {
+      stepsController.text = s['steps'];
+    }
+    if (s['cfg'] != null) {
+      cfgScaleController.text = s['cfg'];
+    }
+    if (s['cfgRescale'] != null) {
+      cfgRescaleController.text = s['cfgRescale'];
+    }
+    if (s['seed'] != null) {
+      seedController.text = s['seed'];
+    }
+    if (s['sampler'] != null) {
+      selectedSampler = s['sampler'];
+    }
+    if (s['scheduler'] != null) {
+      selectedScheduler = s['scheduler'];
+    }
+    if (s['model'] != null) {
+      selectedModel = s['model'];
+    }
+    if (s['resolution'] != null) {
+      selectedResolution = s['resolution'];
+    }
+    if (s['seedLocked'] != null) {
+      isSeedLocked = s['seedLocked'];
+    }
+    if (s['variancePlus'] != null) {
+      isVariancePlus = s['variancePlus'];
+    }
   }
 
   void sendToI2i(Uint8List imageBytes, NaiMetadata? metadata) {
@@ -1450,7 +1543,9 @@ class AppState extends ChangeNotifier {
       );
       isGelbooruLoading = false;
 
-      if (!context.mounted) return;
+      if (!context.mounted) {
+        return;
+      }
 
       if (results.isNotEmpty) {
         results.shuffle();
@@ -1477,7 +1572,9 @@ class AppState extends ChangeNotifier {
       }
     } catch (e) {
       isGelbooruLoading = false;
-      if (!context.mounted) return;
+      if (!context.mounted) {
+        return;
+      }
 
       String errorMsg = e.toString().replaceFirst('Exception: ', '');
       String title;
@@ -1658,7 +1755,9 @@ class AppState extends ChangeNotifier {
             break;
           }
         }
-        if (hasColor) continue;
+        if (hasColor) {
+          continue;
+        }
       }
 
       bool shouldRemove = false;
@@ -1744,7 +1843,9 @@ class AppState extends ChangeNotifier {
           .map((e) => e.trim())
           .where((e) => e.isNotEmpty)
           .toList();
-      if (options.length < 2) return match.group(0)!;
+      if (options.length < 2) {
+        return match.group(0)!;
+      }
       return options[Random().nextInt(options.length)];
     });
   }
@@ -2072,6 +2173,15 @@ class AppState extends ChangeNotifier {
         seed: int.tryParse(seedController.text) ?? 0,
         characters: processedCharacters,
         variancePlus: isVariancePlus,
+        useCharacterPosition: useCharacterPosition,
+        vibeTransfers:
+            (vibeTransfers.isNotEmpty &&
+                preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).isEmpty)
+            ? vibeTransfers
+            : null,
+        preciseRefs: preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList().isNotEmpty
+            ? preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList()
+            : null,
       );
 
       isLoading = false;
@@ -2080,6 +2190,8 @@ class AppState extends ChangeNotifier {
 
       if (result.image != null) {
         sessionGenerateCount++;
+        // 인코딩 캐시가 갱신됐을 수 있으니 저장
+        saveReferencesToLocal();
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
         if (parsedMeta != null) {
@@ -2119,7 +2231,9 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> handleBatchGenerate(BuildContext context, VoidCallback onScrollToHistoryEnd) async {
-    if (isLoading || isInpaintLoading || isUpscaleLoading) return;
+    if (isLoading || isInpaintLoading || isUpscaleLoading) {
+      return;
+    }
 
     final count = batchCount; // 0 = 무한
     batchRemaining = count == 0 ? 999 : count;
@@ -2137,8 +2251,12 @@ class AppState extends ChangeNotifier {
       await handleGenerate(context, onScrollToHistoryEnd);
 
       // 생성 중 취소 확인
-      if (!isBatchMode && batchCount != 0) break;
-      if (batchRemaining <= 0) break;
+      if (!isBatchMode && batchCount != 0) {
+        break;
+      }
+      if (batchRemaining <= 0) {
+        break;
+      }
 
       if (count != 0) {
         batchRemaining--;
@@ -2224,7 +2342,9 @@ class AppState extends ChangeNotifier {
               notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
             ),
           );
-          if (bgInitialized) await FlutterBackground.enableBackgroundExecution();
+          if (bgInitialized) {
+            await FlutterBackground.enableBackgroundExecution();
+          }
         } catch (e) {
           debugPrint("백그라운드 오류: $e");
         }
@@ -2570,18 +2690,24 @@ class AppState extends ChangeNotifier {
 
   /// 오래된 이미지를 썸네일로 변환해서 메모리 절약 (백그라운드)
   Future<void> _trimHistoryMemory() async {
-    if (historyImages.length <= _memoryKeepCount) return;
+    if (historyImages.length <= _memoryKeepCount) {
+      return;
+    }
 
     final cutoff = historyImages.length - _memoryKeepCount;
     // 변환할 인덱스와 데이터 수집
     List<int> toConvert = [];
     List<Uint8List> toConvertData = [];
     for (int i = 0; i < cutoff; i++) {
-      if (historyImages[i].length < 50000) continue;
+      if (historyImages[i].length < 50000) {
+        continue;
+      }
       toConvert.add(i);
       toConvertData.add(historyImages[i]);
     }
-    if (toConvertData.isEmpty) return;
+    if (toConvertData.isEmpty) {
+      return;
+    }
 
     // 백그라운드 isolate에서 변환
     final thumbnails = await compute(_trimHistoryIsolate, toConvertData);
@@ -2608,9 +2734,13 @@ class AppState extends ChangeNotifier {
 
   /// 특정 인덱스의 원본 이미지를 디스크에서 로드 (썸네일→원본 복구)
   Future<Uint8List?> loadFullHistoryImage(int index) async {
-    if (index < 0 || index >= historyImages.length) return null;
+    if (index < 0 || index >= historyImages.length) {
+      return null;
+    }
     // 이미 원본 크기면 그대로
-    if (historyImages[index].length >= 50000) return historyImages[index];
+    if (historyImages[index].length >= 50000) {
+      return historyImages[index];
+    }
     try {
       final dir = await _getHistoryDir();
       final imgFile = File('${dir.path}/img_$index.png');
@@ -2668,9 +2798,15 @@ class AppState extends ChangeNotifier {
     while (i < historyImages.length) {
       if (i >= historyFavorites.length || !historyFavorites[i]) {
         historyImages.removeAt(i);
-        if (i < historyMetadata.length) historyMetadata.removeAt(i);
-        if (i < historyFavorites.length) historyFavorites.removeAt(i);
-        if (i < historyFilePaths.length) historyFilePaths.removeAt(i);
+        if (i < historyMetadata.length) {
+          historyMetadata.removeAt(i);
+        }
+        if (i < historyFavorites.length) {
+          historyFavorites.removeAt(i);
+        }
+        if (i < historyFilePaths.length) {
+          historyFilePaths.removeAt(i);
+        }
       } else {
         i++;
       }
@@ -2688,11 +2824,19 @@ class AppState extends ChangeNotifier {
     // 큰 인덱스부터 삭제해야 인덱스가 안 밀림
     final sorted = indices.toList()..sort((a, b) => b.compareTo(a));
     for (final idx in sorted) {
-      if (idx < 0 || idx >= historyImages.length) continue;
+      if (idx < 0 || idx >= historyImages.length) {
+        continue;
+      }
       historyImages.removeAt(idx);
-      if (idx < historyMetadata.length) historyMetadata.removeAt(idx);
-      if (idx < historyFavorites.length) historyFavorites.removeAt(idx);
-      if (idx < historyFilePaths.length) historyFilePaths.removeAt(idx);
+      if (idx < historyMetadata.length) {
+        historyMetadata.removeAt(idx);
+      }
+      if (idx < historyFavorites.length) {
+        historyFavorites.removeAt(idx);
+      }
+      if (idx < historyFilePaths.length) {
+        historyFilePaths.removeAt(idx);
+      }
     }
     if (historyImages.isEmpty) {
       selectedHistoryIndex = -1;
@@ -2704,7 +2848,9 @@ class AppState extends ChangeNotifier {
   }
 
   void toggleHistoryFavorite(int index) {
-    if (index < 0 || index >= historyFavorites.length) return;
+    if (index < 0 || index >= historyFavorites.length) {
+      return;
+    }
     historyFavorites[index] = !historyFavorites[index];
     saveHistoryToLocal();
     notifyListeners();
@@ -2724,17 +2870,27 @@ class AppState extends ChangeNotifier {
     }
 
     // 전부 즐겨찾기면 삭제하지 않음 (100개 초과 허용)
-    if (targetIndex == -1) return;
+    if (targetIndex == -1) {
+      return;
+    }
 
     historyImages.removeAt(targetIndex);
-    if (targetIndex < historyMetadata.length) historyMetadata.removeAt(targetIndex);
-    if (targetIndex < historyFavorites.length) historyFavorites.removeAt(targetIndex);
-    if (targetIndex < historyFilePaths.length) historyFilePaths.removeAt(targetIndex);
+    if (targetIndex < historyMetadata.length) {
+      historyMetadata.removeAt(targetIndex);
+    }
+    if (targetIndex < historyFavorites.length) {
+      historyFavorites.removeAt(targetIndex);
+    }
+    if (targetIndex < historyFilePaths.length) {
+      historyFilePaths.removeAt(targetIndex);
+    }
 
     // selectedHistoryIndex 보정
     if (targetIndex <= selectedHistoryIndex) {
       selectedHistoryIndex--;
-      if (selectedHistoryIndex < 0) selectedHistoryIndex = 0;
+      if (selectedHistoryIndex < 0) {
+        selectedHistoryIndex = 0;
+      }
     }
     historyNeedsFullSave = true; // 인덱스가 밀렸으므로 전체 저장 필요
   }
@@ -2745,9 +2901,15 @@ class AppState extends ChangeNotifier {
     }
 
     historyImages.removeAt(index);
-    if (index < historyMetadata.length) historyMetadata.removeAt(index);
-    if (index < historyFavorites.length) historyFavorites.removeAt(index);
-    if (index < historyFilePaths.length) historyFilePaths.removeAt(index);
+    if (index < historyMetadata.length) {
+      historyMetadata.removeAt(index);
+    }
+    if (index < historyFavorites.length) {
+      historyFavorites.removeAt(index);
+    }
+    if (index < historyFilePaths.length) {
+      historyFilePaths.removeAt(index);
+    }
 
     if (historyImages.isEmpty) {
       selectedHistoryIndex = -1;
@@ -2774,6 +2936,206 @@ class AppState extends ChangeNotifier {
       await historyDir.create(recursive: true);
     }
     return historyDir;
+  }
+
+  // Vibe Transfer / Precise Reference 로컬 저장
+  // ============================================================================
+  // .naiv4vibe 파일 import/export
+  // ============================================================================
+
+  // 간단한 해시 (crypto 의존성 회피, 키 이름용)
+  String _simpleHash(String input) {
+    int hash = 0;
+    for (int i = 0; i < input.length; i++) {
+      hash = (hash * 31 + input.codeUnitAt(i)) & 0x7FFFFFFFFFFFFFFF;
+    }
+    return hash.toRadixString(16).padLeft(16, '0');
+  }
+
+  // 모델명 → naiv4vibe encodings 키
+  String _modelToVibeKey(String model) {
+    if (model.contains("4-5") && model.contains("full")) {
+      return "v4-5full";
+    }
+    if (model.contains("4-5") && model.contains("curated")) {
+      return "v4-5curated";
+    }
+    if (model.contains("4") && model.contains("full")) {
+      return "v4full";
+    }
+    if (model.contains("4") && model.contains("curated")) {
+      return "v4curated";
+    }
+    return "v4-5full";
+  }
+
+  // 단일 vibe를 .naiv4vibe JSON 문자열로 변환
+  String exportVibeToNaiv4(Map<String, dynamic> vibe) {
+    final vibeKey = _modelToVibeKey(selectedModel);
+    final infoExt = (vibe['infoExtracted'] as double?) ?? 1.0;
+    final image = vibe['image'] as String;
+
+    // 인코딩이 있으면 포함
+    Map<String, dynamic> encodings = {};
+    final encoded = vibe['_encoded'] as String?;
+    if (encoded != null) {
+      // 임의의 해시 키 생성 (NovelAI는 내부 해시지만, 키 이름은 중요하지 않음)
+      final keyHash = _simpleHash("$image$infoExt");
+      encodings = {
+        vibeKey: {
+          keyHash: {
+            "encoding": encoded,
+            "params": {"information_extracted": infoExt},
+          },
+        },
+      };
+    }
+
+    final naiv4 = {
+      "identifier": "novelai-vibe-transfer",
+      "version": 1,
+      "type": "image",
+      "image": image,
+      "id": _simpleHash(image),
+      "encodings": encodings,
+      "name": vibe['name'] ?? "vibe",
+      "thumbnail": "data:image/jpeg;base64,$image",
+      "createdAt": DateTime.now().millisecondsSinceEpoch,
+      "importInfo": {
+        "model": selectedModel,
+        "information_extracted": infoExt,
+        "strength": (vibe['strength'] as double?) ?? 0.6,
+      },
+    };
+    return jsonEncode(naiv4);
+  }
+
+  // .naiv4vibe / .naiv4vibeBundle JSON 파싱 → vibeTransfers에 추가
+  // 반환: 추가된 개수
+  int importVibeFromNaiv4(String jsonStr) {
+    try {
+      final data = jsonDecode(jsonStr);
+      List<dynamic> vibesToImport = [];
+
+      if (data['identifier'] == 'novelai-vibe-transfer-bundle') {
+        vibesToImport = data['vibes'] as List;
+      } else if (data['identifier'] == 'novelai-vibe-transfer') {
+        vibesToImport = [data];
+      } else {
+        return 0;
+      }
+
+      int added = 0;
+      for (final v in vibesToImport) {
+        if (vibeTransfers.length >= 9) {
+          break;
+        }
+
+        final image = v['image'] as String?;
+        if (image == null) {
+          continue;
+        }
+
+        final importInfo = v['importInfo'] as Map<String, dynamic>?;
+        final infoExt = (importInfo?['information_extracted'] as num?)?.toDouble() ?? 1.0;
+        final strength = (importInfo?['strength'] as num?)?.toDouble() ?? 0.6;
+
+        // 현재 모델에 맞는 인코딩 추출
+        String? encoded;
+        final encodings = v['encodings'] as Map<String, dynamic>?;
+        if (encodings != null) {
+          final vibeKey = _modelToVibeKey(selectedModel);
+          final modelEncodings = encodings[vibeKey] as Map<String, dynamic>?;
+          if (modelEncodings != null && modelEncodings.isNotEmpty) {
+            // 정보추출 값이 일치하는 인코딩 찾기
+            for (final entry in modelEncodings.values) {
+              final params = entry['params'] as Map<String, dynamic>?;
+              final encInfoExt = (params?['information_extracted'] as num?)?.toDouble();
+              if (encInfoExt == infoExt) {
+                encoded = entry['encoding'] as String?;
+                break;
+              }
+            }
+            // 못 찾으면 첫 번째 인코딩 사용
+            encoded ??= (modelEncodings.values.first['encoding'] as String?);
+          }
+        }
+
+        final newVibe = <String, dynamic>{
+          'image': image,
+          'strength': strength,
+          'infoExtracted': infoExt,
+        };
+        // 인코딩 있으면 캐시에 저장 (Anlas 절약)
+        if (encoded != null) {
+          newVibe['_encoded'] = encoded;
+          newVibe['_encodedInfoExt'] = infoExt;
+          newVibe['_encodedModel'] = selectedModel;
+        }
+        vibeTransfers.add(newVibe);
+        added++;
+      }
+
+      if (added > 0) {
+        saveReferencesToLocal();
+        notifyListeners();
+      }
+      return added;
+    } catch (e) {
+      debugPrint("naiv4vibe 파싱 실패: $e");
+      return -1;
+    }
+  }
+
+  Future<void> saveReferencesToLocal() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/references.json');
+      final data = {'vibeTransfers': vibeTransfers, 'preciseRefs': preciseRefs};
+      await file.writeAsString(jsonEncode(data));
+    } catch (e) {
+      debugPrint("레퍼런스 저장 실패: $e");
+    }
+  }
+
+  Future<void> loadReferencesFromLocal() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final file = File('${appDir.path}/references.json');
+      if (!await file.exists()) {
+        return;
+      }
+      final data = jsonDecode(await file.readAsString());
+      if (data['vibeTransfers'] != null) {
+        vibeTransfers = (data['vibeTransfers'] as List).map((e) {
+          final m = Map<String, dynamic>.from(e);
+          if (m['strength'] != null) {
+            m['strength'] = (m['strength'] as num).toDouble();
+          }
+          if (m['infoExtracted'] != null) {
+            m['infoExtracted'] = (m['infoExtracted'] as num).toDouble();
+          }
+          if (m['_encodedInfoExt'] != null) {
+            m['_encodedInfoExt'] = (m['_encodedInfoExt'] as num).toDouble();
+          }
+          return m;
+        }).toList();
+      }
+      if (data['preciseRefs'] != null) {
+        preciseRefs = (data['preciseRefs'] as List).map((e) {
+          final m = Map<String, dynamic>.from(e);
+          if (m['strength'] != null) {
+            m['strength'] = (m['strength'] as num).toDouble();
+          }
+          if (m['fidelity'] != null) {
+            m['fidelity'] = (m['fidelity'] as num).toDouble();
+          }
+          return m;
+        }).toList();
+      }
+    } catch (e) {
+      debugPrint("레퍼런스 불러오기 실패: $e");
+    }
   }
 
   Timer? _historySaveDebounce;
@@ -2932,9 +3294,13 @@ class AppState extends ChangeNotifier {
   // 파일 존재 여부 확인
   // ============================================================================
   bool checkFileExistsSync(int index) {
-    if (index < 0 || index >= historyFilePaths.length) return false;
+    if (index < 0 || index >= historyFilePaths.length) {
+      return false;
+    }
     final path = historyFilePaths[index];
-    if (path == null || path.isEmpty) return false;
+    if (path == null || path.isEmpty) {
+      return false;
+    }
     return File(path).existsSync();
   }
 
@@ -2942,7 +3308,9 @@ class AppState extends ChangeNotifier {
   // 히스토리 이미지가 썸네일(경량)인지 확인
   // ============================================================================
   bool isHistoryThumbnail(int index) {
-    if (index < 0 || index >= historyImages.length) return false;
+    if (index < 0 || index >= historyImages.length) {
+      return false;
+    }
     final bytes = historyImages[index];
     if (bytes.length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) {
       return true; // JPEG = 썸네일
@@ -2962,19 +3330,29 @@ class AppState extends ChangeNotifier {
     final lower = displayName.toLowerCase();
 
     // 이미 API 모델 ID 형식이면 그대로 반환
-    if (lower.startsWith('nai-diffusion')) return displayName;
+    if (lower.startsWith('nai-diffusion')) {
+      return displayName;
+    }
 
     // 버전 키워드 매칭 (구체적인 것부터 체크)
-    if (lower.contains('v4.5')) return 'nai-diffusion-4-5-full';
-    if (lower.contains('v4')) return 'nai-diffusion-4-full';
-    if (lower.contains('v3')) return 'nai-diffusion-3';
+    if (lower.contains('v4.5')) {
+      return 'nai-diffusion-4-5-full';
+    }
+    if (lower.contains('v4')) {
+      return 'nai-diffusion-4-full';
+    }
+    if (lower.contains('v3')) {
+      return 'nai-diffusion-3';
+    }
 
     // 매칭 실패 → 현재 선택된 모델 사용
     return selectedModel;
   }
 
   Future<void> regenerateFromMetadata(BuildContext context, int index) async {
-    if (index < 0 || index >= historyMetadata.length) return;
+    if (index < 0 || index >= historyMetadata.length) {
+      return;
+    }
     final meta = historyMetadata[index];
     if (meta == null) {
       if (context.mounted) {
@@ -3312,11 +3690,46 @@ class AppState extends ChangeNotifier {
     int steps = int.tryParse(stepsController.text) ?? 28;
     bool isOpus = subscriptionTier >= 3;
 
+    // 활성 Precise Reference는 항상 Anlas 소모
+    bool hasPrecise = preciseRefs.any((r) => (r['enabled'] as bool?) ?? true);
+    if (hasPrecise) {
+      return true;
+    }
+
+    // Vibe Transfer: 인코딩 안 된 것이 있거나 4개 초과면 Anlas 소모
+    if (vibeTransfers.isNotEmpty) {
+      bool hasUnencodedVibe = vibeTransfers.any((v) => v['_encoded'] == null);
+      bool tooManyVibes = vibeTransfers.length > 4;
+      if (hasUnencodedVibe || tooManyVibes) {
+        return true;
+      }
+      // 전부 인코딩됨 + 4개 이하 → 해상도/스텝 기준으로만 판단 (아래로 진행)
+    }
+
     if (isOpus && (width * height) <= 1048576 && steps <= 28) {
       return false;
     }
 
     return true;
+  }
+
+  // Vibe Transfer Anlas 비용 계산 (UI 표시용)
+  int calculateVibeAnlas() {
+    if (vibeTransfers.isEmpty) {
+      return 0;
+    }
+    int cost = 0;
+    // 인코딩 안 된 vibe당 2 Anlas
+    for (final v in vibeTransfers) {
+      if (v['_encoded'] == null) {
+        cost += 2;
+      }
+    }
+    // 4개 초과 시 추가 vibe당 2 Anlas
+    if (vibeTransfers.length > 4) {
+      cost += (vibeTransfers.length - 4) * 2;
+    }
+    return cost;
   }
 
   void selectWildcard(int index) {

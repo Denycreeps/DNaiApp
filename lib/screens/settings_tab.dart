@@ -345,6 +345,47 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ),
 
+            // 히스토리 이미지 슬라이드
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.view_carousel_outlined, color: Colors.deepPurpleAccent, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        "히스토리 이미지 슬라이드",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.historySlideEnabled,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.historySlideEnabled = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
             // 좌우 스와이프 탭 전환
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),

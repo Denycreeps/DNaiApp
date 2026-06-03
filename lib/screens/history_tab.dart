@@ -64,11 +64,15 @@ class _HistoryTabState extends State<HistoryTab> {
       final int thumbIndex = index - thumbStart;
 
       // 범위 밖이면 스크롤하지 않음
-      if (thumbIndex < 0) return;
+      if (thumbIndex < 0) {
+        return;
+      }
 
       double targetPos = (thumbIndex * itemWidth) - (screenWidth / 2) + (itemWidth / 2);
 
-      if (targetPos < 0) targetPos = 0;
+      if (targetPos < 0) {
+        targetPos = 0;
+      }
       if (targetPos > _thumbnailScrollController.position.maxScrollExtent) {
         targetPos = _thumbnailScrollController.position.maxScrollExtent;
       }
@@ -83,7 +87,9 @@ class _HistoryTabState extends State<HistoryTab> {
 
   NaiMetadata? _getMetadataForIndex(int index) {
     final metadata = _appState.historyMetadata;
-    if (index < 0 || index >= metadata.length) return null;
+    if (index < 0 || index >= metadata.length) {
+      return null;
+    }
     return metadata[index];
   }
 
@@ -116,6 +122,14 @@ class _HistoryTabState extends State<HistoryTab> {
       String samplerName = metadata.sampler.isEmpty ? '알 수 없음' : metadata.sampler;
       bool varPlus = metadata.extraParams['variety_plus'] == true;
 
+      // Vibe Transfer 사용 여부
+      final refStrength = metadata.extraParams['reference_strength_multiple'];
+      bool vibeOn = refStrength is List && refStrength.isNotEmpty;
+
+      // Precise (Character) Reference 사용 여부
+      final dirStrength = metadata.extraParams['director_reference_strengths'];
+      bool chaRefOn = dirStrength is List && dirStrength.isNotEmpty;
+
       return '''
 🔹 해상도 : ${metadata.width} x ${metadata.height}
 🔹 시드 : ${metadata.seed}
@@ -126,6 +140,8 @@ class _HistoryTabState extends State<HistoryTab> {
 🔹 CFG Scale : ${metadata.promptGuidance}
 🔹 Rescale : ${metadata.promptGuidanceRescale}
 🔹 VAR+ : ${varPlus ? 'ON' : 'OFF'}
+🔹 Vibe : ${vibeOn ? 'ON' : 'OFF'}
+🔹 Cha. Ref. : ${chaRefOn ? 'ON' : 'OFF'}
 ''';
     }
     return "";
@@ -178,7 +194,9 @@ class _HistoryTabState extends State<HistoryTab> {
   }
 
   void _goToPrev() async {
-    if (_isAnimating || _currentIndex <= 0) return;
+    if (_isAnimating || _currentIndex <= 0) {
+      return;
+    }
     _isAnimating = true;
     await _pageController.previousPage(
       duration: const Duration(milliseconds: 300),
@@ -188,7 +206,9 @@ class _HistoryTabState extends State<HistoryTab> {
   }
 
   void _goToNext(int total) async {
-    if (_isAnimating || _currentIndex >= total - 1) return;
+    if (_isAnimating || _currentIndex >= total - 1) {
+      return;
+    }
     _isAnimating = true;
     await _pageController.nextPage(
       duration: const Duration(milliseconds: 300),
@@ -490,7 +510,9 @@ class _HistoryTabState extends State<HistoryTab> {
               setState(() {
                 if (_selectedIndices.contains(realIndex)) {
                   _selectedIndices.remove(realIndex);
-                  if (_selectedIndices.isEmpty) _isSelectMode = false;
+                  if (_selectedIndices.isEmpty) {
+                    _isSelectMode = false;
+                  }
                 } else {
                   _selectedIndices.add(realIndex);
                 }
@@ -723,7 +745,7 @@ class _HistoryTabState extends State<HistoryTab> {
                       },
                     ),
 
-                    if (displayIndex > 0)
+                    if (displayIndex > 0 && _appState.historySlideEnabled)
                       Positioned(
                         left: 8,
                         child: Container(
@@ -743,7 +765,7 @@ class _HistoryTabState extends State<HistoryTab> {
                         ),
                       ),
 
-                    if (displayIndex < images.length - 1)
+                    if (displayIndex < images.length - 1 && _appState.historySlideEnabled)
                       Positioned(
                         right: 8,
                         child: Container(
@@ -785,11 +807,15 @@ class _HistoryTabState extends State<HistoryTab> {
                     bool isSelected = displayIndex == realIndex;
                     return GestureDetector(
                       onTap: () {
-                        _pageController.animateToPage(
-                          realIndex,
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeOut,
-                        );
+                        if (_appState.historySlideEnabled) {
+                          _pageController.animateToPage(
+                            realIndex,
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOut,
+                          );
+                        } else {
+                          _pageController.jumpToPage(realIndex);
+                        }
                       },
                       onLongPress: () {
                         final bool isThumbnail = state.isHistoryThumbnail(realIndex);
@@ -805,14 +831,31 @@ class _HistoryTabState extends State<HistoryTab> {
                         margin: const EdgeInsets.only(right: 8),
                         decoration: BoxDecoration(
                           border: Border.all(
-                            color: isSelected ? const Color(0xFF8B5CF6) : Colors.transparent,
-                            width: 2,
+                            color: isSelected ? const Color(0xFF8B5CF6) : Colors.white12,
+                            width: isSelected ? 3.5 : 1,
                           ),
                           borderRadius: BorderRadius.circular(8),
+                          boxShadow: isSelected
+                              ? [
+                                  BoxShadow(
+                                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.6),
+                                    blurRadius: 8,
+                                    spreadRadius: 1,
+                                  ),
+                                ]
+                              : null,
                         ),
                         child: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: Image.memory(images[realIndex], fit: BoxFit.cover),
+                          borderRadius: BorderRadius.circular(5),
+                          child: ColorFiltered(
+                            colorFilter: isSelected
+                                ? const ColorFilter.mode(Colors.transparent, BlendMode.multiply)
+                                : ColorFilter.mode(
+                                    Colors.black.withValues(alpha: 0.35),
+                                    BlendMode.darken,
+                                  ),
+                            child: Image.memory(images[realIndex], fit: BoxFit.cover),
+                          ),
                         ),
                       ),
                     );
@@ -996,7 +1039,9 @@ class _HistoryTabState extends State<HistoryTab> {
       final int thumbStart = (images.length > 30) ? images.length - 30 : 0;
       final int thumbIndex = syncTarget - thumbStart;
       double targetOffset = (thumbIndex * itemWidth) - (screenWidth / 2) + (itemWidth / 2);
-      if (targetOffset < 0) targetOffset = 0;
+      if (targetOffset < 0) {
+        targetOffset = 0;
+      }
 
       _thumbnailScrollController.dispose();
       _thumbnailScrollController = ScrollController(initialScrollOffset: targetOffset);
@@ -1011,9 +1056,13 @@ class _HistoryTabState extends State<HistoryTab> {
         final target = state.selectedHistoryIndex.clamp(0, images.length - 1);
         _currentIndex = target;
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
+          if (!mounted) {
+            return;
+          }
           Future.delayed(const Duration(milliseconds: 80), () {
-            if (!mounted) return;
+            if (!mounted) {
+              return;
+            }
             if (_pageController.hasClients) {
               _pageController.jumpToPage(target);
             }

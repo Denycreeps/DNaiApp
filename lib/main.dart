@@ -182,9 +182,7 @@ class _NovelAiAppState extends State<NovelAiApp>
     return state.currentImageBytes != null
         ? GestureDetector(
             onLongPress: () => showSaveImageModal(context, state, state.currentImageBytes!),
-            child: InteractiveViewer(
-              child: Image.memory(state.currentImageBytes!, fit: BoxFit.contain),
-            ),
+            child: Image.memory(state.currentImageBytes!, fit: BoxFit.contain),
           )
         : const Center(
             child: Column(
@@ -238,7 +236,9 @@ class _NovelAiAppState extends State<NovelAiApp>
     if (state.hasUpdate && !_updateDialogShown) {
       _updateDialogShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted) {
+          return;
+        }
         _showUpdateDialog(context, state);
       });
     }
@@ -246,10 +246,18 @@ class _NovelAiAppState extends State<NovelAiApp>
     // 활성 탭 리스트 계산 (원본 인덱스 기준)
     // 0=프롬프트, 1=히스토리, 2=i2i, 3=캐릭터, 4=와일드카드, 5=설정
     List<int> newVisibleIndices = [0];
-    if (state.historyTabEnabled) newVisibleIndices.add(1);
-    if (state.i2iTabEnabled) newVisibleIndices.add(2);
-    if (state.characterTabEnabled) newVisibleIndices.add(3);
-    if (state.wildcardTabEnabled) newVisibleIndices.add(4);
+    if (state.historyTabEnabled) {
+      newVisibleIndices.add(1);
+    }
+    if (state.i2iTabEnabled) {
+      newVisibleIndices.add(2);
+    }
+    if (state.characterTabEnabled) {
+      newVisibleIndices.add(3);
+    }
+    if (state.wildcardTabEnabled) {
+      newVisibleIndices.add(4);
+    }
     newVisibleIndices.add(5); // 설정은 항상
 
     // TabController 재생성 (활성 탭 수가 바뀌었을 때만)
@@ -265,7 +273,9 @@ class _NovelAiAppState extends State<NovelAiApp>
 
       final int newTabCount = newVisibleIndices.length;
       int newInitialIndex = newVisibleIndices.indexOf(targetOrigIdx);
-      if (newInitialIndex == -1) newInitialIndex = 0;
+      if (newInitialIndex == -1) {
+        newInitialIndex = 0;
+      }
 
       if (state.requestedTabIndex != null) {
         state.clearNavigation();
@@ -278,7 +288,9 @@ class _NovelAiAppState extends State<NovelAiApp>
         vsync: this,
       );
       _tabController!.addListener(() {
-        if (_tabController!.indexIsChanging) return;
+        if (_tabController!.indexIsChanging) {
+          return;
+        }
         final origIdx =
             _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
             ? _visibleTabIndices[_tabController!.index]
@@ -317,7 +329,9 @@ class _NovelAiAppState extends State<NovelAiApp>
     if (state.requestedTabIndex != null) {
       int targetOrigTab = state.requestedTabIndex!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted) {
+          return;
+        }
         int targetVisibleTab = _visibleTabIndices.indexOf(targetOrigTab);
         if (targetVisibleTab == -1) {
           state.clearNavigation();
