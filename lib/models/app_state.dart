@@ -517,7 +517,7 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   static String currentVersion = "0.0.0"; // pubspec.yaml에서 자동 로드됨
   // GitHub 저장소 주소 (본인 리포로 변경!)
-  static const String githubRepo = "YOUR_USERNAME/YOUR_REPO";
+  static const String githubRepo = "Denycreeps/DNaiApp";
 
   String? latestVersion;
   String? updateUrl;
@@ -567,22 +567,43 @@ class AppState extends ChangeNotifier {
 
   Future<void> checkForUpdate() async {
     try {
+      // releases/latest는 'commit 날짜' 기준이라 태그를 옛 커밋에 달면 최신을 못 찾음.
+      // releases 목록 전체를 받아서 버전 번호로 직접 최댓값을 찾는다.
       final resp = await http
           .get(
-            Uri.parse('https://api.github.com/repos/$githubRepo/releases/latest'),
+            Uri.parse('https://api.github.com/repos/$githubRepo/releases?per_page=30'),
             headers: {'Accept': 'application/vnd.github.v3+json'},
           )
           .timeout(const Duration(seconds: 5));
       if (resp.statusCode == 200) {
-        final data = jsonDecode(resp.body);
-        final tag = data['tag_name']?.toString() ?? "";
-        if (tag.isNotEmpty && _compareVersions(tag, currentVersion) > 0) {
-          latestVersion = tag.replaceFirst('v', '');
-          updateUrl = data['html_url']?.toString();
-          updateNotes = data['body']?.toString();
+        final releases = jsonDecode(resp.body) as List? ?? [];
+        Map<String, dynamic>? best;
+        String bestTag = "";
+        for (final r in releases) {
+          // draft / prerelease 제외
+          if ((r['draft'] as bool?) ?? false) {
+            continue;
+          }
+          if ((r['prerelease'] as bool?) ?? false) {
+            continue;
+          }
+          final tag = r['tag_name']?.toString() ?? "";
+          if (tag.isEmpty) {
+            continue;
+          }
+          if (best == null || _compareVersions(tag, bestTag) > 0) {
+            best = Map<String, dynamic>.from(r);
+            bestTag = tag;
+          }
+        }
+
+        if (best != null && _compareVersions(bestTag, currentVersion) > 0) {
+          latestVersion = bestTag.replaceFirst('v', '');
+          updateUrl = best['html_url']?.toString();
+          updateNotes = best['body']?.toString();
 
           // APK 에셋 찾기
-          final assets = data['assets'] as List? ?? [];
+          final assets = best['assets'] as List? ?? [];
           for (final asset in assets) {
             final name = asset['name']?.toString() ?? '';
             if (name.endsWith('.apk')) {
@@ -700,6 +721,8 @@ class AppState extends ChangeNotifier {
   final TextEditingController customHeightController = TextEditingController(text: "1216");
 
   final SyntaxHighlightController conditionalRuleController = SyntaxHighlightController();
+  // 조건부 트리거 작동 시점: "random"(랜덤 프롬프트 생성 시) / "generate"(이미지 생성 시)
+  String conditionalTriggerMode = "random";
 
   bool ratingE = false;
   bool ratingQ = false;
@@ -716,13 +739,15 @@ class AppState extends ChangeNotifier {
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
   bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
+  bool randomPromptAlphabetical = false; // 랜덤 프롬프트 나머지 태그 알파벳 순서
+  bool ignoreRecommendedOrder = false; // NovelAI 권장 순서(인원/solo/시점 등) 무시
 
   // 배치 생성
   int batchCount = 1; // 1, 2, 3, 4, 0(무한)
   int batchRemaining = 0; // 남은 생성 수
   bool isBatchMode = false;
   double batchDelay = 0.5; // 연속 생성 딜레이 (초)
-  bool showGenerationMessage = true; // 이미지 생성 시 하단 메세지
+  bool showGenerationMessage = false; // 이미지 생성 시 하단 메세지
 
   // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
   bool historyTabEnabled = true;
@@ -879,6 +904,7 @@ class AppState extends ChangeNotifier {
     customWidthController.text = prefs.getString('custom_width') ?? "832";
     customHeightController.text = prefs.getString('custom_height') ?? "1216";
     conditionalRuleController.text = prefs.getString('conditional_rules') ?? "";
+    conditionalTriggerMode = prefs.getString('conditionalTriggerMode') ?? "random";
 
     positiveController.text = prefs.getString('positive') ?? "";
     negativeController.text = prefs.getString('negative') ?? "";
@@ -916,8 +942,10 @@ class AppState extends ChangeNotifier {
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
+    randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
+    ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
-    showGenerationMessage = prefs.getBool('showGenerationMessage') ?? true;
+    showGenerationMessage = prefs.getBool('showGenerationMessage') ?? false;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
@@ -1029,6 +1057,7 @@ class AppState extends ChangeNotifier {
       'cfgRescale': cfgRescaleController.text,
       'seed': seedController.text,
       'conditional_rules': conditionalRuleController.text,
+      'conditionalTriggerMode': conditionalTriggerMode,
       'gelbooru_inc': gelbooruIncludeController.text,
       'gelbooru_exc': gelbooruExcludeController.text,
       'custom_save_path': customSavePathController.text,
@@ -1056,6 +1085,8 @@ class AppState extends ChangeNotifier {
       'variancePlus': isVariancePlus,
       'horizontalSwipeEnabled': horizontalSwipeEnabled,
       'historySlideEnabled': historySlideEnabled,
+      'randomPromptAlphabetical': randomPromptAlphabetical,
+      'ignoreRecommendedOrder': ignoreRecommendedOrder,
       'batchDelay': batchDelay,
       'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
@@ -1134,6 +1165,7 @@ class AppState extends ChangeNotifier {
     cfgRescaleController.text = data['cfgRescale'] ?? '0.00';
     seedController.text = data['seed'] ?? '';
     conditionalRuleController.text = data['conditional_rules'] ?? '';
+    conditionalTriggerMode = data['conditionalTriggerMode'] ?? 'random';
     gelbooruIncludeController.text = data['gelbooru_inc'] ?? '';
     gelbooruExcludeController.text = data['gelbooru_exc'] ?? '';
     customSavePathController.text = data['custom_save_path'] ?? '/storage/emulated/0/Download';
@@ -1163,8 +1195,10 @@ class AppState extends ChangeNotifier {
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
     historySlideEnabled = data['historySlideEnabled'] ?? false;
+    randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
+    ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
-    showGenerationMessage = data['showGenerationMessage'] ?? true;
+    showGenerationMessage = data['showGenerationMessage'] ?? false;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     characterTabEnabled = data['characterTabEnabled'] ?? true;
@@ -1284,6 +1318,7 @@ class AppState extends ChangeNotifier {
       await prefs.setString('custom_width', customWidthController.text);
       await prefs.setString('custom_height', customHeightController.text);
       await prefs.setString('conditional_rules', conditionalRuleController.text);
+      await prefs.setString('conditionalTriggerMode', conditionalTriggerMode);
 
       await prefs.setString('positive', positiveController.text);
       await prefs.setString('negative', negativeController.text);
@@ -1318,6 +1353,8 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('variancePlus', isVariancePlus);
       await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
       await prefs.setBool('historySlideEnabled', historySlideEnabled);
+      await prefs.setBool('randomPromptAlphabetical', randomPromptAlphabetical);
+      await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('showGenerationMessage', showGenerationMessage);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
@@ -1658,13 +1695,42 @@ class AppState extends ChangeNotifier {
   String _sortNovelAIPrompt(String prompt) {
     List<String> tags = prompt.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
 
-    List<String> group1 = [];
-    List<String> group2 = [];
-    List<String> group3 = [];
-    List<String> group4 = [];
-    List<String> groupRest = [];
+    // NovelAI 권장 순서 무시: 그룹 분류 없이 전체 처리
+    if (ignoreRecommendedOrder) {
+      if (randomPromptAlphabetical) {
+        // 알파벳 순서
+        tags.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+      } else {
+        // 랜덤 섞기
+        tags.shuffle();
+      }
+      return tags.join(', ');
+    }
+
+    List<String> gPerson = []; // 1. 인원수 (1girl, 2boys)
+    List<String> gSolo = []; // 2. solo 계열
+    List<String> gFrom = []; // 3. 시점 (from ~)
+    List<String> gLooking = []; // 4. 시선 (looking ~)
+    List<String> gComposition = []; // 5. 신체 구도/시점
+    List<String> gRest = []; // 6. 나머지 (알파벳 정렬 대상)
+    List<String> gBackground = []; // 7. 배경
 
     final personRegex = RegExp(r'^(\d+|\d+\+)\s?(girl|girls|boy|boys)$');
+
+    // 신체 구도/시점 태그 (맨 앞쪽 고정)
+    const compositionTags = {
+      'full body',
+      'upper body',
+      'lower body',
+      'cowboy shot',
+      'portrait',
+      'close-up',
+      'feet out of frame',
+      'wide shot',
+      'dutch angle',
+      'straight-on',
+      'pov',
+    };
 
     for (String tag in tags) {
       String lowerTag = tag.toLowerCase();
@@ -1672,19 +1738,36 @@ class AppState extends ChangeNotifier {
       if (personRegex.hasMatch(lowerTag) ||
           lowerTag == 'multiple girls' ||
           lowerTag == 'multiple boys') {
-        group1.add(tag);
+        gPerson.add(tag);
+      } else if (lowerTag == 'solo' || lowerTag == 'solo focus') {
+        gSolo.add(tag);
       } else if (lowerTag.startsWith('from ')) {
-        group2.add(tag);
+        gFrom.add(tag);
       } else if (lowerTag.startsWith('looking ')) {
-        group3.add(tag);
+        gLooking.add(tag);
+      } else if (compositionTags.contains(lowerTag)) {
+        gComposition.add(tag);
       } else if (lowerTag.contains('background')) {
-        group4.add(tag);
+        gBackground.add(tag);
       } else {
-        groupRest.add(tag);
+        gRest.add(tag);
       }
     }
 
-    List<String> sortedTags = [...group1, ...group2, ...group3, ...groupRest, ...group4];
+    // 알파벳 순서 옵션이 켜져있으면 나머지 그룹만 정렬 (고정 그룹은 제외)
+    if (randomPromptAlphabetical) {
+      gRest.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    }
+
+    List<String> sortedTags = [
+      ...gPerson,
+      ...gSolo,
+      ...gFrom,
+      ...gLooking,
+      ...gComposition,
+      ...gRest,
+      ...gBackground,
+    ];
     return sortedTags.join(', ');
   }
 
@@ -1800,7 +1883,10 @@ class AppState extends ChangeNotifier {
 
     String combined = filteredTags.join(', ');
 
-    String finalConditioned = _applyConditionalRules(combined, rating);
+    // 조건부 트리거가 "random" 모드일 때만 여기서 적용
+    String finalConditioned = conditionalTriggerMode == "random"
+        ? _applyConditionalRules(combined, rating)
+        : combined;
     String finalSorted = _sortNovelAIPrompt(finalConditioned);
 
     positiveController.text = finalSorted;
@@ -2120,6 +2206,21 @@ class AppState extends ChangeNotifier {
     String combined =
         "${prefixController.text},${positiveController.text},${suffixController.text}";
     String step1 = _processWildcards(combined);
+
+    // 조건부 트리거가 "generate" 모드면 합쳐진 프롬프트에 적용
+    if (conditionalTriggerMode == "generate") {
+      // 프롬프트에서 등급 추출 (g/s/q/e 태그가 있으면 사용, 없으면 g)
+      String rating = "g";
+      final lower = step1.toLowerCase();
+      if (lower.contains("explicit")) {
+        rating = "e";
+      } else if (lower.contains("questionable")) {
+        rating = "q";
+      } else if (lower.contains("sensitive")) {
+        rating = "s";
+      }
+      step1 = _applyConditionalRules(step1, rating);
+    }
 
     String finalPrompt = _service.sanitizePrompt(step1);
     String finalNegative = _service.sanitizePrompt(_processWildcards(negativeController.text));
@@ -3087,6 +3188,34 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // Precise Reference import: (이미지 base64, metadata 항목) 리스트를 받아 추가
+  // 반환: 추가된 개수
+  int addPreciseFromImport(List<Map<String, dynamic>> items) {
+    int added = 0;
+    for (final item in items) {
+      if (preciseRefs.length >= 9) {
+        break;
+      }
+      final image = item['image'] as String?;
+      if (image == null) {
+        continue;
+      }
+      preciseRefs.add({
+        'image': image,
+        'type': (item['type'] as String?) ?? 'character',
+        'strength': (item['strength'] as num?)?.toDouble() ?? 1.0,
+        'fidelity': (item['fidelity'] as num?)?.toDouble() ?? 0.5,
+        'enabled': (item['enabled'] as bool?) ?? true,
+      });
+      added++;
+    }
+    if (added > 0) {
+      saveReferencesToLocal();
+      notifyListeners();
+    }
+    return added;
+  }
+
   Future<void> saveReferencesToLocal() async {
     try {
       final appDir = await getApplicationDocumentsDirectory();
@@ -3732,6 +3861,12 @@ class AppState extends ChangeNotifier {
       cost += (activeVibes.length - 4) * 2;
     }
     return cost;
+  }
+
+  // Precise Reference Anlas 비용 계산 (활성 이미지당 +5 Anlas)
+  int calculatePreciseAnlas() {
+    final activePrecise = preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList();
+    return activePrecise.length * 5;
   }
 
   void selectWildcard(int index) {

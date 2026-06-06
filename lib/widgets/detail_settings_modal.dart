@@ -366,11 +366,27 @@ void showDetailSettingsModal(BuildContext context) {
                                     size: 20,
                                   ),
                                   style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                  items: [
-                                    "수동",
-                                    "랜덤",
-                                    "자동",
-                                  ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                                  selectedItemBuilder: (context) {
+                                    return ["수동", "랜덤", "자동"].map((e) {
+                                      final label = e == "수동"
+                                          ? "수동"
+                                          : (e == "랜덤" ? "🔀 랜덤" : "🪄 자동");
+                                      return Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          label,
+                                          style: const TextStyle(
+                                            color: Color(0xFF8B5CF6),
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      );
+                                    }).toList();
+                                  },
+                                  items: [("수동", "수동"), ("랜덤", "🔀 랜덤"), ("자동", "🪄 자동")]
+                                      .map((e) => DropdownMenuItem(value: e.$1, child: Text(e.$2)))
+                                      .toList(),
                                   onChanged: (val) {
                                     if (val != null) {
                                       setModalState(() => state.resolutionMode = val);

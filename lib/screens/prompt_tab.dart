@@ -11,6 +11,7 @@ import 'dart:io';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+import 'package:archive/archive.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
 
@@ -1497,6 +1498,132 @@ class _PromptTabState extends State<PromptTab> {
   // ============================================================================
   // Vibe Transfer 다이얼로그
   // ============================================================================
+  // Precise Reference 내보내기 (ZIP: metadata.json + 이미지들)
+  void _exportPrecise(BuildContext parentContext, AppState state) async {
+    try {
+      final archive = Archive();
+      final List<Map<String, dynamic>> metadata = [];
+
+      for (int i = 0; i < state.preciseRefs.length; i++) {
+        final ref = state.preciseRefs[i];
+        final imgBytes = base64Decode(ref['image']);
+        final filename = "precise_${i + 1}.png";
+        archive.addFile(ArchiveFile(filename, imgBytes.length, imgBytes));
+        metadata.add({
+          "filename": filename,
+          "description": (ref['type'] as String?) ?? "character",
+          "fidelity": (ref['fidelity'] as double?) ?? 0.5,
+          "strength": (ref['strength'] as double?) ?? 1.0,
+          "information_extracted": 1,
+          "enabled": (ref['enabled'] as bool?) ?? true,
+        });
+      }
+
+      final metaBytes = utf8.encode(jsonEncode(metadata));
+      archive.addFile(ArchiveFile("metadata.json", metaBytes.length, metaBytes));
+
+      final zipData = ZipEncoder().encode(archive);
+      if (zipData == null) {
+        if (parentContext.mounted) {
+          ScaffoldMessenger.of(parentContext).showSnackBar(
+            SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
+          );
+        }
+        return;
+      }
+
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/DNaiApp_Precise_${_fileTimestamp()}.zip');
+      await file.writeAsBytes(zipData);
+      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+    } catch (e) {
+      if (parentContext.mounted) {
+        ScaffoldMessenger.of(parentContext).showSnackBar(
+          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
+        );
+      }
+    }
+  }
+
+  // Precise Reference 불러오기 (ZIP 해제 → metadata.json + 이미지)
+  void _importPrecise(
+    BuildContext parentContext,
+    AppState state,
+    StateSetter setDialogState,
+  ) async {
+    final result = await FilePicker.platform.pickFiles(type: FileType.any);
+    if (result == null || result.files.isEmpty) {
+      return;
+    }
+    try {
+      final file = File(result.files.single.path!);
+      final bytes = await file.readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+
+      // metadata.json 찾기
+      ArchiveFile? metaFile;
+      final Map<String, Uint8List> images = {};
+      for (final f in archive) {
+        if (f.name.endsWith('metadata.json')) {
+          metaFile = f;
+        } else if (f.name.toLowerCase().endsWith('.png') ||
+            f.name.toLowerCase().endsWith('.jpg') ||
+            f.name.toLowerCase().endsWith('.jpeg')) {
+          // 경로 제거하고 파일명만
+          final baseName = f.name.split('/').last;
+          images[baseName] = f.content as Uint8List;
+        }
+      }
+
+      if (metaFile == null) {
+        if (parentContext.mounted) {
+          ScaffoldMessenger.of(parentContext).showSnackBar(
+            SnackBar(
+              duration: const Duration(milliseconds: 2400),
+              content: Text("metadata.json이 없는 파일입니다."),
+            ),
+          );
+        }
+        return;
+      }
+
+      final metaList = jsonDecode(utf8.decode(metaFile.content as Uint8List)) as List;
+      final List<Map<String, dynamic>> items = [];
+      for (final m in metaList) {
+        final filename = (m['filename'] as String?)?.split('/').last;
+        if (filename == null || !images.containsKey(filename)) {
+          continue;
+        }
+        // 이미지를 Precise 규격으로 리사이즈
+        final resized = _resizePrecise(images[filename]!);
+        items.add({
+          'image': resized,
+          'type': (m['description'] as String?) ?? 'character',
+          'strength': (m['strength'] as num?)?.toDouble() ?? 1.0,
+          'fidelity': (m['fidelity'] as num?)?.toDouble() ?? 0.5,
+          'enabled': (m['enabled'] as bool?) ?? true,
+        });
+      }
+
+      final added = state.addPreciseFromImport(items);
+      setDialogState(() {});
+      if (parentContext.mounted) {
+        ScaffoldMessenger.of(parentContext).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text(added > 0 ? "$added개의 Reference를 불러왔습니다." : "불러올 이미지가 없습니다."),
+          ),
+        );
+      }
+    } catch (e) {
+      if (parentContext.mounted) {
+        ScaffoldMessenger.of(parentContext).showSnackBar(
+          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("불러오기 실패")),
+        );
+      }
+    }
+  }
+
   // Vibe 내보내기 선택 다이얼로그
   void _showVibeExportDialog(BuildContext parentContext, AppState state) {
     final selected = <int>{};
@@ -1504,12 +1631,10 @@ class _PromptTabState extends State<PromptTab> {
     Future<void> doExport(List<int> indices) async {
       try {
         final dir = await getTemporaryDirectory();
-        final now = DateTime.now();
-        final dateStr =
-            "${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}";
+        final ts = _fileTimestamp();
         if (indices.length == 1) {
           final jsonStr = state.exportVibeToNaiv4(state.vibeTransfers[indices[0]]);
-          final file = File('${dir.path}/vibe_$dateStr.naiv4vibe');
+          final file = File('${dir.path}/DNaiApp_Vibe_$ts.naiv4vibe');
           await file.writeAsString(jsonStr);
           await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
         } else {
@@ -1521,7 +1646,7 @@ class _PromptTabState extends State<PromptTab> {
             "version": 1,
             "vibes": vibes,
           });
-          final file = File('${dir.path}/vibes_$dateStr.naiv4vibebundle');
+          final file = File('${dir.path}/DNaiApp_Vibe_$ts.naiv4vibebundle');
           await file.writeAsString(jsonStr);
           await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
         }
@@ -1768,11 +1893,14 @@ class _PromptTabState extends State<PromptTab> {
                                                             Colors.black54,
                                                             BlendMode.darken,
                                                           ),
-                                                    child: Image.memory(
-                                                      base64Decode(vibe['image']),
+                                                    child: SizedBox(
                                                       width: double.infinity,
-                                                      fit: BoxFit.cover,
-                                                      cacheWidth: 200,
+                                                      height: double.infinity,
+                                                      child: Image.memory(
+                                                        base64Decode(vibe['image']),
+                                                        fit: BoxFit.cover,
+                                                        cacheWidth: 200,
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
@@ -2047,11 +2175,14 @@ class _PromptTabState extends State<PromptTab> {
                                                             Colors.black54,
                                                             BlendMode.darken,
                                                           ),
-                                                    child: Image.memory(
-                                                      base64Decode(ref['image']),
+                                                    child: SizedBox(
                                                       width: double.infinity,
-                                                      fit: BoxFit.cover,
-                                                      cacheWidth: 200,
+                                                      height: double.infinity,
+                                                      child: Image.memory(
+                                                        base64Decode(ref['image']),
+                                                        fit: BoxFit.cover,
+                                                        cacheWidth: 200,
+                                                      ),
                                                     ),
                                                   ),
                                                 ),
@@ -2192,6 +2323,47 @@ class _PromptTabState extends State<PromptTab> {
                               },
                             ),
                           ),
+                          const SizedBox(height: 12),
+                          // 내보내기/불러오기 버튼
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: state.preciseRefs.isEmpty
+                                      ? null
+                                      : () {
+                                          _exportPrecise(parentContext, state);
+                                        },
+                                  icon: const Icon(Icons.upload_file, size: 16),
+                                  label: const Text("내보내기", style: TextStyle(fontSize: 12)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(color: Colors.white24),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () {
+                                    _importPrecise(parentContext, state, setDialogState);
+                                  },
+                                  icon: const Icon(Icons.download, size: 16),
+                                  label: const Text("불러오기", style: TextStyle(fontSize: 12)),
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.white70,
+                                    side: const BorderSide(color: Colors.white24),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -2209,15 +2381,42 @@ class _PromptTabState extends State<PromptTab> {
                           return AnimatedBuilder(
                             animation: controller,
                             builder: (_, _) {
-                              // Character 탭 + Vibe 있을 때: 동시 사용 불가 경고 (2줄)
-                              if (controller.index == 1 && state.vibeTransfers.isNotEmpty) {
-                                return Text(
-                                  "⚠ Vibe와 동시 사용 불가\n(Precise 우선 적용)",
-                                  style: TextStyle(
-                                    color: Colors.orangeAccent.withValues(alpha: 0.8),
-                                    fontSize: 10,
-                                  ),
-                                );
+                              // Character 탭
+                              if (controller.index == 1) {
+                                // Vibe 있으면 동시 사용 불가 경고 우선
+                                if (state.vibeTransfers.isNotEmpty &&
+                                    state.preciseRefs
+                                        .where((r) => (r['enabled'] as bool?) ?? true)
+                                        .isNotEmpty) {
+                                  return Text(
+                                    "⚠ Vibe와 동시 사용 불가\n(Precise 우선 적용)",
+                                    style: TextStyle(
+                                      color: Colors.orangeAccent.withValues(alpha: 0.8),
+                                      fontSize: 10,
+                                    ),
+                                  );
+                                }
+                                // Precise Anlas 소모 표시
+                                if (state.preciseRefs.isNotEmpty) {
+                                  final cost = state.calculatePreciseAnlas();
+                                  if (cost > 0) {
+                                    return Text(
+                                      "Anlas가 $cost 소모됩니다.",
+                                      style: TextStyle(
+                                        color: Colors.amber.withValues(alpha: 0.8),
+                                        fontSize: 10,
+                                      ),
+                                    );
+                                  } else {
+                                    return Text(
+                                      "Anlas가 소모되지 않습니다.",
+                                      style: TextStyle(
+                                        color: Colors.tealAccent.withValues(alpha: 0.7),
+                                        fontSize: 10,
+                                      ),
+                                    );
+                                  }
+                                }
                               }
                               // Vibe 탭: Anlas 소모 상태 표시
                               if (controller.index == 0 && state.vibeTransfers.isNotEmpty) {
@@ -3162,7 +3361,109 @@ class _PromptTabState extends State<PromptTab> {
               title: "조건부 트리거 작성 (줄바꿈 구분)",
             ),
             const SizedBox(height: 12),
+            // 작동 시점 선택 버튼
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      state.conditionalTriggerMode = "random";
+                      state.saveAllSettings();
+                      state.refreshUI();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      decoration: BoxDecoration(
+                        color: state.conditionalTriggerMode == "random"
+                            ? const Color(0xFF29B6F6).withValues(alpha: 0.2)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: state.conditionalTriggerMode == "random"
+                              ? const Color(0xFF29B6F6)
+                              : Colors.white24,
+                          width: state.conditionalTriggerMode == "random" ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.casino_outlined,
+                            size: 16,
+                            color: state.conditionalTriggerMode == "random"
+                                ? const Color(0xFF29B6F6)
+                                : Colors.white54,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            "랜덤 프롬프트 생성 시",
+                            style: TextStyle(
+                              color: state.conditionalTriggerMode == "random"
+                                  ? const Color(0xFF29B6F6)
+                                  : Colors.white54,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      state.conditionalTriggerMode = "generate";
+                      state.saveAllSettings();
+                      state.refreshUI();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      decoration: BoxDecoration(
+                        color: state.conditionalTriggerMode == "generate"
+                            ? const Color(0xFF29B6F6).withValues(alpha: 0.2)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: state.conditionalTriggerMode == "generate"
+                              ? const Color(0xFF29B6F6)
+                              : Colors.white24,
+                          width: state.conditionalTriggerMode == "generate" ? 1.5 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.image_outlined,
+                            size: 16,
+                            color: state.conditionalTriggerMode == "generate"
+                                ? const Color(0xFF29B6F6)
+                                : Colors.white54,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            "이미지 생성 시",
+                            style: TextStyle(
+                              color: state.conditionalTriggerMode == "generate"
+                                  ? const Color(0xFF29B6F6)
+                                  : Colors.white54,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFF29B6F6).withValues(alpha: 0.1),
@@ -3186,7 +3487,7 @@ class _PromptTabState extends State<PromptTab> {
                     style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   Text(
-                    "(조건):A^B → 조건 만족시 A를 B로 교체 (*A인 경우 포함되는 프롬프트중 A 부분만 교체)",
+                    "(!조건):A=B → 조건을 만족하지 않을시 A를 B로 교체",
                     style: TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                   Text(
@@ -3209,6 +3510,11 @@ class _PromptTabState extends State<PromptTab> {
                   Text(
                     "*맨 앞에 #을 붙이면 주석으로 처리되어 실행되지 않습니다.",
                     style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    "*는 위치에 따라 의미가 다릅니다.\n  skirt* → skirt로 시작하는 프롬프트\n  *skirt → skirt로 끝나는 프롬프트\n  *skirt* → skirt를 포함하는 프롬프트",
+                    style: TextStyle(color: Colors.cyanAccent, fontSize: 11),
                   ),
                 ],
               ),
@@ -3881,6 +4187,13 @@ class _PromptTabState extends State<PromptTab> {
       ),
     );
   }
+}
+
+// 파일명용 날짜_시간 문자열 (YYYYMMDD_HHMMSS)
+String _fileTimestamp() {
+  final now = DateTime.now();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return "${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}";
 }
 
 // Vibe Transfer용 이미지 리사이즈 + base64 인코딩 (백그라운드 isolate)

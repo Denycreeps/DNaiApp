@@ -248,53 +248,12 @@ class _SettingsTabState extends State<SettingsTab> {
             ),
             const SizedBox(height: 16),
 
-            // 이미지 생성 시 하단 메세지 출력
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E1E1E),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.chat_bubble_outline, color: Colors.deepPurpleAccent, size: 20),
-                      SizedBox(width: 8),
-                      Text(
-                        "생성 시 메세지",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Transform.scale(
-                    scale: 0.85,
-                    child: Switch(
-                      value: state.showGenerationMessage,
-                      activeThumbColor: Colors.deepPurpleAccent,
-                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                      onChanged: (val) {
-                        state.showGenerationMessage = val;
-                        state.saveAllSettings();
-                        state.refreshUI();
-                      },
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
             // 연속 생성 딜레이
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
                 border: Border.all(color: Colors.white10),
               ),
               child: Row(
@@ -339,6 +298,47 @@ class _SettingsTabState extends State<SettingsTab> {
                         },
                         onChangeEnd: (_) => state.saveAllSettings(),
                       ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 이미지 생성 시 하단 메세지 출력
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.chat_bubble_outline, color: Colors.deepPurpleAccent, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        "생성 시 메세지",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.showGenerationMessage,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.showGenerationMessage = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
                     ),
                   ),
                 ],
@@ -391,7 +391,6 @@ class _SettingsTabState extends State<SettingsTab> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
                 border: Border.all(color: Colors.white10),
               ),
               child: Row(
@@ -419,6 +418,93 @@ class _SettingsTabState extends State<SettingsTab> {
                       activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
                       onChanged: (val) {
                         state.horizontalSwipeEnabled = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 랜덤 프롬프트 알파벳 순서
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.sort_by_alpha, color: Colors.deepPurpleAccent, size: 20),
+                      SizedBox(width: 8),
+                      Text(
+                        "랜덤 프롬프트 알파벳 순서",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.randomPromptAlphabetical,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.randomPromptAlphabetical = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 랜덤 프롬프트 NovelAI 권장 순서 무시
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Row(
+                      children: [
+                        Icon(Icons.rule_folder_outlined, color: Colors.deepPurpleAccent, size: 20),
+                        SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            "랜덤 프롬프트 NovelAi 권장 순서 무시",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.ignoreRecommendedOrder,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.ignoreRecommendedOrder = val;
                         state.saveAllSettings();
                         state.refreshUI();
                       },
@@ -526,9 +612,10 @@ class _SettingsTabState extends State<SettingsTab> {
                               final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
                               final dir = await getTemporaryDirectory();
                               final now = DateTime.now();
+                              String two(int n) => n.toString().padLeft(2, '0');
                               final dateStr =
-                                  "${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}";
-                              final file = File('${dir.path}/dnaiapp_settings_$dateStr.json');
+                                  "${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}";
+                              final file = File('${dir.path}/DNaiApp_Settings_$dateStr.json');
                               await file.writeAsString(jsonStr);
                               await SharePlus.instance.share(
                                 ShareParams(files: [XFile(file.path)]),

@@ -41,6 +41,7 @@ class _NovelAiAppState extends State<NovelAiApp>
   late PageController _pageController;
   final ScrollController _historyScrollController = ScrollController();
   bool _updateDialogShown = false;
+  bool _updateDialogVisible = false;
   List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
 
   @override
@@ -69,6 +70,11 @@ class _NovelAiAppState extends State<NovelAiApp>
   }
 
   void _showUpdateDialog(BuildContext context, AppState state) {
+    // 이미 업데이트 다이얼로그가 떠 있으면 중복 표시 방지
+    if (_updateDialogVisible) {
+      return;
+    }
+    _updateDialogVisible = true;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -166,7 +172,9 @@ class _NovelAiAppState extends State<NovelAiApp>
             ),
         ],
       ),
-    );
+    ).then((_) {
+      _updateDialogVisible = false;
+    });
   }
 
   Widget _buildImageArea(AppState state) {
