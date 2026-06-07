@@ -460,13 +460,25 @@ X모양을 누르면 그것만 삭제할 수 있음.
 | `(cat):cat = dog` | cat이 있다면 cat을 dog로 바꿔라 |
 | `(cat*):cat = dog` | 앞에 cat으로 시작하는 프롬프트가 있다면 cat을 dog로 바꿔라 (*cat으로 바꾸면 cat으로 끝나는 프롬프트) |
 | `(cat*):cat*^dog` | 앞에 cat으로 시작하는 프롬프트가 있다면 cat으로 시작하는 프롬프트들중 cat 부분을 dog로 바꿔라 (cat ears랑 cat tail이 있을때 dog ears랑 dog tail 로 바꾼다던가 할 때 쓰려고, 근데 솔직히 복잡해서 안쓸 것 같음) |
+| `(!cat):dog = cat` | cat이 없다면 dog를 cat으로 바꿔라 |
 | `(e\|q):prefix=nsfw` | Rating:e 나 Rating:q 가 있으면 긍정적 프롬프트 맨 앞에 nsfw 추가 (suffix 로 맨 뒤도 가능) |
 | `(white panties&skirt):suffix=windlift` | white panties 랑 skirt 가 있다면 긍정적 프롬프트 맨 뒤에 windlift 추가 |
 | `(sleeping):sleeping = sleeping, 2::closed eyes ::, nightgown` | sleeping 이 있다면 sleeping을 "sleeping, 2::closed eyes ::, nightgown" 로 통째로 바꿈 (맨 뒤 쉼표는 알아서 붙음) |
 
 이정도가 있음. 어차피 `(e|q):suffix=nsfw` 같은거 아니면 쓸사람만 쓰는 기능임
 
-만약 정말 쓰고 싶다면 따로 물어봐줘...
+그리고 원래 `조건부 트리거`는 `태그 제거`와 같이 `랜덤 프롬프트` 생성시에 작동하는데
+
+
+<img width="370" height="174" alt="image" src="https://github.com/user-attachments/assets/e4d4f7f9-9e78-4413-81b0-d8e49147c230" />
+
+여기서 `이미지 생성 시`를 누르면 "선행 프롬프트 + 긍정적 프롬프트 + 후행 프롬프트" 를 모두 합친 후에
+
+조건부 트리거가 작동해서 한번 정제함.
+
+즉, 선행이나 후행에 있는것도 조건부 트리거를 적용할 수 있단거임.
+
+근데 좀 복잡하니 정말 쓰고 싶고 잘 모르겠다면 따로 물어봐줘...
 
 복수 조건을 하고 싶으면 `(A&(B|C)&D)` 같은것도 가능 (A랑 D는 무조건 있어야되고 B랑 C중 최소 하나는 있어야 된다는 조건).
 
@@ -720,7 +732,8 @@ X모양을 누르면 그것만 삭제할 수 있음.
 <a id="설정-탭"></a>
 ## ⚙️ 설정 탭
 
-<img width="364" height="729" alt="image" src="https://github.com/user-attachments/assets/29f7d5b4-81aa-4048-8c17-a1b784a33b60" />
+
+<img width="368" height="457" alt="image" src="https://github.com/user-attachments/assets/8d4f0491-8fef-43ff-a588-475e074f3ecc" />
 
 위에부터 순서대로 설명하면
 
@@ -734,17 +747,36 @@ X모양을 누르면 그것만 삭제할 수 있음.
 
 <br />
 
-*생성 시 메세지* - 이미지 생성을 하거나 연속 생성시 화면 아래에 생성됐다고 뜨는데 그걸 꺼줌. 대신 인페인트나 업스케일 같은거 할때는 뜨게 되어있음. 테스트좀 하다가 전부 끌 수 있도록 바꿀지 정할 예정.
+<img width="368" height="321" alt="image" src="https://github.com/user-attachments/assets/aa0145a3-69e9-42f3-8bbd-1cbaea970948" />
 
-<br />
 
 *연속 생성 딜레이* - 이미지 생성시 연속으로 생성하는걸 켰을때 중간에 딜레이를 몇초로 할지 정함. 0초부터 5초까지 0.1단위로 지정 가능
 
 <br />
 
-*좌우 스와이프* - 이걸 켜면 드래그해서 각 탭을 이동할 수 있는데 i2i탭에서 엄청 불편해서 기본적으로 꺼뒀음. 지워도 될듯
+*생성 시 메세지* - 이미지 생성을 하거나 연속 생성시 화면 아래에 생성됐다고 뜨는데 그걸 꺼줌. 대신 인페인트나 업스케일 같은거 할때는 뜨게 되어있음. 테스트좀 하다가 전부 끌 수 있도록 바꿀지 정할 예정.
 
 <br />
+
+*좌우 스와이프* - 이걸 켜면 드래그해서 각 탭을 이동할 수 있는데 i2i탭에서 엄청 불편해서 기본적으로 꺼뒀음. 어차피 쓸사람도 없을 것 같음...
+
+<br />
+
+*랜덤 프롬프트 알파벳 순서* - 원래 프롬프트가 1girl, solo, from~, looking~ 등등 NovelAi 권장 설정을 제외하면 전부 랜덤배치인데 이걸 ON으로 하면 알파벳 순서대로 정렬됨. 
+
+<br />
+
+<img width="646" height="370" alt="image" src="https://github.com/user-attachments/assets/ca357d77-8dd6-4df8-a988-d51288e116cf" />
+
+
+*랜덤 프롬프트 NovelAi 권장 순서 무시* - 대강 위 스크린샷이 NovelAi 권장 프롬프트 순서이고 `랜덤 프롬프트`를 누르면 이 기준을 토대로 기본 정렬을 1번 함.
+
+근데 이걸 ON으로 하면 그딴거없고 그냥 `랜덤 순서 or 알파벳 순서` 로 정렬됨.
+
+<br />
+
+<img width="367" height="96" alt="image" src="https://github.com/user-attachments/assets/db5b8922-43d6-4c9e-8756-c39da0eb953c" />
+
 
 *탭 표시 설정* - 버튼을 터치해서 회색으로 만들면 그 탭이 안보임. 
 
