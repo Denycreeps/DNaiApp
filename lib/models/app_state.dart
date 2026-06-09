@@ -511,6 +511,145 @@ class SyntaxHighlightController extends TextEditingController {
   }
 }
 
+// NovelAI 가중치 문법(숫자::프롬프트 ::) 색상 하이라이트 컨트롤러
+class WeightHighlightController extends TextEditingController {
+  WeightHighlightController({super.text});
+
+  // 전역 토글 (설정에서 제어)
+  static bool highlightEnabled = false;
+
+  // 가중치 → 색상 매핑
+  // 1.0 = 중립(색 없음), >1.0 어두운 갈색→(10.0)완전 빨강, <1.0 파랑→검정파랑
+  static Color? _weightColor(double weight) {
+    if (weight == 1.0) {
+      return null;
+    }
+    if (weight > 1.0) {
+      // 1.0 어두운 갈색 → 10.0 완전 빨강
+      final t = ((weight - 1.0) / 9.0).clamp(0.0, 1.0);
+      return Color.lerp(const Color(0xFF6B4423), const Color(0xFFFF0000), t);
+    } else {
+      // 1.0 파랑 → 0.0 이하 검정파랑
+      final t = ((1.0 - weight) / 2.0).clamp(0.0, 1.0);
+      return Color.lerp(const Color(0xFF4A90D9), const Color(0xFF0A1A4A), t);
+    }
+  }
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
+    if (!highlightEnabled) {
+      return TextSpan(text: text, style: style);
+    }
+    return buildWeightSpan(text, style);
+  }
+
+  // 가중치 문법을 색상 TextSpan으로 변환 (controller + RichText 공용)
+  static TextSpan buildWeightSpan(String text, TextStyle? style) {
+    final List<TextSpan> spans = [];
+    // 가중치 시작: 단어 경계 뒤의 (숫자):: / 종료: ::
+    // 단어 경계 = 문장 시작, 또는 앞 글자가 , [ ] { } 공백 중 하나
+    // (artist:7010 같은 경우 숫자 앞이 ':' 또는 글자라 가중치로 인식 안 함)
+    final startRegex = RegExp(r'(?:^|(?<=[,\[\]{}\s]))(-?\d+\.?\d*)\s*::');
+    final endRegex = RegExp(r'::');
+
+    int pos = 0;
+    double? currentWeight;
+
+    while (pos < text.length) {
+      if (currentWeight == null) {
+        // 가중치 시작 마커 찾기
+        final m = startRegex.firstMatch(text.substring(pos));
+        if (m == null) {
+          // 더 이상 가중치 없음 → 나머지 일반 텍스트
+          spans.add(TextSpan(text: text.substring(pos), style: style));
+          break;
+        }
+        // 마커 이전 일반 텍스트
+        if (m.start > 0) {
+          spans.add(TextSpan(text: text.substring(pos, pos + m.start), style: style));
+        }
+        currentWeight = double.tryParse(m.group(1)!);
+        final markerColor = currentWeight != null ? _weightColor(currentWeight) : null;
+        // 시작 마커: 숫자만 볼드, :: 는 볼드 해제. 글씨 흰색, 배경 색상 음영.
+        final numStr = m.group(1)!; // 숫자 부분
+        final fullMarker = m.group(0)!; // 숫자 + (공백) + ::
+        final afterNum = fullMarker.substring(numStr.length); // "::" 또는 " ::"
+        // 숫자 (볼드)
+        spans.add(
+          TextSpan(
+            text: numStr,
+            style: style?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              backgroundColor: markerColor?.withValues(alpha: 0.4),
+            ),
+          ),
+        );
+        // :: (볼드 없음)
+        spans.add(
+          TextSpan(
+            text: afterNum,
+            style: style?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.normal,
+              backgroundColor: markerColor?.withValues(alpha: 0.4),
+            ),
+          ),
+        );
+        pos += m.end;
+      } else {
+        // 가중치 구간 안 → 종료 :: 찾기
+        final m = endRegex.firstMatch(text.substring(pos));
+        final color = _weightColor(currentWeight);
+        if (m == null) {
+          // 종료 없이 끝까지 → 전부 음영 (글씨 흰색, 배경만 색상)
+          spans.add(
+            TextSpan(
+              text: text.substring(pos),
+              style: style?.copyWith(
+                color: Colors.white,
+                backgroundColor: color?.withValues(alpha: 0.32),
+              ),
+            ),
+          );
+          break;
+        }
+        // 구간 내용 (글씨 흰색, 배경만 음영)
+        if (m.start > 0) {
+          spans.add(
+            TextSpan(
+              text: text.substring(pos, pos + m.start),
+              style: style?.copyWith(
+                color: Colors.white,
+                backgroundColor: color?.withValues(alpha: 0.32),
+              ),
+            ),
+          );
+        }
+        // 종료 마커 :: (흰색, 볼드 없음, 배경 음영 유지로 구간 끝까지 연결)
+        spans.add(
+          TextSpan(
+            text: m.group(0),
+            style: style?.copyWith(
+              color: Colors.white,
+              fontWeight: FontWeight.normal,
+              backgroundColor: color?.withValues(alpha: 0.32),
+            ),
+          ),
+        );
+        pos += m.end;
+        currentWeight = null;
+      }
+    }
+
+    return TextSpan(style: style, children: spans);
+  }
+}
+
 class AppState extends ChangeNotifier {
   // ============================================================================
   // 앱 버전 & 업데이트 체크
@@ -688,10 +827,10 @@ class AppState extends ChangeNotifier {
 
   // ============================================================================
 
-  final TextEditingController positiveController = TextEditingController();
-  final TextEditingController negativeController = TextEditingController();
-  final TextEditingController prefixController = TextEditingController();
-  final TextEditingController suffixController = TextEditingController();
+  final TextEditingController positiveController = WeightHighlightController();
+  final TextEditingController negativeController = WeightHighlightController();
+  final TextEditingController prefixController = WeightHighlightController();
+  final TextEditingController suffixController = WeightHighlightController();
 
   final TextEditingController inpaintPositiveController = TextEditingController();
   final TextEditingController inpaintNegativeController = TextEditingController();
@@ -741,6 +880,7 @@ class AppState extends ChangeNotifier {
   bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
   bool randomPromptAlphabetical = false; // 랜덤 프롬프트 나머지 태그 알파벳 순서
   bool ignoreRecommendedOrder = false; // NovelAI 권장 순서(인원/solo/시점 등) 무시
+  bool weightHighlight = false; // 가중치 문법 색상 하이라이트
 
   // 배치 생성
   int batchCount = 1; // 1, 2, 3, 4, 0(무한)
@@ -879,6 +1019,9 @@ class AppState extends ChangeNotifier {
       final recovered = await tryRecoverFromBackup();
       if (recovered) {
         debugPrint("백업에서 설정 복구 완료");
+        // 복구 성공해도 히스토리/레퍼런스는 별도 저장소에서 로드해야 함
+        await _loadHistoryFromLocal();
+        await loadReferencesFromLocal();
         notifyListeners();
         return;
       }
@@ -944,6 +1087,8 @@ class AppState extends ChangeNotifier {
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
     randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
+    weightHighlight = prefs.getBool('weightHighlight') ?? false;
+    WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
     showGenerationMessage = prefs.getBool('showGenerationMessage') ?? false;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
@@ -1087,6 +1232,7 @@ class AppState extends ChangeNotifier {
       'historySlideEnabled': historySlideEnabled,
       'randomPromptAlphabetical': randomPromptAlphabetical,
       'ignoreRecommendedOrder': ignoreRecommendedOrder,
+      'weightHighlight': weightHighlight,
       'batchDelay': batchDelay,
       'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
@@ -1197,6 +1343,8 @@ class AppState extends ChangeNotifier {
     historySlideEnabled = data['historySlideEnabled'] ?? false;
     randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
+    weightHighlight = data['weightHighlight'] ?? false;
+    WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
     showGenerationMessage = data['showGenerationMessage'] ?? false;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
@@ -1355,6 +1503,7 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('historySlideEnabled', historySlideEnabled);
       await prefs.setBool('randomPromptAlphabetical', randomPromptAlphabetical);
       await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
+      await prefs.setBool('weightHighlight', weightHighlight);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('showGenerationMessage', showGenerationMessage);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
@@ -1391,7 +1540,7 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   Future<void> _saveSettingsBackup() async {
     try {
-      final dir = await getTemporaryDirectory();
+      final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/settings_backup.json');
       // exportSettings에서 히스토리 제외 (용량 절약 + 빠른 저장)
       final data = await exportSettings(includeHistory: false);
@@ -1402,10 +1551,19 @@ class AppState extends ChangeNotifier {
 
   Future<bool> tryRecoverFromBackup() async {
     try {
-      final dir = await getTemporaryDirectory();
+      final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/settings_backup.json');
       if (!file.existsSync()) {
-        return false;
+        // 구버전 호환: 예전 임시 디렉토리 백업도 확인
+        final tmpDir = await getTemporaryDirectory();
+        final tmpFile = File('${tmpDir.path}/settings_backup.json');
+        if (!tmpFile.existsSync()) {
+          return false;
+        }
+        final tmpData = jsonDecode(await tmpFile.readAsString()) as Map<String, dynamic>;
+        importSettings(tmpData);
+        debugPrint("임시 디렉토리 백업에서 복구 성공");
+        return true;
       }
 
       final data = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
@@ -2123,6 +2281,136 @@ class AppState extends ChangeNotifier {
     return tags.toSet().join(', ');
   }
 
+  // 생성 모드용: 선행+긍정+후행을 합쳐 조건 검사 후, 영역 경계를 보존하며 적용
+  // - 조건 판정: 전체 합친 태그 기준
+  // - 교체(^, =): 세 영역 모두 제자리
+  // - prefix=결과: 긍정 프롬프트 맨 앞에 추가 (선행과 긍정 사이)
+  // - suffix=결과: 긍정 프롬프트 맨 끝에 추가 (긍정과 후행 사이)
+  ({String prefix, String positive, String suffix}) _applyConditionalRulesSectioned(
+    String prefix,
+    String positive,
+    String suffix,
+    String rating,
+  ) {
+    if (conditionalRuleController.text.trim().isEmpty) {
+      return (prefix: prefix, positive: positive, suffix: suffix);
+    }
+
+    List<String> prefixTags = prefix
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    List<String> positiveTags = positive
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    List<String> suffixTags = suffix
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+
+    // prefix=로 추가될 태그(긍정 앞)와 suffix=로 추가될 태그(긍정 뒤)
+    List<String> positiveFront = [];
+    List<String> positiveBack = [];
+
+    List<String> rules = conditionalRuleController.text
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty && !e.startsWith('#'))
+        .toList();
+
+    for (String ruleStr in rules) {
+      if (!ruleStr.startsWith('(')) {
+        continue;
+      }
+
+      int depth = 0;
+      int sepIdx = -1;
+      for (int i = 0; i < ruleStr.length; i++) {
+        if (ruleStr[i] == '(') {
+          depth++;
+        } else if (ruleStr[i] == ')') {
+          depth--;
+          if (depth == 0) {
+            if (i + 1 < ruleStr.length && ruleStr[i + 1] == ':') {
+              sepIdx = i;
+            }
+            break;
+          }
+        }
+      }
+      if (sepIdx == -1) {
+        continue;
+      }
+
+      String condStr = ruleStr.substring(1, sepIdx);
+      String actionStr = ruleStr.substring(sepIdx + 2);
+
+      // 1. 조건 판정은 전체 합친 태그(선행+긍정+후행) 기준
+      List<String> allTags = [
+        ...prefixTags,
+        ...positiveFront,
+        ...positiveTags,
+        ...positiveBack,
+        ...suffixTags,
+      ];
+      bool conditionMet = _evaluateCondition(condStr, allTags, rating);
+      if (!conditionMet) {
+        continue;
+      }
+
+      if (actionStr.startsWith('prefix=')) {
+        // 2. 긍정 프롬프트 맨 앞에 추가
+        String b = actionStr.substring(7).trim();
+        if (!allTags.contains(b) && !positiveFront.contains(b)) {
+          positiveFront.add(b);
+        }
+      } else if (actionStr.startsWith('suffix=')) {
+        // 3. 긍정 프롬프트 맨 끝에 추가
+        String b = actionStr.substring(7).trim();
+        if (!allTags.contains(b) && !positiveBack.contains(b)) {
+          positiveBack.add(b);
+        }
+      } else if (actionStr.contains('^')) {
+        int idx = actionStr.indexOf('^');
+        String a = actionStr.substring(0, idx).trim();
+        String b = actionStr.substring(idx + 1).trim();
+        String literalA = a.replaceAll('*', '');
+        String literalB = b.replaceAll('*', '');
+        for (final list in [prefixTags, positiveTags, suffixTags]) {
+          for (int i = 0; i < list.length; i++) {
+            if (_isMatch(list[i], a)) {
+              list[i] = literalA.isNotEmpty ? list[i].replaceAll(literalA, literalB) : b;
+            }
+          }
+        }
+      } else if (actionStr.contains('=')) {
+        int eqIdx = actionStr.indexOf('=');
+        String a = actionStr.substring(0, eqIdx).trim();
+        String b = actionStr.substring(eqIdx + 1).trim();
+        for (final list in [prefixTags, positiveTags, suffixTags]) {
+          for (int i = 0; i < list.length; i++) {
+            if (_isMatch(list[i], a)) {
+              list[i] = b;
+            }
+          }
+        }
+      }
+    }
+
+    // 긍정 = [prefix=추가분] + [원래 긍정] + [suffix=추가분]
+    List<String> finalPositive = [...positiveFront, ...positiveTags, ...positiveBack];
+
+    return (
+      prefix: prefixTags.join(', '),
+      positive: finalPositive.join(', '),
+      suffix: suffixTags.join(', '),
+    );
+  }
+
   Future<void> handleGenerate(BuildContext context, VoidCallback onScrollToHistoryEnd) async {
     if (!isApiConnected) {
       return;
@@ -2203,24 +2491,33 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    String combined =
-        "${prefixController.text},${positiveController.text},${suffixController.text}";
-    String step1 = _processWildcards(combined);
-
-    // 조건부 트리거가 "generate" 모드면 합쳐진 프롬프트에 적용
+    // 조건부 트리거가 "generate" 모드면 prefix/positive/suffix 경계 보존하며 적용
+    String prefixText = prefixController.text;
+    String positiveText = positiveController.text;
+    String suffixText = suffixController.text;
     if (conditionalTriggerMode == "generate") {
-      // 프롬프트에서 등급 추출 (g/s/q/e 태그가 있으면 사용, 없으면 g)
+      final ratingSource = "$prefixText,$positiveText,$suffixText".toLowerCase();
       String rating = "g";
-      final lower = step1.toLowerCase();
-      if (lower.contains("explicit")) {
+      if (ratingSource.contains("explicit")) {
         rating = "e";
-      } else if (lower.contains("questionable")) {
+      } else if (ratingSource.contains("questionable")) {
         rating = "q";
-      } else if (lower.contains("sensitive")) {
+      } else if (ratingSource.contains("sensitive")) {
         rating = "s";
       }
-      step1 = _applyConditionalRules(step1, rating);
+      final sectioned = _applyConditionalRulesSectioned(
+        prefixText,
+        positiveText,
+        suffixText,
+        rating,
+      );
+      prefixText = sectioned.prefix;
+      positiveText = sectioned.positive;
+      suffixText = sectioned.suffix;
     }
+
+    String combined = "$prefixText,$positiveText,$suffixText";
+    String step1 = _processWildcards(combined);
 
     String finalPrompt = _service.sanitizePrompt(step1);
     String finalNegative = _service.sanitizePrompt(_processWildcards(negativeController.text));

@@ -473,7 +473,6 @@ class _SettingsTabState extends State<SettingsTab> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
                 border: Border.all(color: Colors.white10),
               ),
               child: Row(
@@ -505,6 +504,53 @@ class _SettingsTabState extends State<SettingsTab> {
                       activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
                       onChanged: (val) {
                         state.ignoreRecommendedOrder = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // 가중치 색상 하이라이트
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Row(
+                      children: [
+                        Icon(Icons.format_color_text, color: Colors.deepPurpleAccent, size: 20),
+                        SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            "가중치 색상 표시",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.weightHighlight,
+                      activeThumbColor: Colors.deepPurpleAccent,
+                      activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.weightHighlight = val;
+                        WeightHighlightController.highlightEnabled = val;
                         state.saveAllSettings();
                         state.refreshUI();
                       },

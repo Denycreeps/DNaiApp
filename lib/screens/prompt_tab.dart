@@ -117,20 +117,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
   }
 
   void insertTag(String tag) {
-    String text = widget.controller.text;
-    int cursor = widget.controller.selection.baseOffset;
-    if (cursor < 0) {
-      cursor = text.length;
-    }
-
-    String beforeCursor = text.substring(0, cursor);
-    String afterCursor = text.substring(cursor);
-    String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
-
-    widget.controller.value = TextEditingValue(
-      text: newBefore + afterCursor,
-      selection: TextSelection.collapsed(offset: newBefore.length),
-    );
+    PromptUtils.applyTagToController(widget.controller, tag);
 
     setState(() {
       suggestions.clear();
@@ -3010,20 +2997,7 @@ class _PromptTabState extends State<PromptTab> {
             }
 
             void insertTag(String tag) {
-              String text = controller.text;
-              int cursor = controller.selection.baseOffset;
-              if (cursor < 0) {
-                cursor = text.length;
-              }
-
-              String beforeCursor = text.substring(0, cursor);
-              String afterCursor = text.substring(cursor);
-              String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
-
-              controller.value = TextEditingValue(
-                text: newBefore + afterCursor,
-                selection: TextSelection.collapsed(offset: newBefore.length),
-              );
+              PromptUtils.applyTagToController(controller, tag);
 
               setModalState(() {
                 suggestions.clear();
@@ -3553,16 +3527,32 @@ class _PromptTabState extends State<PromptTab> {
           child: Row(
             children: [
               Expanded(
-                child: Text(
-                  controller.text.isEmpty ? hint : controller.text,
-                  style: TextStyle(
-                    color: controller.text.isEmpty ? Colors.white30 : Colors.white,
-                    height: 1.5,
-                    fontSize: 14,
-                  ),
-                  maxLines: 4,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                child: controller.text.isEmpty
+                    ? Text(
+                        hint,
+                        style: const TextStyle(color: Colors.white30, height: 1.5, fontSize: 14),
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                      )
+                    : (WeightHighlightController.highlightEnabled
+                          ? RichText(
+                              maxLines: 4,
+                              overflow: TextOverflow.ellipsis,
+                              text: WeightHighlightController.buildWeightSpan(
+                                controller.text,
+                                const TextStyle(color: Colors.white, height: 1.5, fontSize: 14),
+                              ),
+                            )
+                          : Text(
+                              controller.text,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                height: 1.5,
+                                fontSize: 14,
+                              ),
+                              maxLines: 4,
+                              overflow: TextOverflow.ellipsis,
+                            )),
               ),
               const SizedBox(width: 8),
               Icon(Icons.edit, color: color, size: 16),
