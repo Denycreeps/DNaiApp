@@ -88,7 +88,7 @@ class _WildcardTabState extends State<WildcardTab> {
       return;
     }
 
-    List<String> matches = state.danbooruTags
+    List<String> matches = state.searchTags
         .where((t) => t.toLowerCase().startsWith(currentWord.toLowerCase()))
         .take(15)
         .toList();
@@ -99,18 +99,7 @@ class _WildcardTabState extends State<WildcardTab> {
   }
 
   void _insertTag(String tag, AppState state) {
-    String text = _contentController.text;
-    int cursor = _contentController.selection.baseOffset;
-    if (cursor < 0) cursor = text.length;
-
-    String beforeCursor = text.substring(0, cursor);
-    String afterCursor = text.substring(cursor);
-    String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
-
-    _contentController.value = TextEditingValue(
-      text: newBefore + afterCursor,
-      selection: TextSelection.collapsed(offset: newBefore.length),
-    );
+    PromptUtils.applyTagToController(_contentController, tag);
 
     setState(() {
       _suggestions.clear();
@@ -417,7 +406,7 @@ class _WildcardTabState extends State<WildcardTab> {
                               padding: const EdgeInsets.only(right: 8.0),
                               child: ActionChip(
                                 label: Text(
-                                  _suggestions[index],
+                                  PromptUtils.displayTag(_suggestions[index]),
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,

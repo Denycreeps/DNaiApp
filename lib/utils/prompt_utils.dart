@@ -48,12 +48,15 @@ class PromptUtils {
             beforeCursor[prefixStart - 1] == ':' &&
             beforeCursor[prefixStart - 2] == ':' &&
             (prefixStart < 3 || beforeCursor[prefixStart - 3] != ':');
+        // 접두사까지(artist: 포함)만 남기고, 그 뒤 타이핑 중이던 부분은 버린다.
+        // 예: "artist:lk" + tag "lk149" → "artist:" + "lk149"
+        String head = beforeCursor.substring(0, lastDelimiter + 1); // "...artist:"
         if (weightOpen) {
-          // 2::artist:작가명 → 2::artist:작가명 ::,
-          return "$beforeCursor$tag ::, ";
+          // 2::artist:lk → 2::artist:lk149 ::,
+          return "$head$tag ::, ";
         } else {
-          // 그냥 artist:작가명 → artist:작가명,
-          return "$beforeCursor$tag, ";
+          // artist:lk → artist:lk149,
+          return "$head$tag, ";
         }
       }
 
@@ -97,9 +100,20 @@ class PromptUtils {
     return afterCursor.replaceFirst(RegExp(r'^\s*,\s*'), '');
   }
 
+  // 자동완성 제안의 표시용 텍스트 (contains 마커 '* ' 제거 + 언더스코어를 공백으로)
+  // 미리보기에도 'long hair'처럼 보여서 실제 삽입 결과와 일치시킨다.
+  static String displayTag(String rawTag) {
+    return rawTag.replaceFirst(RegExp(r'^\* '), '').replaceAll('_', ' ');
+  }
+
   // 자동완성 태그를 컨트롤러에 삽입 (커서 위치 기준, 중복 쉼표 정리 포함)
   // 모든 탭의 insertTag에서 공유. UI 갱신(setState 등)은 호출 측에서 처리.
-  static void applyTagToController(TextEditingController controller, String tag) {
+  static void applyTagToController(TextEditingController controller, String rawTag) {
+    // contains 마커(연한 표시용 '* ' 접두) 제거 → 순수 태그만 삽입
+    // (app_state.dart의 kContainsMarker와 동일 값. 순환 import 방지 위해 로컬 정의)
+    String tag = rawTag.replaceFirst(RegExp(r'^\* '), '');
+    // Danbooru/e621 태그는 'long_hair' 형식 → NovelAI 프롬프트는 'long hair' (언더스코어를 공백으로)
+    tag = tag.replaceAll('_', ' ');
     String text = controller.text;
     int cursor = controller.selection.baseOffset;
     if (cursor < 0) {

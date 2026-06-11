@@ -518,7 +518,6 @@ class _SettingsTabState extends State<SettingsTab> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E1E1E),
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
                 border: Border.all(color: Colors.white10),
               ),
               child: Row(
@@ -551,6 +550,52 @@ class _SettingsTabState extends State<SettingsTab> {
                       onChanged: (val) {
                         state.weightHighlight = val;
                         WeightHighlightController.highlightEnabled = val;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // e621 프롬프트 확장
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Expanded(
+                    child: Row(
+                      children: [
+                        Icon(Icons.extension, color: Color(0xFF3B9EFF), size: 20),
+                        SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            "e621 프롬프트 확장",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Transform.scale(
+                    scale: 0.85,
+                    child: Switch(
+                      value: state.e621Enabled,
+                      activeThumbColor: const Color(0xFF3B9EFF),
+                      activeTrackColor: const Color(0xFF3B9EFF).withValues(alpha: 0.5),
+                      onChanged: (val) {
+                        state.e621Enabled = val;
                         state.saveAllSettings();
                         state.refreshUI();
                       },

@@ -1102,7 +1102,7 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                 return;
               }
 
-              List<String> matches = smartMatchTags(state.danbooruTags, currentWord);
+              List<String> matches = smartMatchTags(state.searchTags, currentWord);
 
               setModalState(() {
                 suggestions = matches;
@@ -1110,19 +1110,7 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
             }
 
             void insertTag(String rawTag) {
-              String tag = rawTag.replaceFirst(kContainsMarker, '');
-              String text = controller.text;
-              int cursor = controller.selection.baseOffset;
-              if (cursor < 0) cursor = text.length;
-
-              String beforeCursor = text.substring(0, cursor);
-              String afterCursor = text.substring(cursor);
-              String newBefore = PromptUtils.buildCompletedText(beforeCursor, tag);
-
-              controller.value = TextEditingValue(
-                text: newBefore + afterCursor,
-                selection: TextSelection.collapsed(offset: newBefore.length),
-              );
+              PromptUtils.applyTagToController(controller, rawTag);
 
               setModalState(() {
                 suggestions.clear();
@@ -1192,14 +1180,16 @@ class _I2iTabState extends State<I2iTab> with AutomaticKeepAliveClientMixin {
                               itemBuilder: (context, index) {
                                 final raw = suggestions[index];
                                 final isContains = raw.startsWith(kContainsMarker);
-                                final display = isContains ? raw.substring(1) : raw;
+                                final display = PromptUtils.displayTag(raw);
                                 return Padding(
                                   padding: const EdgeInsets.only(right: 8.0),
                                   child: ActionChip(
                                     label: Text(
                                       display,
                                       style: TextStyle(
-                                        color: isContains ? Colors.white54 : Colors.white,
+                                        color: state.isE621Tag(raw)
+                                            ? const Color(0xFF3B9EFF)
+                                            : (isContains ? Colors.white54 : Colors.white),
                                         fontWeight: isContains
                                             ? FontWeight.normal
                                             : FontWeight.bold,

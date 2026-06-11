@@ -49,11 +49,28 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
     return [];
   }
 
+  // "artist:" 특별 처리: artist의 앞부분("a"~"artist")으로 시작하면 맨 앞에 끼워넣기
+  // (artist name 태그는 거의 안 쓰므로 artist: 접두사를 최우선 노출)
+  String? artistPrefix;
+  if (!lower.contains(':') && "artist".startsWith(lower)) {
+    artistPrefix = 'artist:';
+  }
+
   final fragments = lower.split(RegExp(r'\s+'));
 
   // 다중 조각 ("ca t", "lo a v" 등): 스마트 단어 매칭
   if (fragments.length > 1) {
     return _multiWordMatch(tags, fragments, limit);
+  }
+
+  // artist: 끼워넣기 헬퍼 (중복 방지, 맨 앞 배치)
+  List<String> withArtist(List<String> results) {
+    final prefix = artistPrefix;
+    if (prefix == null) {
+      return results;
+    }
+    final filtered = results.where((t) => t != prefix).toList();
+    return [prefix, ...filtered].take(limit).toList();
   }
 
   // ======================================================================
@@ -64,19 +81,21 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
   if (hasTrailingSpace) {
     final startsResults = tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
     if (startsResults.isNotEmpty) {
-      return startsResults;
+      return withArtist(startsResults);
     }
     // startsWith 결과 없음 → contains fallback (연한 스타일)
-    return tags
-        .where((t) => t.toLowerCase().contains(lower))
-        .take(limit)
-        .map((t) => '$kContainsMarker$t')
-        .toList();
+    return withArtist(
+      tags
+          .where((t) => t.toLowerCase().contains(lower))
+          .take(limit)
+          .map((t) => '$kContainsMarker$t')
+          .toList(),
+    );
   }
 
   // 1~2글자: startsWith만 (contains는 노이즈 너무 많음)
   if (lower.length <= 2) {
-    return tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
+    return withArtist(tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList());
   }
 
   // 3글자+, 스페이스 없음: 단어경계 우선 + 중간매칭 후순위
@@ -106,10 +125,10 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
       : max<int>(limit - lower.length, 5).clamp(0, limit);
   final midSlots = limit - min<int>(wordBoundaryResults.length, wordSlots);
 
-  return [
+  return withArtist([
     ...wordBoundaryResults.take(wordSlots),
     ...midWordResults.take(midSlots).map((t) => '$kContainsMarker$t'),
-  ];
+  ]);
 }
 
 List<String> _multiWordMatch(List<String> tags, List<String> fragments, int limit) {
@@ -884,6 +903,8 @@ class AppState extends ChangeNotifier {
 
   // 배치 생성
   int batchCount = 1; // 1, 2, 3, 4, 0(무한)
+  // 순차 생성 <A|B|C> 카운터: 키=위치인덱스, 값=현재 회차
+  final Map<String, int> _sequentialCounters = {};
   int batchRemaining = 0; // 남은 생성 수
   bool isBatchMode = false;
   double batchDelay = 0.5; // 연속 생성 딜레이 (초)
@@ -977,6 +998,28 @@ class AppState extends ChangeNotifier {
   NaiMetadata? targetI2iMetadata;
 
   List<String> danbooruTags = [];
+  // e621 확장: Danbooru에 없는 태그만 (토글 ON 시 검색에 합류)
+  List<String> e621Tags = [];
+  Set<String> e621TagSet = {}; // 색상 구분용 (e621 전용 태그 빠른 판별)
+  List<String> _combinedTags = []; // Danbooru+e621 count순 미리 정렬 (검색용)
+  bool e621Enabled = false; // e621 프롬프트 확장 토글
+
+  // 자동완성 검색용 태그 리스트 (e621 토글에 따라 합류)
+  List<String> get searchTags {
+    if (!e621Enabled || _combinedTags.isEmpty) {
+      return danbooruTags;
+    }
+    return _combinedTags;
+  }
+
+  // 해당 태그가 e621 전용 태그인지 (색상 구분용). contains 마커 '* ' 제거 후 판별.
+  bool isE621Tag(String rawTag) {
+    if (!e621Enabled) {
+      return false;
+    }
+    final clean = rawTag.replaceFirst(RegExp(r'^\* '), '');
+    return e621TagSet.contains(clean);
+  }
 
   double historyThumbnailScrollOffset = 0.0;
   bool scrollToThumbnailEnd = false;
@@ -1088,6 +1131,7 @@ class AppState extends ChangeNotifier {
     randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
     weightHighlight = prefs.getBool('weightHighlight') ?? false;
+    e621Enabled = prefs.getBool('e621Enabled') ?? false;
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
     showGenerationMessage = prefs.getBool('showGenerationMessage') ?? false;
@@ -1159,15 +1203,51 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _loadTagsFromJson() async {
+    Map<String, int> danbooruCounts = {};
     try {
       final String jsonString = await rootBundle.loadString('assets/tags.json');
       final List<dynamic> jsonData = jsonDecode(jsonString);
 
       jsonData.sort((a, b) => (b['post_count'] ?? 0).compareTo(a['post_count'] ?? 0));
       danbooruTags = jsonData.map((e) => e['tag_name'].toString()).toList();
-      debugPrint("✅ 7만 개 태그 로딩 완료! 총 ${danbooruTags.length}개");
+      for (final e in jsonData) {
+        danbooruCounts[e['tag_name'].toString()] = (e['post_count'] ?? 0) as int;
+      }
+      debugPrint("✅ Danbooru 태그 로딩 완료! 총 ${danbooruTags.length}개");
     } catch (e) {
-      debugPrint("❌ 태그 파일 읽기 실패: $e");
+      debugPrint("❌ Danbooru 태그 파일 읽기 실패: $e");
+    }
+
+    // e621 태그 로딩 (Danbooru에 없는 것만 = 세밀한 전용 태그)
+    try {
+      final danbooruSet = danbooruTags.toSet();
+      final String e621String = await rootBundle.loadString('assets/e621_tags.json');
+      final List<dynamic> e621Data = jsonDecode(e621String);
+
+      // Danbooru에 이미 있는 태그는 제외 (Danbooru 우선)
+      final filtered = e621Data
+          .where((e) => !danbooruSet.contains(e['tag_name'].toString()))
+          .toList();
+      filtered.sort((a, b) => (b['post_count'] ?? 0).compareTo(a['post_count'] ?? 0));
+
+      e621Tags = filtered.map((e) => e['tag_name'].toString()).toList();
+      e621TagSet = e621Tags.toSet();
+
+      // 검색용 통합 리스트: Danbooru + e621 전체를 count순으로 미리 정렬
+      final Map<String, int> e621Counts = {};
+      for (final e in filtered) {
+        e621Counts[e['tag_name'].toString()] = (e['post_count'] ?? 0) as int;
+      }
+      _combinedTags = [...danbooruTags, ...e621Tags];
+      _combinedTags.sort((a, b) {
+        final ca = danbooruCounts[a] ?? e621Counts[a] ?? 0;
+        final cb = danbooruCounts[b] ?? e621Counts[b] ?? 0;
+        return cb.compareTo(ca);
+      });
+
+      debugPrint("✅ e621 전용 태그 로딩 완료! 총 ${e621Tags.length}개 (중복 제거됨)");
+    } catch (e) {
+      debugPrint("❌ e621 태그 파일 읽기 실패: $e");
     }
   }
 
@@ -1233,6 +1313,7 @@ class AppState extends ChangeNotifier {
       'randomPromptAlphabetical': randomPromptAlphabetical,
       'ignoreRecommendedOrder': ignoreRecommendedOrder,
       'weightHighlight': weightHighlight,
+      'e621Enabled': e621Enabled,
       'batchDelay': batchDelay,
       'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
@@ -1344,6 +1425,7 @@ class AppState extends ChangeNotifier {
     randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
     weightHighlight = data['weightHighlight'] ?? false;
+    e621Enabled = data['e621Enabled'] ?? false;
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
     showGenerationMessage = data['showGenerationMessage'] ?? false;
@@ -1504,6 +1586,7 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('randomPromptAlphabetical', randomPromptAlphabetical);
       await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
       await prefs.setBool('weightHighlight', weightHighlight);
+      await prefs.setBool('e621Enabled', e621Enabled);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('showGenerationMessage', showGenerationMessage);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
@@ -2077,6 +2160,163 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // 순차 생성 <A|B|C>: 생성마다 다음 옵션을 순서대로 선택 (중첩 지원)
+  // 카운터 키 = "경로/내용해시" → 중첩 시 실제 도달한 <>만 증가, 위치 무관하게 안정적.
+  // 중첩 예: <A|<B|C>|D> → A → B → D → A → C → D (각 <> 독립 카운트)
+
+  // 최상위 | 로 분리 (<> 안의 | 은 무시)
+  // 최상위 | 로 분리 (<< >> 안의 | 은 무시)
+  List<String> _splitTopPipe(String s) {
+    final parts = <String>[];
+    int depth = 0;
+    final buf = StringBuffer();
+    int i = 0;
+    while (i < s.length) {
+      if (i + 1 < s.length && s[i] == '<' && s[i + 1] == '<') {
+        depth++;
+        buf.write('<<');
+        i += 2;
+      } else if (i + 1 < s.length && s[i] == '>' && s[i + 1] == '>') {
+        depth--;
+        buf.write('>>');
+        i += 2;
+      } else if (s[i] == '|' && depth == 0) {
+        parts.add(buf.toString().trim());
+        buf.clear();
+        i++;
+      } else {
+        buf.write(s[i]);
+        i++;
+      }
+    }
+    if (buf.toString().trim().isNotEmpty) {
+      parts.add(buf.toString().trim());
+    }
+    return parts.where((e) => e.isNotEmpty).toList();
+  }
+
+  // 순차 처리 (재귀, 바깥 <<>>부터). path = 카운터 식별 경로.
+  String _processSequentialRec(String text, String path) {
+    final result = StringBuffer();
+    int i = 0;
+    int seqIdx = 0;
+    while (i < text.length) {
+      if (i + 1 < text.length && text[i] == '<' && text[i + 1] == '<') {
+        // 매칭되는 >> 찾기 (중첩 깊이 고려)
+        int depth = 1;
+        int j = i + 2;
+        while (j < text.length && depth > 0) {
+          if (j + 1 < text.length && text[j] == '<' && text[j + 1] == '<') {
+            depth++;
+            j += 2;
+          } else if (j + 1 < text.length && text[j] == '>' && text[j + 1] == '>') {
+            depth--;
+            j += 2;
+          } else {
+            j++;
+          }
+        }
+        // 닫는 >>가 없으면(depth>0) 순차 문법이 아님 → '<'를 그대로 출력하고 진행
+        if (depth > 0) {
+          result.write(text[i]);
+          i++;
+          continue;
+        }
+        final inner = text.substring(i + 2, j - 2);
+        final opts = _splitTopPipe(inner);
+        if (opts.isEmpty) {
+          // 빈 <<>> → 제거
+        } else if (opts.length == 1) {
+          result.write(_processSequentialRec(opts[0], "$path/$seqIdx"));
+        } else {
+          // 이 <<>>의 카운터 키 (경로 + 내용)
+          final key = "$path/$seqIdx:$inner";
+          final idx = _sequentialCounters[key] ?? 0;
+          final chosen = opts[idx % opts.length];
+          // 선택된 옵션 안에 또 <<>>가 있으면 재귀
+          result.write(_processSequentialRec(chosen, key));
+        }
+        seqIdx++;
+        i = j;
+      } else {
+        result.write(text[i]);
+        i++;
+      }
+    }
+    return result.toString();
+  }
+
+  String _processSequential(String prompt) {
+    return _processSequentialRec(prompt, "");
+  }
+
+  // 순차 와일드카드(@) 카운터 전진. 프롬프트의 __@이름__ 등장 순서대로 +1.
+  void _advanceSequentialWildcards(String prompt) {
+    final regex = RegExp(r'__(@[^_]+?)__');
+    int pos = 0;
+    for (final m in regex.allMatches(prompt)) {
+      String body = m.group(1)!.substring(1); // @ 제거
+      // :숫자 제거 (이름만 추출)
+      final colonIdx = body.lastIndexOf(':');
+      if (colonIdx != -1 && int.tryParse(body.substring(colonIdx + 1)) != null) {
+        body = body.substring(0, colonIdx);
+      }
+      final key = "wc@$pos:$body";
+      _sequentialCounters[key] = (_sequentialCounters[key] ?? 0) + 1;
+      pos++;
+    }
+  }
+
+  // 순차 카운터 전진: 이번 생성에서 실제로 "도달한" <<>>만 +1 (중첩 정확성)
+  void _advanceSequential(String prompt) {
+    final evaluated = <String>[];
+    void walk(String text, String path) {
+      int i = 0;
+      int seqIdx = 0;
+      while (i < text.length) {
+        if (i + 1 < text.length && text[i] == '<' && text[i + 1] == '<') {
+          int depth = 1;
+          int j = i + 2;
+          while (j < text.length && depth > 0) {
+            if (j + 1 < text.length && text[j] == '<' && text[j + 1] == '<') {
+              depth++;
+              j += 2;
+            } else if (j + 1 < text.length && text[j] == '>' && text[j + 1] == '>') {
+              depth--;
+              j += 2;
+            } else {
+              j++;
+            }
+          }
+          // 닫는 >>가 없으면 순차 문법이 아님 → 건너뜀
+          if (depth > 0) {
+            i++;
+            continue;
+          }
+          final inner = text.substring(i + 2, j - 2);
+          final opts = _splitTopPipe(inner);
+          if (opts.length == 1) {
+            walk(opts[0], "$path/$seqIdx");
+          } else if (opts.isNotEmpty) {
+            final key = "$path/$seqIdx:$inner";
+            evaluated.add(key);
+            final idx = _sequentialCounters[key] ?? 0;
+            walk(opts[idx % opts.length], key);
+          }
+          seqIdx++;
+          i = j;
+        } else {
+          i++;
+        }
+      }
+    }
+
+    walk(prompt, "");
+    for (final k in evaluated) {
+      _sequentialCounters[k] = (_sequentialCounters[k] ?? 0) + 1;
+    }
+  }
+
   String _processPipeOptions(String prompt) {
     // "a|b|c," → 셋 중 하나를 랜덤 선택. 쉼표 또는 줄끝 앞의 word|word 패턴 처리
     final RegExp pipeRegex = RegExp(r'([\w \t][^\n,|]*(?:\|[^\n,|]+)+)(?=[,\n]|$)');
@@ -2098,9 +2338,32 @@ class AppState extends ChangeNotifier {
     String result = _processPipeOptions(prompt);
     final RegExp regex = RegExp(r'__(.+?)__');
     int depth = 0;
+    // 순차 와일드카드(@) 위치 카운터: 같은 패스 내 등장 순서별 독립
+    int seqWildcardPos = 0;
     while (regex.hasMatch(result) && depth < 5) {
       result = result.replaceAllMapped(regex, (match) {
         String wName = match.group(1)!;
+
+        // 순차 와일드카드 문법: @이름 또는 @이름:시작행
+        // 예: @Cloth → 줄 순서대로, @Cloth:2 → 2번째 행부터 시작
+        bool isSequential = false;
+        int startOffset = 0;
+        if (wName.startsWith('@')) {
+          isSequential = true;
+          String body = wName.substring(1); // @ 제거
+          // :숫자 (시작 행) 파싱
+          final colonIdx = body.lastIndexOf(':');
+          if (colonIdx != -1) {
+            final numStr = body.substring(colonIdx + 1);
+            final parsed = int.tryParse(numStr);
+            if (parsed != null && parsed >= 1) {
+              startOffset = parsed - 1; // 2번째 행 = 인덱스 1
+              body = body.substring(0, colonIdx);
+            }
+          }
+          wName = body;
+        }
+
         var wcList = wildcards.where((e) => e.name == wName);
         if (wcList.isEmpty) {
           return match.group(0)!;
@@ -2114,6 +2377,22 @@ class AppState extends ChangeNotifier {
 
         if (options.isEmpty) {
           return match.group(0)!;
+        }
+
+        // 순차 와일드카드: 줄 순서대로 (시작 오프셋 적용)
+        if (isSequential) {
+          // 카운터 키 = "wc@위치:이름" (같은 와일드카드 여러 번 쓰면 위치로 독립)
+          final key = "wc@$seqWildcardPos:$wName";
+          seqWildcardPos++;
+          final counter = _sequentialCounters[key] ?? 0;
+          final idx = (counter + startOffset) % options.length;
+          // 가중치 문법(N)텍스트)이 있으면 텍스트만 추출
+          String selected = options[idx];
+          final wm = RegExp(r'^(\d+)\)(.*)$').firstMatch(selected);
+          if (wm != null) {
+            selected = wm.group(2)!.trim();
+          }
+          return selected;
         }
 
         List<Map<String, dynamic>> weightedOptions = [];
@@ -2491,10 +2770,33 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    // 조건부 트리거가 "generate" 모드면 prefix/positive/suffix 경계 보존하며 적용
+    // 처리 순서: 와일드카드 개봉 → 조건부 트리거(generate 모드) → 합치기 → sanitize
     String prefixText = prefixController.text;
     String positiveText = positiveController.text;
     String suffixText = suffixController.text;
+
+    // 0. 순차 생성 <A|B|C>: 세 영역을 합친 기준으로 처리 (영역 간 독립 보장)
+    //    구분자(\u0001)로 합쳐 처리 후 다시 분리
+    const sep = '\u0001';
+    final seqInput = "$prefixText$sep$positiveText$sep$suffixText";
+    final seqCombined = _processSequential(seqInput);
+    final seqParts = seqCombined.split(sep);
+    prefixText = seqParts.isNotEmpty ? seqParts[0] : prefixText;
+    positiveText = seqParts.length > 1 ? seqParts[1] : positiveText;
+    suffixText = seqParts.length > 2 ? seqParts[2] : suffixText;
+    _advanceSequential(seqInput); // 도달한 <>만 카운터 +1 (생성 1회 = 1전진)
+
+    // 1. 와일드카드(랜덤 파이프 + __wildcard__) 개봉
+    //    순차 와일드카드(@) 위치 일관성을 위해 세 영역을 합쳐서 개봉 후 분리
+    final wcInput = "$prefixText$sep$positiveText$sep$suffixText";
+    final wcCombined = _processWildcards(wcInput);
+    _advanceSequentialWildcards(wcInput); // 개봉 후 순차 와일드카드 @ 카운터 전진
+    final wcParts = wcCombined.split(sep);
+    prefixText = wcParts.isNotEmpty ? wcParts[0] : prefixText;
+    positiveText = wcParts.length > 1 ? wcParts[1] : positiveText;
+    suffixText = wcParts.length > 2 ? wcParts[2] : suffixText;
+
+    // 2. 조건부 트리거가 "generate" 모드면 와일드카드 개봉 후 적용
     if (conditionalTriggerMode == "generate") {
       final ratingSource = "$prefixText,$positiveText,$suffixText".toLowerCase();
       String rating = "g";
@@ -2516,10 +2818,10 @@ class AppState extends ChangeNotifier {
       suffixText = sectioned.suffix;
     }
 
+    // 3. 합치기 (와일드카드는 이미 개봉됨)
     String combined = "$prefixText,$positiveText,$suffixText";
-    String step1 = _processWildcards(combined);
 
-    String finalPrompt = _service.sanitizePrompt(step1);
+    String finalPrompt = _service.sanitizePrompt(combined);
     String finalNegative = _service.sanitizePrompt(_processWildcards(negativeController.text));
 
     List<Map<String, dynamic>> processedCharacters = characters.where((char) => char.isActive).map((

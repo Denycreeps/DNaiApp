@@ -109,7 +109,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
       return;
     }
 
-    List<String> matches = smartMatchTags(widget.state.danbooruTags, currentWord);
+    List<String> matches = smartMatchTags(widget.state.searchTags, currentWord);
 
     setState(() {
       suggestions = matches;
@@ -181,8 +181,13 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
                           child: Padding(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                             child: Text(
-                              suggestions[index],
-                              style: const TextStyle(color: Colors.white, fontSize: 14),
+                              PromptUtils.displayTag(suggestions[index]),
+                              style: TextStyle(
+                                color: widget.state.isE621Tag(suggestions[index])
+                                    ? const Color(0xFF3B9EFF)
+                                    : Colors.white,
+                                fontSize: 14,
+                              ),
                             ),
                           ),
                         );
@@ -2989,7 +2994,7 @@ class _PromptTabState extends State<PromptTab> {
                   setModalState(() => suggestions = []);
                   return;
                 }
-                List<String> matches = smartMatchTags(state.danbooruTags, currentWord);
+                List<String> matches = smartMatchTags(state.searchTags, currentWord);
                 setModalState(() {
                   suggestions = matches;
                 });
@@ -3069,9 +3074,11 @@ class _PromptTabState extends State<PromptTab> {
                                   padding: const EdgeInsets.only(right: 8.0),
                                   child: ActionChip(
                                     label: Text(
-                                      suggestions[index],
-                                      style: const TextStyle(
-                                        color: Colors.white,
+                                      PromptUtils.displayTag(suggestions[index]),
+                                      style: TextStyle(
+                                        color: state.isE621Tag(suggestions[index])
+                                            ? const Color(0xFF3B9EFF)
+                                            : Colors.white,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 13,
                                       ),
