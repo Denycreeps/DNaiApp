@@ -9,6 +9,28 @@ class PromptUtils {
   // 자동완성 태그 삽입 유틸리티 (모든 탭에서 공유)
   // ============================================================================
   static String buildCompletedText(String beforeCursor, String tag) {
+    // 특별 처리: 선택한 태그가 'artist:' 같은 접두사 자체면
+    // 뒤에 작가명을 이어 입력해야 하므로 쉼표/공백/:: 없이 그대로 끝낸다.
+    // (예: "2::" 뒤에서 artist: 선택 → "2::artist:" 로 끝)
+    const prefixOnlyTags = {'artist:', 'rating:', 'character:', 'copyright:', 'meta:'};
+    if (prefixOnlyTags.contains(tag)) {
+      // 커서 앞의 마지막 구분자 다음부터(타이핑 중이던 부분)를 잘라내고 접두사로 교체
+      int lastComma = beforeCursor.lastIndexOf(',');
+      int lastNewline = beforeCursor.lastIndexOf('\n');
+      int lastColon = beforeCursor.lastIndexOf(':');
+      int lastOpen = max(
+        beforeCursor.lastIndexOf('('),
+        max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
+      );
+      int cut = max(lastComma, max(lastNewline, max(lastColon, lastOpen)));
+      String head = cut == -1 ? "" : beforeCursor.substring(0, cut + 1);
+      // head가 ',' 로 끝나면 공백 하나 붙여 정리 (", " 형태), ':'/'(' 등은 그대로
+      if (head.endsWith(',')) {
+        head = "$head ";
+      }
+      return "$head$tag";
+    }
+
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
     int lastNewline = beforeCursor.lastIndexOf('\n');
@@ -95,15 +117,24 @@ class PromptUtils {
     if (!newBefore.endsWith(', ')) {
       return afterCursor;
     }
-    // afterCursor 앞쪽의 공백 + 쉼표 + 공백 패턴 제거
-    // 예: ", red eyes" → "red eyes",  " , red eyes" → "red eyes"
-    return afterCursor.replaceFirst(RegExp(r'^\s*,\s*'), '');
+    // afterCursor 앞쪽 정리:
+    // - 쉼표가 있으면: 공백+쉼표+공백 제거 (", red" → "red", 중복 쉼표 방지)
+    // - 쉼표가 없으면: 선행 공백만 제거 (" red" → "red", 공백 2개 방지)
+    if (RegExp(r'^\s*,').hasMatch(afterCursor)) {
+      return afterCursor.replaceFirst(RegExp(r'^\s*,\s*'), '');
+    }
+    return afterCursor.replaceFirst(RegExp(r'^\s+'), '');
   }
 
   // 자동완성 제안의 표시용 텍스트 (contains 마커 '* ' 제거 + 언더스코어를 공백으로)
   // 미리보기에도 'long hair'처럼 보여서 실제 삽입 결과와 일치시킨다.
+  // 단, 와일드카드(__name__)는 _ 가 문법이므로 변환하지 않는다.
   static String displayTag(String rawTag) {
-    return rawTag.replaceFirst(RegExp(r'^\* '), '').replaceAll('_', ' ');
+    final stripped = rawTag.replaceFirst(RegExp(r'^\* '), '');
+    if (stripped.startsWith('__') && stripped.endsWith('__')) {
+      return stripped;
+    }
+    return stripped.replaceAll('_', ' ').replaceAll(RegExp(r'\s+'), ' ');
   }
 
   // 자동완성 태그를 컨트롤러에 삽입 (커서 위치 기준, 중복 쉼표 정리 포함)
@@ -112,8 +143,12 @@ class PromptUtils {
     // contains 마커(연한 표시용 '* ' 접두) 제거 → 순수 태그만 삽입
     // (app_state.dart의 kContainsMarker와 동일 값. 순환 import 방지 위해 로컬 정의)
     String tag = rawTag.replaceFirst(RegExp(r'^\* '), '');
-    // Danbooru/e621 태그는 'long_hair' 형식 → NovelAI 프롬프트는 'long hair' (언더스코어를 공백으로)
-    tag = tag.replaceAll('_', ' ');
+    // Danbooru/e621 태그는 'long_hair' → NovelAI 'long hair' (언더스코어를 공백으로).
+    // 단, 와일드카드(__name__)는 _ 가 문법이므로 변환하지 않는다.
+    if (!(tag.startsWith('__') && tag.endsWith('__'))) {
+      tag = tag.replaceAll('_', ' ');
+      tag = tag.replaceAll(RegExp(r'\s+'), ' '); // 연속 공백 → 1개 (희귀한 __ 태그 방어)
+    }
     String text = controller.text;
     int cursor = controller.selection.baseOffset;
     if (cursor < 0) {

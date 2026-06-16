@@ -1814,8 +1814,10 @@ class AppState extends ChangeNotifier {
         rS: ratingS,
         rQ: ratingQ,
         rE: ratingE,
-        removeCharacteristics: removeCharacteristics,
-        removeClothes: removeClothes,
+        // 의상/특징 제거는 검색 결과엔 적용하지 않음 (원본 보존).
+        // '다음 프롬프트'/'다시 불러오기' 시 _processAndSetPrompt에서 토글에 따라 걸러진다.
+        removeCharacteristics: false,
+        removeClothes: false,
         gelbooruUserId: gelbooruUserId,
         gelbooruApiKey: gelbooruApiKey,
       );
