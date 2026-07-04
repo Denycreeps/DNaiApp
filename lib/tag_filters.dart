@@ -48,6 +48,7 @@ class TagFilters {
     "medium breasts",
     "large breasts",
     "huge breasts",
+    "gigantic breasts",
     "aqua eyes",
     "black eyes",
     "blue eyes",
@@ -924,6 +925,9 @@ class TagFilters {
     "sheep boy",
     "deer boy",
     "raccoon boy",
+    "loli",
+    "petite",
+    "mature female",
   };
 
   // 3. 의상 및 장신구 제거용 태그

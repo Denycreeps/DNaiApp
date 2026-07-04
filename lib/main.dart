@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'models/app_state.dart';
+import 'app_theme.dart';
 import 'screens/prompt_tab.dart';
 import 'screens/history_tab.dart';
 import 'screens/i2i_tab.dart';
@@ -13,7 +15,16 @@ import 'widgets/detail_settings_modal.dart';
 void main() {
   runApp(
     MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => AppState()..loadInitialData())],
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) {
+            final appState = AppState();
+            // 초기 로딩이 끝나면(성공/실패 무관) 준비 완료 처리 → 로딩 화면 해제
+            appState.loadInitialData().whenComplete(appState.markAppReady);
+            return appState;
+          },
+        ),
+      ],
       child: MaterialApp(
         theme: ThemeData(
           brightness: Brightness.dark,
@@ -43,6 +54,7 @@ class _NovelAiAppState extends State<NovelAiApp>
   bool _updateDialogShown = false;
   bool _updateDialogVisible = false;
   List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
+  DateTime? _lastBackPress; // 두 번 눌러 종료 판정용
 
   @override
   void initState() {
@@ -240,6 +252,30 @@ class _NovelAiAppState extends State<NovelAiApp>
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
 
+    // 초기 로딩 중에는 로딩 화면으로 조작 차단 (프리징/크래시 방지)
+    if (!state.isAppReady) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF121212),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 44,
+                height: 44,
+                child: CircularProgressIndicator(
+                  strokeWidth: 3,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8B5CF6)),
+                ),
+              ),
+              SizedBox(height: 20),
+              Text("불러오는 중...", style: TextStyle(color: Colors.white54, fontSize: 14)),
+            ],
+          ),
+        ),
+      );
+    }
+
     // 업데이트 알림 (앱 실행 후 1회만)
     if (state.hasUpdate && !_updateDialogShown) {
       _updateDialogShown = true;
@@ -364,126 +400,156 @@ class _NovelAiAppState extends State<NovelAiApp>
       });
     }
 
-    return GestureDetector(
-      onTap: () => FocusScope.of(context).unfocus(),
-      child: Scaffold(
-        appBar: AppBar(
-          toolbarHeight: 0,
-          backgroundColor: const Color(0xFF1E1E1E),
-          bottom: TabBar(
-            controller: _tabController,
-            labelPadding: EdgeInsets.zero,
-            indicatorWeight: 3,
-            labelColor: Colors.deepPurpleAccent,
-            unselectedLabelColor: Colors.grey,
-            indicatorColor: Colors.deepPurpleAccent,
-            labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
-            unselectedLabelStyle: const TextStyle(fontSize: 11.5),
-            onTap: (targetVisibleTab) {
-              int currentPage = _pageController.page?.round() ?? 6000;
-              int currentTab = currentPage % tabCount;
-              int diff = targetVisibleTab - currentTab;
-              if (diff > tabCount ~/ 2) {
-                diff -= tabCount;
-              } else if (diff < -(tabCount ~/ 2)) {
-                diff += tabCount;
-              }
-              _pageController.animateToPage(
-                currentPage + diff,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-              );
-            },
-            tabs: _visibleTabIndices.map((origIdx) {
-              const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "와일드카드", "설정"];
-              return Tab(text: labels[origIdx]);
-            }).toList(),
-          ),
-        ),
-        body: Stack(
-          children: [
-            PageView.builder(
-              controller: _pageController,
-              // i2i 탭이거나 좌우 스와이프 비활성화 시 차단
-              physics: (currentOrigIdx == 2 || !state.horizontalSwipeEnabled)
-                  ? const NeverScrollableScrollPhysics()
-                  : const AlwaysScrollableScrollPhysics(),
-              onPageChanged: (index) {
-                int targetVisibleTab = index % tabCount;
-                if (_tabController!.index != targetVisibleTab) {
-                  _tabController!.animateTo(targetVisibleTab);
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) {
+          return;
+        }
+        // 1. 히스토리 탭이면 갤러리에게 먼저 위임 (선택 해제 / 상위 폴더 이동)
+        if (currentOrigIdx == 1) {
+          final handled = state.galleryBackHandler?.call() ?? false;
+          if (handled) {
+            return;
+          }
+        }
+        // 2. 두 번 눌러 종료
+        final now = DateTime.now();
+        final last = _lastBackPress;
+        if (last == null || now.difference(last) > const Duration(seconds: 2)) {
+          _lastBackPress = now;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(duration: Duration(seconds: 2), content: Text("한 번 더 누르면 종료됩니다")),
+          );
+        } else {
+          SystemNavigator.pop();
+        }
+      },
+      child: GestureDetector(
+        onTap: () => FocusScope.of(context).unfocus(),
+        child: Scaffold(
+          appBar: AppBar(
+            toolbarHeight: 0,
+            backgroundColor: const Color(0xFF1E1E1E),
+            bottom: TabBar(
+              controller: _tabController,
+              labelPadding: EdgeInsets.zero,
+              indicatorWeight: 3,
+              labelColor: AppColors.accent,
+              unselectedLabelColor: Colors.grey,
+              indicatorColor: AppColors.accent,
+              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
+              unselectedLabelStyle: const TextStyle(fontSize: 11.5),
+              onTap: (targetVisibleTab) {
+                int currentPage = _pageController.page?.round() ?? 6000;
+                int currentTab = currentPage % tabCount;
+                int diff = targetVisibleTab - currentTab;
+                if (diff > tabCount ~/ 2) {
+                  diff -= tabCount;
+                } else if (diff < -(tabCount ~/ 2)) {
+                  diff += tabCount;
                 }
+                _pageController.animateToPage(
+                  currentPage + diff,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOut,
+                );
               },
-              itemBuilder: (context, index) {
-                int visibleIdx = index % tabCount;
-                int origIdx = _visibleTabIndices[visibleIdx];
-                switch (origIdx) {
-                  case 0:
-                    return _buildTabScrollContent(
-                      state,
-                      0,
-                      PromptTab(
-                        onScrollToHistoryEnd: () {
-                          if (_historyScrollController.hasClients) {
-                            _historyScrollController.animateTo(
-                              _historyScrollController.position.maxScrollExtent,
-                              duration: const Duration(milliseconds: 300),
-                              curve: Curves.easeOut,
-                            );
-                          }
-                        },
-                      ),
-                    );
-                  case 1:
-                    return _buildTabScrollContent(
-                      state,
-                      1,
-                      HistoryTab(scrollController: _historyScrollController),
-                    );
-                  case 2:
-                    return _buildTabScrollContent(state, 2, const I2iTab());
-                  case 3:
-                    return _buildTabScrollContent(state, 3, const CharacterTab());
-                  case 4:
-                    return _buildTabScrollContent(state, 4, const WildcardTab());
-                  case 5:
-                    return _buildTabScrollContent(state, 5, const SettingsTab());
-                  default:
-                    return const SizedBox();
-                }
-              },
+              tabs: _visibleTabIndices.map((origIdx) {
+                const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "와일드카드", "설정"];
+                return Tab(text: labels[origIdx]);
+              }).toList(),
             ),
+          ),
+          body: Stack(
+            children: [
+              PageView.builder(
+                controller: _pageController,
+                // i2i 탭이거나 좌우 스와이프 비활성화 시 차단
+                physics: (currentOrigIdx == 2 || !state.horizontalSwipeEnabled)
+                    ? const NeverScrollableScrollPhysics()
+                    : const AlwaysScrollableScrollPhysics(),
+                onPageChanged: (index) {
+                  int targetVisibleTab = index % tabCount;
+                  if (_tabController!.index != targetVisibleTab) {
+                    _tabController!.animateTo(targetVisibleTab);
+                  }
+                  // 설정 탭(origIdx 5)에 진입하면 항상 [일반] 하위탭으로 리셋
+                  if (_visibleTabIndices[targetVisibleTab] == 5) {
+                    state.settingsTabReset?.call();
+                  }
+                },
+                itemBuilder: (context, index) {
+                  int visibleIdx = index % tabCount;
+                  int origIdx = _visibleTabIndices[visibleIdx];
+                  switch (origIdx) {
+                    case 0:
+                      return _buildTabScrollContent(
+                        state,
+                        0,
+                        PromptTab(
+                          onScrollToHistoryEnd: () {
+                            if (_historyScrollController.hasClients) {
+                              _historyScrollController.animateTo(
+                                _historyScrollController.position.maxScrollExtent,
+                                duration: const Duration(milliseconds: 300),
+                                curve: Curves.easeOut,
+                              );
+                            }
+                          },
+                        ),
+                      );
+                    case 1:
+                      return _buildTabScrollContent(
+                        state,
+                        1,
+                        HistoryTab(scrollController: _historyScrollController),
+                      );
+                    case 2:
+                      return _buildTabScrollContent(state, 2, const I2iTab());
+                    case 3:
+                      return _buildTabScrollContent(state, 3, const CharacterTab());
+                    case 4:
+                      return _buildTabScrollContent(state, 4, const WildcardTab());
+                    case 5:
+                      return _buildTabScrollContent(state, 5, const SettingsTab());
+                    default:
+                      return const SizedBox();
+                  }
+                },
+              ),
 
-            if (isPromptTab && !isKeyboardOpen)
-              Positioned(
-                bottom: 16 + bottomNavBarHeight,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: SizedBox(
-                    height: 38,
-                    child: ElevatedButton.icon(
-                      onPressed: () => showDetailSettingsModal(context),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2A2A35),
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        elevation: 4,
-                      ),
-                      icon: const Icon(Icons.tune, color: Colors.deepPurpleAccent, size: 18),
-                      label: const Text(
-                        "상세 환경",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
+              if (isPromptTab && !isKeyboardOpen)
+                Positioned(
+                  bottom: 16 + bottomNavBarHeight,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: SizedBox(
+                      height: 38,
+                      child: ElevatedButton.icon(
+                        onPressed: () => showDetailSettingsModal(context),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2A2A35),
+                          padding: const EdgeInsets.symmetric(horizontal: 24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          elevation: 4,
+                        ),
+                        icon: const Icon(Icons.tune, color: Colors.deepPurpleAccent, size: 18),
+                        label: const Text(
+                          "상세 환경",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

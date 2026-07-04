@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
+import '../widgets/gallery_view.dart';
 
 // ============================================================================
 // 히스토리 탭 메인 UI
@@ -28,6 +29,8 @@ class _HistoryTabState extends State<HistoryTab> {
   bool _showFavoritesOnly = false;
   bool _wasGridView = false;
   bool _isSelectMode = false;
+  bool _isGalleryMode = false; // 갤러리 모드 (폴더 탐색)
+  final GlobalKey<GalleryViewState> _galleryKey = GlobalKey<GalleryViewState>();
   final Set<int> _selectedIndices = {};
 
   @override
@@ -117,32 +120,7 @@ class _HistoryTabState extends State<HistoryTab> {
     } else if (_selectedPromptTab == 2) {
       return metadata.negative.isEmpty ? "부정적 프롬프트가 없습니다." : metadata.negative;
     } else if (_selectedPromptTab == 3) {
-      String scheduler = metadata.extraParams['noise_schedule']?.toString() ?? 'native';
-      String modelName = metadata.source.isEmpty ? '알 수 없음' : metadata.source;
-      String samplerName = metadata.sampler.isEmpty ? '알 수 없음' : metadata.sampler;
-      bool varPlus = metadata.extraParams['variety_plus'] == true;
-
-      // Vibe Transfer 사용 여부
-      final refStrength = metadata.extraParams['reference_strength_multiple'];
-      bool vibeOn = refStrength is List && refStrength.isNotEmpty;
-
-      // Precise (Character) Reference 사용 여부
-      final dirStrength = metadata.extraParams['director_reference_strengths'];
-      bool chaRefOn = dirStrength is List && dirStrength.isNotEmpty;
-
-      return '''
-🔹 해상도 : ${metadata.width} x ${metadata.height}
-🔹 시드 : ${metadata.seed}
-🔹 모델 : $modelName
-🔹 스텝 : ${metadata.steps}
-🔹 샘플러 : $samplerName
-🔹 스케줄러 : $scheduler
-🔹 CFG Scale : ${metadata.promptGuidance}
-🔹 Rescale : ${metadata.promptGuidanceRescale}
-🔹 VAR+ : ${varPlus ? 'ON' : 'OFF'}
-🔹 Vibe : ${vibeOn ? 'ON' : 'OFF'}
-🔹 Cha. Ref. : ${chaRefOn ? 'ON' : 'OFF'}
-''';
+      return metadata.settingsText();
     }
     return "";
   }
@@ -441,6 +419,75 @@ class _HistoryTabState extends State<HistoryTab> {
   // ============================================================================
   // 그리드 뷰
   // ============================================================================
+  // 갤러리 정렬 버튼 (현재: 이름순 오름/내림 토글. 추후 정렬 종류 추가 예정)
+  Widget _buildSortButton(AppState state) {
+    final bool asc = state.gallerySortMode != 'name_desc';
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          state.gallerySortMode = asc ? 'name_desc' : 'name_asc';
+        });
+        state.saveAllSettings();
+        _galleryKey.currentState?.applySort();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.white24),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("이름순", style: TextStyle(color: Colors.white, fontSize: 13)),
+            Icon(
+              asc ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+              size: 20,
+              color: const Color(0xFF5DCAA5),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 갤러리 열 개수 조정 (1~8)
+  Widget _buildColumnAdjust(AppState state) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          GestureDetector(
+            onTap: () {
+              if (state.galleryColumns > 1) {
+                setState(() => state.galleryColumns--);
+                state.saveAllSettings();
+              }
+            },
+            child: const Icon(Icons.remove, size: 18, color: Colors.white70),
+          ),
+          const SizedBox(width: 14),
+          GestureDetector(
+            onTap: () {
+              if (state.galleryColumns < 8) {
+                setState(() => state.galleryColumns++);
+                state.saveAllSettings();
+              }
+            },
+            child: const Icon(Icons.add, size: 18, color: Colors.white70),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildGridView(AppState state, List images) {
     if (images.isEmpty) {
       return const Center(
@@ -1007,6 +1054,80 @@ class _HistoryTabState extends State<HistoryTab> {
       );
     }
 
+    // 갤러리 모드: 폴더 탐색 뷰
+    if (_isGalleryMode) {
+      return Column(
+        children: [
+          // 상단 바: 히스토리로 돌아가기 + 폴더 선택 버튼
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              children: [
+                GestureDetector(
+                  onTap: () => setState(() => _isGalleryMode = false),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.arrow_back, size: 18, color: Colors.deepPurpleAccent),
+                        SizedBox(width: 6),
+                        Text(
+                          "히스토리",
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 폴더 변경 버튼 (작게: 바로 아래 경로가 보이므로 "변경"만)
+                GestureDetector(
+                  onTap: () => _galleryKey.currentState?.openLocationPicker(),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.folder_open, size: 16, color: Color(0xFFFFC107)),
+                        SizedBox(width: 6),
+                        Text("변경", style: TextStyle(color: Colors.white, fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // 정렬 버튼 (이름순 오름/내림 토글)
+                _buildSortButton(state),
+                const Spacer(),
+                // 열 개수 조정
+                _buildColumnAdjust(state),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Colors.white12),
+          // 갤러리 본문
+          Expanded(
+            child: GalleryView(key: _galleryKey, state: state),
+          ),
+        ],
+      );
+    }
+
     if (!isGridView && state.scrollToThumbnailEnd) {
       state.scrollToThumbnailEnd = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1095,7 +1216,7 @@ class _HistoryTabState extends State<HistoryTab> {
         children: [
           // 리스트/그리드 토글 바 (고정 높이로 모드 전환 시 버튼 움직임 방지)
           SizedBox(
-            height: 44,
+            height: 40,
             child: _isSelectMode && isGridView
                 ? // ===== 선택 모드 툴바 =====
                   Row(
@@ -1108,7 +1229,7 @@ class _HistoryTabState extends State<HistoryTab> {
                           });
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: const Color(0xFF1E1E1E),
                             borderRadius: BorderRadius.circular(20),
@@ -1203,7 +1324,7 @@ class _HistoryTabState extends State<HistoryTab> {
                                 );
                               },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: _selectedIndices.isEmpty
                                 ? const Color(0xFF1E1E1E)
@@ -1256,7 +1377,7 @@ class _HistoryTabState extends State<HistoryTab> {
                           state.refreshUI();
                         },
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(20),
@@ -1283,6 +1404,46 @@ class _HistoryTabState extends State<HistoryTab> {
                           ),
                         ),
                       ),
+                      if (state.galleryModeEnabled) ...[
+                        const SizedBox(width: 8),
+                        // 갤러리 버튼 (폴더 탐색 모드)
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _isGalleryMode = true;
+                              _isSelectMode = false;
+                              _selectedIndices.clear();
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFFC107).withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(color: const Color(0xFFFFC107), width: 1.5),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.photo_library_outlined,
+                                  size: 18,
+                                  color: Color(0xFFFFC107),
+                                ),
+                                SizedBox(width: 6),
+                                Text(
+                                  "갤러리",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                       const Spacer(),
                       Text(
                         "${images.length}장",

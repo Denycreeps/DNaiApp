@@ -15,9 +15,12 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:saf_util/saf_util.dart';
+import 'package:saf_stream/saf_stream.dart';
 
 import '../novelai_service.dart';
 import '../tag_filters.dart';
+import '../app_theme.dart';
 import 'nai_character.dart';
 
 // ============================================================================
@@ -251,6 +254,59 @@ class NaiMetadata {
       extraParams: merged,
     );
   }
+
+  // 설정 요약 텍스트 (히스토리 '세팅' 탭 + 갤러리 EXIF 공용)
+  String settingsText() {
+    String scheduler = extraParams['noise_schedule']?.toString() ?? 'native';
+    String modelName = source.isEmpty ? '알 수 없음' : source;
+    String samplerName = sampler.isEmpty ? '알 수 없음' : sampler;
+    bool varPlus = extraParams['variety_plus'] == true;
+
+    final refStrength = extraParams['reference_strength_multiple'];
+    bool vibeOn = refStrength is List && refStrength.isNotEmpty;
+
+    final dirStrength = extraParams['director_reference_strengths'];
+    bool chaRefOn = dirStrength is List && dirStrength.isNotEmpty;
+
+    return '''
+🔹 해상도 : $width x $height
+🔹 시드 : $seed
+🔹 모델 : $modelName
+🔹 스텝 : $steps
+🔹 샘플러 : $samplerName
+🔹 스케줄러 : $scheduler
+🔹 CFG Scale : $promptGuidance
+🔹 Rescale : $promptGuidanceRescale
+🔹 VAR+ : ${varPlus ? 'ON' : 'OFF'}
+🔹 Vibe : ${vibeOn ? 'ON' : 'OFF'}
+🔹 Cha. Ref. : ${chaRefOn ? 'ON' : 'OFF'}
+''';
+  }
+}
+
+// 갤러리 EXIF용: 메타데이터 전체를 한 번에 보여주는 요약 텍스트
+String buildExifSummary(NaiMetadata? meta) {
+  if (meta == null) {
+    return "이 이미지에는 저장된 메타데이터가 없습니다.\n\n(메신저 전송, 이미지 편집 등을 거치면서\n파일 내부의 메타데이터가 삭제된 이미지입니다.)";
+  }
+  final sb = StringBuffer();
+  sb.writeln("■ 긍정적 프롬프트");
+  sb.writeln(meta.positive.isEmpty ? "(없음)" : meta.positive);
+  if (meta.characterPrompts.isNotEmpty) {
+    sb.writeln("\n■ 캐릭터 프롬프트");
+    for (int i = 0; i < meta.characterPrompts.length; i++) {
+      final pos = meta.characterPrompts[i];
+      final neg = i < meta.characterUndesiredContents.length
+          ? meta.characterUndesiredContents[i]
+          : "";
+      sb.writeln("C${i + 1}.\nPositive : $pos\nNegative : $neg");
+    }
+  }
+  sb.writeln("\n■ 부정적 프롬프트");
+  sb.writeln(meta.negative.isEmpty ? "(없음)" : meta.negative);
+  sb.writeln("\n■ 설정");
+  sb.write(meta.settingsText().trim());
+  return sb.toString();
 }
 
 NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
@@ -497,6 +553,301 @@ class NaiPreset {
   );
 }
 
+// i2i 스크래치 릴 결과 1개 (인페인트/모자이크/업스케일 반복 결과)
+class I2iResult {
+  Uint8List bytes;
+  NaiMetadata? metadata;
+  bool favorite;
+  I2iResult({required this.bytes, this.metadata, this.favorite = false});
+
+  Map<String, dynamic> toJson() => {
+    'img': base64Encode(bytes),
+    'meta': metadata?.toJson(),
+    'fav': favorite,
+  };
+  factory I2iResult.fromJson(Map<String, dynamic> json) => I2iResult(
+    bytes: base64Decode(json['img'] as String),
+    metadata: json['meta'] != null
+        ? NaiMetadata.fromJson(Map<String, dynamic>.from(json['meta']))
+        : null,
+    favorite: json['fav'] == true,
+  );
+}
+
+// 프리셋 저장 다이얼로그 (프롬프트탭 + 갤러리 EXIF 메뉴 공용)
+// 데이터 소스를 인자로 받아 작업창/이미지 메타데이터 어느 쪽이든 동일 UI로 저장.
+void showPresetSaveDialog(
+  BuildContext context,
+  AppState state, {
+  required String positive,
+  required String negative,
+  String prefix = '',
+  String suffix = '',
+  List<NaiCharacter> characters = const [],
+  Map<String, dynamic>? Function()? settingsProvider,
+  bool allowPrefixSuffix = true,
+  bool allowSettings = true,
+}) {
+  final TextEditingController nameCtrl = TextEditingController();
+  final Map<String, bool> fields = {
+    'positive': true,
+    'negative': true,
+    if (allowPrefixSuffix) 'prefix': true,
+    if (allowPrefixSuffix) 'suffix': true,
+    'characters': false,
+    if (allowSettings) 'settings': false,
+  };
+  // 캐릭터 개별 선택 (활성 캐릭터 기본 선택)
+  final Set<int> selectedCharIndices = {};
+  for (int i = 0; i < characters.length; i++) {
+    if (characters[i].isActive) {
+      selectedCharIndices.add(i);
+    }
+  }
+
+  showDialog(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) {
+        Widget fieldChip(String key, String label, Color color) {
+          final selected = fields[key] ?? false;
+          return GestureDetector(
+            onTap: () => setDialogState(() => fields[key] = !selected),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: selected
+                    ? color.withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.05),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: selected ? color : Colors.white24,
+                  width: selected ? 1.5 : 1,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    selected ? Icons.check_circle : Icons.circle_outlined,
+                    size: 16,
+                    color: selected ? color : Colors.white38,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: selected ? color : Colors.white38,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            "프리셋 저장",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: InputDecoration(
+                    hintText: "프리셋 이름을 입력하세요",
+                    hintStyle: const TextStyle(color: Colors.white30),
+                    filled: true,
+                    fillColor: const Color(0xFF121212),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text("저장할 항목 선택", style: TextStyle(color: Colors.white54, fontSize: 12)),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: fieldChip('positive', '긍정적', const Color(0xFF00BFA5))),
+                    const SizedBox(width: 8),
+                    Expanded(child: fieldChip('negative', '부정적', const Color(0xFFFF5252))),
+                  ],
+                ),
+                if (allowPrefixSuffix) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(child: fieldChip('prefix', '선행', const Color(0xFF29B6F6))),
+                      const SizedBox(width: 8),
+                      Expanded(child: fieldChip('suffix', '후행', const Color(0xFFFFA000))),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: fieldChip('characters', '캐릭터', Colors.deepPurpleAccent)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: allowSettings
+                          ? fieldChip('settings', '설정', Colors.amber)
+                          : const SizedBox.shrink(),
+                    ),
+                  ],
+                ),
+                // 캐릭터 체크 시 캐릭터 목록 표시
+                ...((fields['characters'] ?? false) && characters.isNotEmpty
+                    ? [
+                        const SizedBox(height: 8),
+                        ...characters.asMap().entries.map((entry) {
+                          final i = entry.key;
+                          final c = entry.value;
+                          final isSelected = selectedCharIndices.contains(i);
+                          final charName = c.name.isNotEmpty ? c.name : "캐릭터 ${i + 1}";
+                          final preview = c.positive.isNotEmpty ? c.positive : '(비어있음)';
+                          return GestureDetector(
+                            onTap: () => setDialogState(() {
+                              if (isSelected) {
+                                selectedCharIndices.remove(i);
+                              } else {
+                                selectedCharIndices.add(i);
+                              }
+                            }),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 4),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? Colors.deepPurpleAccent.withValues(alpha: 0.1)
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
+                                      : Colors.white10,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    isSelected ? Icons.check_circle : Icons.circle_outlined,
+                                    size: 16,
+                                    color: isSelected ? Colors.deepPurpleAccent : Colors.white38,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    charName,
+                                    style: TextStyle(
+                                      color: isSelected ? Colors.white : Colors.white54,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      preview,
+                                      style: const TextStyle(color: Colors.white30, fontSize: 11),
+                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: 1,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }),
+                      ]
+                    : []),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("취소", style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (nameCtrl.text.trim().isEmpty) {
+                  final now = DateTime.now();
+                  nameCtrl.text =
+                      "${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}";
+                }
+                final savedFields = fields.entries.where((e) => e.value).map((e) => e.key).toSet();
+
+                // 비어있는 필드는 저장에서 제외
+                if (savedFields.contains('positive') && positive.trim().isEmpty) {
+                  savedFields.remove('positive');
+                }
+                if (savedFields.contains('negative') && negative.trim().isEmpty) {
+                  savedFields.remove('negative');
+                }
+                if (savedFields.contains('prefix') && prefix.trim().isEmpty) {
+                  savedFields.remove('prefix');
+                }
+                if (savedFields.contains('suffix') && suffix.trim().isEmpty) {
+                  savedFields.remove('suffix');
+                }
+
+                // 선택된 캐릭터만 저장
+                List<Map<String, dynamic>>? charsToSave;
+                if (savedFields.contains('characters') && selectedCharIndices.isNotEmpty) {
+                  charsToSave = selectedCharIndices
+                      .toList()
+                      .where((i) => i < characters.length)
+                      .map((i) => characters[i].toJson())
+                      .toList();
+                } else {
+                  savedFields.remove('characters');
+                }
+
+                if (savedFields.isEmpty) {
+                  Navigator.pop(ctx);
+                  return;
+                }
+                state.presets.add(
+                  NaiPreset(
+                    name: nameCtrl.text.trim(),
+                    positive: savedFields.contains('positive') ? positive : '',
+                    negative: savedFields.contains('negative') ? negative : '',
+                    prefix: savedFields.contains('prefix') ? prefix : '',
+                    suffix: savedFields.contains('suffix') ? suffix : '',
+                    settings: savedFields.contains('settings') ? (settingsProvider?.call()) : null,
+                    characters: charsToSave,
+                    savedFields: savedFields,
+                  ),
+                );
+                state.saveAllSettings();
+                state.refreshUI();
+                Navigator.pop(ctx);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+              child: const Text(
+                "저장",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
 class SyntaxHighlightController extends TextEditingController {
   SyntaxHighlightController({super.text});
 
@@ -506,12 +857,18 @@ class SyntaxHighlightController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
+    return buildSyntaxSpan(text, style);
+  }
+
+  // 카드 본문(접힌 미리보기)에서도 동일한 음영을 쓰기 위한 static 헬퍼.
+  static TextSpan buildSyntaxSpan(String text, TextStyle? style) {
     final lines = text.split('\n');
     final List<TextSpan> spans = [];
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i];
       if (line.trimLeft().startsWith('#')) {
+        // 주석: 회색
         spans.add(
           TextSpan(
             text: line,
@@ -519,7 +876,33 @@ class SyntaxHighlightController extends TextEditingController {
           ),
         );
       } else {
-        spans.add(TextSpan(text: line, style: style));
+        // 조건부 트리거: 줄 맨 앞이 '(' 로 시작하면 조건 부분( '(' ~ 첫 ':' )에 음영
+        // 예: (e|q):*skirt=*skirt → "(e|q):" 부분에 배경색
+        final trimmedStart = line.trimLeft();
+        final indent = line.length - trimmedStart.length;
+        if (trimmedStart.startsWith('(')) {
+          final colonIdx = line.indexOf(':');
+          if (colonIdx != -1) {
+            // 들여쓰기(공백) + 조건부( '(' ~ ':' ) + 나머지
+            if (indent > 0) {
+              spans.add(TextSpan(text: line.substring(0, indent), style: style));
+            }
+            spans.add(
+              TextSpan(
+                text: line.substring(indent, colonIdx + 1), // '(...):'
+                style: style?.copyWith(
+                  backgroundColor: const Color(0xFF29B6F6).withValues(alpha: 0.30),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            );
+            spans.add(TextSpan(text: line.substring(colonIdx + 1), style: style));
+          } else {
+            spans.add(TextSpan(text: line, style: style));
+          }
+        } else {
+          spans.add(TextSpan(text: line, style: style));
+        }
       }
 
       if (i < lines.length - 1) {
@@ -869,11 +1252,8 @@ class AppState extends ChangeNotifier {
   final TextEditingController gelbooruIncludeController = TextEditingController();
   final TextEditingController gelbooruExcludeController = TextEditingController();
   final TextEditingController customRemoveController = TextEditingController();
-  final TextEditingController customSavePathController = TextEditingController(
-    text: "/storage/emulated/0/Download",
-  );
   final TextEditingController customFileNameController = TextEditingController(
-    text: "Nai-{yy}{mm}{dd}-{time}-{count}",
+    text: "Nai-{yy}{mm}{dd}-{time}",
   );
   final TextEditingController customWidthController = TextEditingController(text: "832");
   final TextEditingController customHeightController = TextEditingController(text: "1216");
@@ -908,7 +1288,6 @@ class AppState extends ChangeNotifier {
   int batchRemaining = 0; // 남은 생성 수
   bool isBatchMode = false;
   double batchDelay = 0.5; // 연속 생성 딜레이 (초)
-  bool showGenerationMessage = false; // 이미지 생성 시 하단 메세지
 
   // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
   bool historyTabEnabled = true;
@@ -939,6 +1318,514 @@ class AppState extends ChangeNotifier {
   int sessionSaveCount = 0;
   int sessionGenerateCount = 0;
   String? sessionFolderName;
+  // 갤러리 모드 상태
+  String? galleryCurrentPath; // 현재 보고 있는 폴더 (마지막 본 폴더 기억)
+  int galleryColumns = 3; // 갤러리 가로 표시 개수 (기본 3)
+  String gallerySortMode = 'name_asc'; // 갤러리 정렬 (name_asc/name_desc, 추후 date_* 등 확장)
+
+  // ===== SAF 저장 폴더 (Phase 1: 선택/해제/로드만, 저장·읽기 연결은 다음 단계) =====
+
+  // 사용자에게 폴더 선택창을 띄워 SAF 트리 URI를 확보 (쓰기 권한 + 영속)
+  // 반환: true=선택됨, false=취소/실패
+  Future<bool> pickSafRoot() async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    try {
+      // persistablePermission: true → 재시작/재부팅 후에도 권한 유지 (takePersistableUriPermission)
+      final dir = await _safUtil.pickDirectory(writePermission: true, persistablePermission: true);
+      if (dir == null) {
+        return false; // 사용자가 취소
+      }
+      safRootUri = dir.uri;
+      safRootName = dir.name;
+      _safSessionDirUri = null; // 루트 바뀌면 세션 캐시 무효화
+      _safSessionDirName = null;
+      clearSafBrowseLocation();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('safRootUri', dir.uri);
+      await prefs.setString('safRootName', dir.name);
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('SAF 폴더 선택 실패: $e');
+      return false;
+    }
+  }
+
+  // SAF 폴더 선택 해제 (영속 권한도 반납)
+  Future<void> clearSafRoot() async {
+    final uri = safRootUri;
+    safRootUri = null;
+    safRootName = null;
+    _safSessionDirUri = null;
+    _safSessionDirName = null;
+    clearSafBrowseLocation();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('safRootUri');
+      await prefs.remove('safRootName');
+      if (uri != null && Platform.isAndroid) {
+        await _safUtil.releasePersistedPermission(uri);
+      }
+    } catch (e) {
+      debugPrint('SAF 폴더 해제 실패: $e');
+    }
+    notifyListeners();
+  }
+
+  // SAF 루트 폴더에 이미지 1장 저장 (Phase 2: 플랫 — 루트 폴더에 바로)
+  // 반환: 성공 시 표시용 문자열, 미설정/실패 시 null
+  Future<String?> _saveImageViaSaf(Uint8List bytes, String fileName, String ext) async {
+    final root = safRootUri;
+    if (root == null || !Platform.isAndroid) {
+      return null;
+    }
+    try {
+      final mime = ext == 'jpg' ? 'image/jpeg' : 'image/png';
+      final session = sessionFolderName ?? DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      // 루트 폴더명이 이미 'DNaiApp'(대소문자 무시)이면 DNaiApp 중첩 생성 방지
+      final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
+      final pathParts = rootIsDnai ? [session] : ['DNaiApp', session];
+      // 세션 폴더 확보 (같은 세션이면 캐시 재사용 → mkdirp 반복 호출 방지)
+      String dirUri;
+      final cachedDir = _safSessionDirUri;
+      if (_safSessionDirName == session && cachedDir != null) {
+        dirUri = cachedDir;
+      } else {
+        final dir = await _safUtil.mkdirp(root, pathParts);
+        dirUri = dir.uri;
+        _safSessionDirName = session;
+        _safSessionDirUri = dirUri;
+      }
+      await _safStream.writeFileBytes(dirUri, '$fileName.$ext', mime, bytes);
+      gallerySafRevision++; // 갤러리 자동 갱신 신호 (호출자의 notifyListeners로 전파됨)
+      final displayPath = rootIsDnai
+          ? '$session/$fileName.$ext'
+          : 'DNaiApp/$session/$fileName.$ext';
+      return '${safRootName ?? 'SAF'}/$displayPath';
+    } catch (e) {
+      debugPrint('SAF 저장 실패: $e');
+      return null;
+    }
+  }
+
+  bool _isSafImageName(String name) {
+    final lower = name.toLowerCase();
+    return lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp');
+  }
+
+  // SAF 갤러리에서 마지막으로 보던 위치 (탭/모드 전환 후 복원용)
+  // 갤러리(SAF/IO)가 등록하는 뒤로가기 핸들러. 처리했으면 true 반환.
+  // main의 PopScope가 히스토리 탭일 때 호출 → 상위폴더 이동/선택해제 처리.
+  bool Function()? galleryBackHandler;
+
+  // 설정탭이 등록하는 "첫 탭([일반])으로 리셋" 핸들러. main이 설정 진입 시 호출.
+  void Function()? settingsTabReset;
+
+  // SAF에 이미지가 저장될 때마다 증가. 갤러리가 이 값 변화를 감지해 자동 갱신한다.
+  int gallerySafRevision = 0;
+
+  String? safBrowseDirUri;
+  String? safBrowseDirName;
+  List<String> safBrowseStackUris = [];
+  List<String> safBrowseStackNames = [];
+
+  void saveSafBrowseLocation(
+    String? dirUri,
+    String? dirName,
+    List<String> stackUris,
+    List<String> stackNames,
+  ) {
+    safBrowseDirUri = dirUri;
+    safBrowseDirName = dirName;
+    safBrowseStackUris = List.from(stackUris);
+    safBrowseStackNames = List.from(stackNames);
+  }
+
+  void clearSafBrowseLocation() {
+    safBrowseDirUri = null;
+    safBrowseDirName = null;
+    safBrowseStackUris = [];
+    safBrowseStackNames = [];
+  }
+
+  // SAF 디렉토리 1단계 목록 (하위폴더[개수+미리보기refs 포함] + 이미지). 빈 폴더는 제외.
+  // 개수를 세는 김에 미리보기 후보(최신 4장)도 같이 뽑아 폴더당 조회를 1회로 줄인다.
+  Future<
+    ({
+      List<({String uri, String name, int imageCount, List<({String uri, String name})> previews})>
+      folders,
+      List<({String uri, String name})> images,
+    })
+  >
+  listSafDirDetailed(String dirUri) async {
+    final folders =
+        <({String uri, String name, int imageCount, List<({String uri, String name})> previews})>[];
+    final images = <({String uri, String name})>[];
+    if (!Platform.isAndroid) {
+      return (folders: folders, images: images);
+    }
+    try {
+      final items = await _safUtil.list(dirUri);
+      final subDirs = <({String uri, String name})>[];
+      for (final f in items) {
+        if (f.isDir) {
+          subDirs.add((uri: f.uri, name: f.name));
+        } else if (_isSafImageName(f.name)) {
+          images.add((uri: f.uri, name: f.name));
+        }
+      }
+      // 각 하위폴더 1회 조회 → 직접 이미지 수 + 하위폴더 유무 + 미리보기 refs (빈 폴더 제외)
+      for (final d in subDirs) {
+        int imgCount = 0;
+        bool hasSub = false;
+        final innerImgs = <({String uri, String name})>[];
+        try {
+          final inner = await _safUtil.list(d.uri);
+          for (final f in inner) {
+            if (f.isDir) {
+              hasSub = true;
+            } else if (_isSafImageName(f.name)) {
+              imgCount++;
+              innerImgs.add((uri: f.uri, name: f.name));
+            }
+          }
+        } catch (_) {}
+        if (imgCount > 0 || hasSub) {
+          innerImgs.sort((a, b) => b.name.compareTo(a.name)); // 최신순
+          folders.add((
+            uri: d.uri,
+            name: d.name,
+            imageCount: imgCount,
+            previews: innerImgs.take(4).toList(),
+          ));
+        }
+      }
+      folders.sort((a, b) => b.name.compareTo(a.name));
+      images.sort((a, b) => b.name.compareTo(a.name));
+    } catch (e) {
+      debugPrint('listSafDirDetailed 실패 ($dirUri): $e');
+    }
+    return (folders: folders, images: images);
+  }
+
+  // 폴더의 대표 미리보기 이미지 최대 N장 (없으면 하위폴더로 얕게 탐색)
+  Future<List<({String uri, String name})>> firstSafImagesIn(
+    String dirUri, {
+    int max = 4,
+    int depth = 0,
+  }) async {
+    final out = <({String uri, String name})>[];
+    if (!Platform.isAndroid || depth > 2) {
+      return out;
+    }
+    try {
+      final items = await _safUtil.list(dirUri);
+      final imgs = items.where((f) => !f.isDir && _isSafImageName(f.name)).toList()
+        ..sort((a, b) => b.name.compareTo(a.name));
+      for (final im in imgs) {
+        out.add((uri: im.uri, name: im.name));
+        if (out.length >= max) {
+          return out;
+        }
+      }
+      if (out.length < max) {
+        final dirs = items.where((f) => f.isDir).toList()..sort((a, b) => b.name.compareTo(a.name));
+        for (final d in dirs) {
+          final sub = await firstSafImagesIn(d.uri, max: max - out.length, depth: depth + 1);
+          out.addAll(sub);
+          if (out.length >= max) {
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('firstSafImagesIn 실패 ($dirUri): $e');
+    }
+    return out;
+  }
+
+  // SAF 이미지 1장 삭제
+  Future<bool> deleteSafImage(String fileUri) async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    try {
+      await _safUtil.delete(fileUri, false); // isDir=false
+      return true;
+    } catch (e) {
+      debugPrint('deleteSafImage 실패: $e');
+      return false;
+    }
+  }
+
+  // 앱 전용 폴더(getGalleryBasePath/DNaiApp)의 기존 이미지를 SAF 폴더로 이전.
+  // deleteOriginals=true면 복사 성공한 원본을 삭제. 반환: (복사, 실패, 삭제) 수.
+  Future<({int copied, int failed, int deleted})> migrateAppFolderToSaf({
+    bool deleteOriginals = false,
+  }) async {
+    int copied = 0;
+    int failed = 0;
+    int deleted = 0;
+    final root = safRootUri;
+    if (root == null || !Platform.isAndroid) {
+      return (copied: 0, failed: 0, deleted: 0);
+    }
+    final bool rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
+
+    Future<String?> ensureDir(List<String> names) async {
+      try {
+        if (names.isEmpty) {
+          return root; // 루트 자체
+        }
+        final d = await _safUtil.mkdirp(root, names);
+        return d.uri;
+      } catch (e) {
+        debugPrint('migrate mkdirp 실패 ($names): $e');
+        return null;
+      }
+    }
+
+    Future<void> copyFile(File f, String dirUri) async {
+      try {
+        final name = f.path.split('/').last;
+        final ext = name.contains('.') ? name.split('.').last.toLowerCase() : 'png';
+        final mime = (ext == 'jpg' || ext == 'jpeg') ? 'image/jpeg' : 'image/png';
+        final bytes = await f.readAsBytes();
+        await _safStream.writeFileBytes(dirUri, name, mime, bytes);
+        copied++;
+        if (deleteOriginals) {
+          try {
+            await f.delete();
+            deleted++;
+          } catch (_) {}
+        }
+      } catch (e) {
+        failed++;
+        debugPrint('migrate 복사 실패 (${f.path}): $e');
+      }
+    }
+
+    try {
+      final basePath = await getGalleryBasePath(); // .../DNaiApp
+      final baseDir = Directory(basePath);
+      if (!await baseDir.exists()) {
+        return (copied: 0, failed: 0, deleted: 0);
+      }
+      final entries = baseDir.listSync();
+      for (final entity in entries) {
+        if (entity is Directory) {
+          // 세션 폴더 → DNaiApp/세션 (루트가 DNaiApp이면 세션만)
+          final session = entity.path.split('/').last;
+          final dirUri = await ensureDir(rootIsDnai ? [session] : ['DNaiApp', session]);
+          if (dirUri == null) {
+            continue;
+          }
+          for (final f in entity.listSync()) {
+            if (f is File && _isSafImageName(f.path.split('/').last)) {
+              await copyFile(f, dirUri);
+            }
+          }
+        } else if (entity is File && _isSafImageName(entity.path.split('/').last)) {
+          // 세션 없이 베이스 바로 아래 있는 이미지 → DNaiApp 루트
+          final dirUri = await ensureDir(rootIsDnai ? [] : ['DNaiApp']);
+          if (dirUri != null) {
+            await copyFile(entity, dirUri);
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('앱 폴더→SAF 이전 에러: $e');
+    }
+    return (copied: copied, failed: failed, deleted: deleted);
+  }
+
+  // SAF 파일 바이트 읽기
+  Future<Uint8List?> readSafImage(String fileUri) async {
+    if (!Platform.isAndroid) {
+      return null;
+    }
+    try {
+      final bytes = await _safStream.readFileBytes(fileUri);
+      return Uint8List.fromList(bytes);
+    } catch (e) {
+      debugPrint('readSafImage 실패: $e');
+      return null;
+    }
+  }
+
+  // ===== SAF 썸네일 캐시 =====
+  // 갤러리 그리드/폴더 미리보기는 원본 대신 작은 썸네일(jpeg)을 사용해
+  // 로딩 속도와 메모리를 크게 줄인다. 앱 캐시 폴더에 파일로 저장돼 재실행에도 유지.
+  Directory? _safThumbDirCache;
+
+  Future<Directory> _safThumbDir() async {
+    final cached = _safThumbDirCache;
+    if (cached != null) {
+      return cached;
+    }
+    final tmp = await getTemporaryDirectory();
+    final dir = Directory('${tmp.path}/saf_thumbs');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    _safThumbDirCache = dir;
+    return dir;
+  }
+
+  // URI → 캐시 파일명 키. content URI는 파일명으로 못 쓰니 32비트 FNV-1a를
+  // 정방향+역방향 두 번 돌려 64비트 상당으로 충돌 확률을 낮춘다 (결정적).
+  String _thumbKeyFor(String uri) {
+    int fnv(Iterable<int> units) {
+      int h = 0x811c9dc5;
+      for (final c in units) {
+        h ^= c;
+        h = (h * 0x01000193) & 0xFFFFFFFF;
+      }
+      return h;
+    }
+
+    final f = fnv(uri.codeUnits).toRadixString(16);
+    final b = fnv(uri.codeUnits.reversed).toRadixString(16);
+    return '${f}_$b';
+  }
+
+  // 폴백용: 원본 바이트 → 320px JPG (백그라운드 isolate에서 실행해 UI 버벅임 방지)
+  static Uint8List? _makeSafThumbIsolate(Uint8List bytes) {
+    try {
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) {
+        return null;
+      }
+      final resized = decoded.width <= 320 ? decoded : img.copyResize(decoded, width: 320);
+      return Uint8List.fromList(img.encodeJpg(resized, quality: 85));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // SAF 이미지의 썸네일 바이트 (디스크 캐시 → 네이티브 생성 → 직접 축소 → 실패 시 원본 폴백)
+  Future<Uint8List?> readSafThumb(String fileUri) async {
+    if (!Platform.isAndroid) {
+      return null;
+    }
+    File? thumbFile;
+    try {
+      final dir = await _safThumbDir();
+      thumbFile = File('${dir.path}/${_thumbKeyFor(fileUri)}.jpg');
+      final f = thumbFile;
+      if (await f.exists()) {
+        return await f.readAsBytes();
+      }
+      final ok = await _safUtil.saveThumbnailToFile(
+        uri: fileUri,
+        width: 320,
+        height: 320,
+        destPath: f.path,
+      );
+      if (ok && await f.exists()) {
+        return await f.readAsBytes();
+      }
+    } catch (e) {
+      debugPrint('readSafThumb 실패: $e');
+    }
+    // 썸네일 미지원/실패 → 원본을 읽어 직접 축소 (원본 통째 반환은 메모리 낭비라 최후 수단)
+    final bytes = await readSafImage(fileUri);
+    if (bytes == null) {
+      return null;
+    }
+    try {
+      final thumb = await compute(_makeSafThumbIsolate, bytes);
+      if (thumb != null) {
+        final f = thumbFile;
+        if (f != null) {
+          await f.writeAsBytes(thumb); // 다음부턴 디스크 캐시로 즉시
+        }
+        return thumb;
+      }
+    } catch (e) {
+      debugPrint('썸네일 폴백 축소 실패: $e');
+    }
+    return bytes; // 축소까지 실패하면 원본이라도 표시
+  }
+
+  // 앱 시작 시 저장된 SAF 루트 복원 — 권한이 아직 유효할 때만
+  Future<void> _loadSafRoot() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final uri = prefs.getString('safRootUri');
+      if (uri == null || uri.isEmpty) {
+        return;
+      }
+      final ok = await _safUtil.hasPersistedPermission(uri);
+      if (ok) {
+        safRootUri = uri;
+        safRootName = prefs.getString('safRootName');
+      } else {
+        // 권한이 풀림(재부팅/회수/에뮬 초기화) → 캐시 정리
+        await prefs.remove('safRootUri');
+        await prefs.remove('safRootName');
+      }
+    } catch (e) {
+      debugPrint('SAF 루트 로드 실패: $e');
+    }
+  }
+
+  // 갤러리 모드 ON/OFF. SAF/앱 전용 폴더로 동작하므로 별도 권한 요청 없음.
+  // 반환: 최종 galleryModeEnabled 값
+  Future<bool> setGalleryModeEnabled(bool enabled) async {
+    galleryModeEnabled = enabled;
+    await saveAllSettings();
+    notifyListeners();
+    return enabled;
+  }
+
+  // 갤러리에서 선택 가능한 "위치 목록" (권한 불필요한 경로들).
+  // 반환: [(라벨, 경로)] — 앱 외부 저장소 DNaiApp (+ SAF는 별도 처리)
+  Future<List<(String, String)>> getGalleryLocations() async {
+    final locations = <(String, String)>[];
+
+    // 1. 앱 외부 저장소/DNaiApp (기본)
+    final appDir = await getExternalStorageDirectory();
+    if (appDir != null) {
+      final dir = Directory('${appDir.path}/DNaiApp');
+      if (await dir.exists()) {
+        locations.add(("앱 저장 폴더", dir.path));
+      }
+    }
+
+    // 문서 디렉토리 (폴백)
+    if (locations.isEmpty) {
+      final docDir = await getApplicationDocumentsDirectory();
+      locations.add(("기본 폴더", docDir.path));
+    }
+
+    return locations;
+  }
+
+  // 갤러리 기본 경로 (앱 외부 저장소의 DNaiApp 폴더).
+  Future<String> getGalleryBasePath() async {
+    final appDir = await getExternalStorageDirectory();
+    if (appDir != null) {
+      final dir = Directory('${appDir.path}/DNaiApp');
+      if (!await dir.exists()) {
+        try {
+          await dir.create(recursive: true);
+        } catch (_) {}
+      }
+      return dir.path;
+    }
+    final docDir = await getApplicationDocumentsDirectory();
+    return docDir.path;
+  }
+
   String selectedModel = "nai-diffusion-4-5-full";
   String selectedSampler = "k_euler_ancestral";
   String selectedScheduler = "karras";
@@ -990,6 +1877,25 @@ class AppState extends ChangeNotifier {
   bool historyNeedsFullSave = false; // 인덱스 변경 시 전체 저장 필요 표시
   int selectedHistoryIndex = -1;
 
+  // i2i 스크래치 릴 (인페인트 등 반복 결과 임시 보관, 즐겨찾기만 영속)
+  List<I2iResult> i2iResults = [];
+  static const int i2iResultsCap = 20; // 비즐겨찾기 보관 상한
+  static const int i2iFavoriteCap = 10; // 즐겨찾기 최대 개수
+  double i2iHandleBottom = -1; // i2i 릴 핸들 세로 위치 (-1이면 기본값 사용)
+  bool i2iHistoryDisabled = false; // ON이면 릴 끄고 i2i 결과를 메인 히스토리에 저장
+  // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
+  bool inpaintAutoSwitchResult = true; // 인페인트 결과를 작업 이미지로 자동 전환 (기본 ON)
+  bool inpaintAutoClearMask = false; // 인페인트 시 마스킹 자동 해제 (기본 OFF=유지)
+  bool galleryModeEnabled = true; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 ON
+
+  // SAF (Storage Access Framework) — 사용자가 고른 저장 폴더의 트리 URI
+  final SafUtil _safUtil = SafUtil();
+  final SafStream _safStream = SafStream();
+  String? safRootUri; // 선택된 SAF 트리 URI (null = 미선택)
+  String? safRootName; // 표시용 폴더명
+  String? _safSessionDirUri; // 현재 세션의 SAF 디렉토리 URI 캐시
+  String? _safSessionDirName; // 캐시된 세션 이름
+
   List<Uint8List> i2iHistoryImages = [];
   List<NaiMetadata?> i2iHistoryMetadata = [];
   int selectedI2iHistoryIndex = -1;
@@ -1003,6 +1909,20 @@ class AppState extends ChangeNotifier {
   Set<String> e621TagSet = {}; // 색상 구분용 (e621 전용 태그 빠른 판별)
   List<String> _combinedTags = []; // Danbooru+e621 count순 미리 정렬 (검색용)
   bool e621Enabled = false; // e621 프롬프트 확장 토글
+
+  // ── 영속되는 UI 상태 (펼침/접힘 등) ── 앞으로 이런 상태는 여기에 모아 기억 + 백업 포함
+  bool safCardOpen = true; // 설정탭 '저장 폴더(SAF)' 카드 펼침 여부
+  bool fileCardOpen = true; // 설정탭 '파일 이름' 카드 펼침 여부
+
+  // 앱 테마 액센트 색 (ARGB int, 기본: deepPurpleAccent). AppColors.accent에 반영됨.
+  int themeAccent = 0xFF7C4DFF;
+
+  void setThemeAccent(int argb) {
+    themeAccent = argb;
+    AppColors.accent = Color(argb);
+    saveAllSettings();
+    notifyListeners();
+  }
 
   // 자동완성 검색용 태그 리스트 (e621 토글에 따라 합류)
   List<String> get searchTags {
@@ -1044,6 +1964,16 @@ class AppState extends ChangeNotifier {
     gelbooruApiKey = apiKeyMatch?.group(1) ?? "";
   }
 
+  // 앱 초기 로딩 완료 여부 (false 동안 로딩 화면으로 조작 차단 → 프리징/크래시 방지)
+  bool isAppReady = false;
+  void markAppReady() {
+    if (isAppReady) {
+      return;
+    }
+    isAppReady = true;
+    notifyListeners();
+  }
+
   Future<void> loadInitialData() async {
     // pubspec.yaml의 version을 자동으로 읽어옴
     try {
@@ -1083,10 +2013,8 @@ class AppState extends ChangeNotifier {
     } else {
       isApiConnected = false;
     }
-    customSavePathController.text =
-        prefs.getString('custom_save_path') ?? "/storage/emulated/0/Download";
     customFileNameController.text =
-        prefs.getString('custom_file_name') ?? "Nai-{yy}{mm}{dd}-{time}-{count}";
+        prefs.getString('custom_file_name') ?? "Nai-{yy}{mm}{dd}-{time}";
     customWidthController.text = prefs.getString('custom_width') ?? "832";
     customHeightController.text = prefs.getString('custom_height') ?? "1216";
     conditionalRuleController.text = prefs.getString('conditional_rules') ?? "";
@@ -1132,9 +2060,19 @@ class AppState extends ChangeNotifier {
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
     weightHighlight = prefs.getBool('weightHighlight') ?? false;
     e621Enabled = prefs.getBool('e621Enabled') ?? false;
+    safCardOpen = prefs.getBool('safCardOpen') ?? true;
+    fileCardOpen = prefs.getBool('fileCardOpen') ?? true;
+    themeAccent = prefs.getInt('themeAccent') ?? 0xFF7C4DFF;
+    AppColors.accent = Color(themeAccent);
+    i2iHistoryDisabled = prefs.getBool('i2iHistoryDisabled') ?? false;
+    inpaintAutoSwitchResult = prefs.getBool('inpaintAutoSwitchResult') ?? true;
+    inpaintAutoClearMask = prefs.getBool('inpaintAutoClearMask') ?? false;
+    galleryModeEnabled = prefs.getBool('galleryModeEnabled') ?? true;
+    galleryCurrentPath = prefs.getString('galleryCurrentPath');
+    galleryColumns = prefs.getInt('galleryColumns') ?? 3;
+    gallerySortMode = prefs.getString('gallerySortMode') ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
-    showGenerationMessage = prefs.getBool('showGenerationMessage') ?? false;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
@@ -1194,6 +2132,8 @@ class AppState extends ChangeNotifier {
     await fetchAnlas();
     await _loadHistoryFromLocal();
     await loadReferencesFromLocal();
+    await loadI2iFavorites();
+    await _loadSafRoot();
     notifyListeners();
 
     // 업데이트 체크 (조건부, 앱 시작을 블로킹하지 않음)
@@ -1285,7 +2225,6 @@ class AppState extends ChangeNotifier {
       'conditionalTriggerMode': conditionalTriggerMode,
       'gelbooru_inc': gelbooruIncludeController.text,
       'gelbooru_exc': gelbooruExcludeController.text,
-      'custom_save_path': customSavePathController.text,
       'custom_file_name': customFileNameController.text,
       'custom_width': customWidthController.text,
       'custom_height': customHeightController.text,
@@ -1314,8 +2253,17 @@ class AppState extends ChangeNotifier {
       'ignoreRecommendedOrder': ignoreRecommendedOrder,
       'weightHighlight': weightHighlight,
       'e621Enabled': e621Enabled,
+      'safCardOpen': safCardOpen,
+      'fileCardOpen': fileCardOpen,
+      'themeAccent': themeAccent,
+      'i2iHistoryDisabled': i2iHistoryDisabled,
+      'inpaintAutoSwitchResult': inpaintAutoSwitchResult,
+      'inpaintAutoClearMask': inpaintAutoClearMask,
+      'galleryModeEnabled': galleryModeEnabled,
+      'galleryCurrentPath': galleryCurrentPath,
+      'galleryColumns': galleryColumns,
+      'gallerySortMode': gallerySortMode,
       'batchDelay': batchDelay,
-      'showGenerationMessage': showGenerationMessage,
       'historyTabEnabled': historyTabEnabled,
       'i2iTabEnabled': i2iTabEnabled,
       'characterTabEnabled': characterTabEnabled,
@@ -1395,8 +2343,7 @@ class AppState extends ChangeNotifier {
     conditionalTriggerMode = data['conditionalTriggerMode'] ?? 'random';
     gelbooruIncludeController.text = data['gelbooru_inc'] ?? '';
     gelbooruExcludeController.text = data['gelbooru_exc'] ?? '';
-    customSavePathController.text = data['custom_save_path'] ?? '/storage/emulated/0/Download';
-    customFileNameController.text = data['custom_file_name'] ?? 'Nai-{yy}{mm}{dd}-{time}-{count}';
+    customFileNameController.text = data['custom_file_name'] ?? 'Nai-{yy}{mm}{dd}-{time}';
     customWidthController.text = data['custom_width'] ?? '832';
     customHeightController.text = data['custom_height'] ?? '1216';
     customRemoveController.text = data['custom_remove'] ?? '';
@@ -1426,9 +2373,19 @@ class AppState extends ChangeNotifier {
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
     weightHighlight = data['weightHighlight'] ?? false;
     e621Enabled = data['e621Enabled'] ?? false;
+    safCardOpen = data['safCardOpen'] ?? true;
+    fileCardOpen = data['fileCardOpen'] ?? true;
+    themeAccent = data['themeAccent'] ?? 0xFF7C4DFF;
+    AppColors.accent = Color(themeAccent);
+    i2iHistoryDisabled = data['i2iHistoryDisabled'] ?? false;
+    inpaintAutoSwitchResult = data['inpaintAutoSwitchResult'] ?? true;
+    inpaintAutoClearMask = data['inpaintAutoClearMask'] ?? false;
+    galleryModeEnabled = data['galleryModeEnabled'] ?? true;
+    galleryCurrentPath = data['galleryCurrentPath'];
+    galleryColumns = data['galleryColumns'] ?? 3;
+    gallerySortMode = data['gallerySortMode'] ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
-    showGenerationMessage = data['showGenerationMessage'] ?? false;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     characterTabEnabled = data['characterTabEnabled'] ?? true;
@@ -1543,7 +2500,6 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('api_token', apiTokenController.text);
-      await prefs.setString('custom_save_path', customSavePathController.text);
       await prefs.setString('custom_file_name', customFileNameController.text);
       await prefs.setString('custom_width', customWidthController.text);
       await prefs.setString('custom_height', customHeightController.text);
@@ -1587,8 +2543,19 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
       await prefs.setBool('weightHighlight', weightHighlight);
       await prefs.setBool('e621Enabled', e621Enabled);
+      await prefs.setBool('safCardOpen', safCardOpen);
+      await prefs.setBool('fileCardOpen', fileCardOpen);
+      await prefs.setInt('themeAccent', themeAccent);
+      await prefs.setBool('i2iHistoryDisabled', i2iHistoryDisabled);
+      await prefs.setBool('inpaintAutoSwitchResult', inpaintAutoSwitchResult);
+      await prefs.setBool('inpaintAutoClearMask', inpaintAutoClearMask);
+      await prefs.setBool('galleryModeEnabled', galleryModeEnabled);
+      if (galleryCurrentPath != null) {
+        await prefs.setString('galleryCurrentPath', galleryCurrentPath!);
+      }
+      await prefs.setInt('galleryColumns', galleryColumns);
+      await prefs.setString('gallerySortMode', gallerySortMode);
       await prefs.setDouble('batchDelay', batchDelay);
-      await prefs.setBool('showGenerationMessage', showGenerationMessage);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
       await prefs.setBool('historyTabEnabled', historyTabEnabled);
       await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
@@ -1714,12 +2681,18 @@ class AppState extends ChangeNotifier {
   }
 
   void sendToI2i(Uint8List imageBytes, NaiMetadata? metadata) {
+    i2iPreserveMaskOnNextChange = false; // 보내기는 항상 마스킹 초기화
     targetI2iImage = imageBytes;
     targetI2iMetadata = metadata;
     // i2i 탭이 꺼져 있으면 자동으로 켜기
     if (!i2iTabEnabled) {
       i2iTabEnabled = true;
       saveAllSettings();
+    }
+    // 릴이 켜져 있으면 보낸 원본도 릴에 추가 (작업 후 원본으로 복귀 가능하게).
+    // 릴이 꺼져 있으면(=히스토리 모드) 보낸 이미지는 추가하지 않음 (히스토리에 따로 있음).
+    if (!i2iHistoryDisabled) {
+      addI2iResult(imageBytes, metadata);
     }
     notifyListeners();
   }
@@ -1833,12 +2806,6 @@ class AppState extends ChangeNotifier {
         gelbooruTotal = results.length;
         gelbooruRemaining = gelbooruTotal;
         saveAllSettings();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("${results.length}개의 프롬프트를 찾았습니다."),
-          ),
-        );
       } else {
         _showSearchErrorDialog(
           context,
@@ -1860,7 +2827,25 @@ class AppState extends ChangeNotifier {
       String title;
       String detail;
 
-      if (errorMsg.contains('시간 초과')) {
+      if (errorMsg.contains('__NO_RESULTS__')) {
+        // 순수하게 검색 결과 0개 (에러 아님, 검색 범위 문제)
+        title = "검색 결과 없음";
+        detail =
+            "조건에 맞는 이미지를 찾지 못했어요.\n\n"
+            "포함 태그: ${gelbooruIncludeController.text}\n\n"
+            "💡 검색 범위를 넓혀보세요:\n"
+            "• 태그 수를 줄이기 (너무 구체적이면 결과가 적어요)\n"
+            "• 레이팅 필터 확인 (G/S/Q/E)\n"
+            "• 제외 태그가 너무 많은지 확인\n"
+            "• 태그 철자 확인\n\n"
+            "조건을 조정한 뒤 다시 검색해주세요.";
+      } else if (errorMsg.contains('429') || errorMsg.contains('요청 과다')) {
+        title = "요청이 너무 많습니다 (429)";
+        detail =
+            "짧은 시간에 검색을 너무 많이 했어요.\n\n$errorMsg\n\n"
+            "💡 잠시(10~30초) 기다린 뒤 다시 검색해주세요.\n"
+            "API 키를 설정하면 한도가 늘어납니다.";
+      } else if (errorMsg.contains('시간 초과')) {
         title = "서버 응답 없음";
         detail =
             "Gelbooru 서버가 응답하지 않습니다.\n\n$errorMsg\n\n"
@@ -1868,14 +2853,18 @@ class AppState extends ChangeNotifier {
             "• Gelbooru 서버 점검/장애\n"
             "• 인터넷 연결 불안정\n"
             "• 프록시 서버 문제";
-      } else if (errorMsg.contains('서버 오류') || errorMsg.contains('서버 응답 코드')) {
+      } else if (errorMsg.contains('서버 오류')) {
         title = "서버 오류";
         detail =
             "Gelbooru 서버에서 오류가 발생했습니다.\n\n$errorMsg\n\n"
+            "💡 서버가 불안정할 수 있어요. 잠시 후 다시 시도해주세요.";
+      } else if (errorMsg.contains('요청 오류')) {
+        title = "요청 오류";
+        detail =
+            "요청에 문제가 있습니다.\n\n$errorMsg\n\n"
             "가능한 원인:\n"
-            "• Gelbooru 서버 일시적 장애\n"
-            "• API 키 오류\n"
-            "• 요청 횟수 초과";
+            "• API 키 오류 (설정 탭에서 확인)\n"
+            "• 태그 형식 오류";
       } else if (errorMsg.contains('연결 실패') || errorMsg.contains('SocketException')) {
         title = "연결 실패";
         detail =
@@ -3111,14 +4100,21 @@ class AppState extends ChangeNotifier {
       } else if (result.image != null) {
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
 
-        await addImageToHistory(
-          image: result.image!,
-          metadata: parsedMeta,
-          context: context.mounted ? context : null,
-        );
+        // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로
+        addI2iResult(result.image!, parsedMeta);
 
-        isHistoryGridView = false;
-        navigateToTab(1);
+        // 마스킹 자동 해제: 결과가 나온 즉시 해제 요청 (자동 전환 여부와 무관)
+        if (inpaintAutoClearMask) {
+          i2iRequestMaskClear = true;
+        }
+
+        // 결과 자동 전환 설정이 ON일 때만 인페인트 결과를 작업 이미지로 표시
+        if (inpaintAutoSwitchResult) {
+          // 자동 해제가 아니면 전환 시 마스킹 유지 (결과 비교·덧칠 편의)
+          i2iPreserveMaskOnNextChange = !inpaintAutoClearMask;
+          targetI2iImage = result.image!;
+          targetI2iMetadata = parsedMeta;
+        }
       }
 
       await fetchAnlas();
@@ -3314,15 +4310,8 @@ class AppState extends ChangeNotifier {
           parsedMeta = extractNovelAIMetadata(result.image!);
         }
 
-        await addImageToHistory(
-          image: result.image!,
-          metadata: parsedMeta,
-          context: context.mounted ? context : null,
-          forceSave: true, // 업스케일은 항상 저장
-        );
-
-        isHistoryGridView = false;
-        navigateToTab(1);
+        // 업스케일 결과도 i2i 스크래치 릴로
+        addI2iResult(result.image!, parsedMeta);
       }
 
       await fetchAnlas();
@@ -3339,32 +4328,10 @@ class AppState extends ChangeNotifier {
 
       if (image != null) {
         final Uint8List bytes = await image.readAsBytes();
-
-        historyImages.add(bytes);
-        historyFavorites.add(false);
-        historyFilePaths.add(null); // 불러온 이미지는 저장 경로 없음
-
-        NaiMetadata? parsedMeta = extractNovelAIMetadata(bytes);
-        historyMetadata.add(parsedMeta);
-
-        if (historyImages.length > 100) {
-          _removeOldestNonFavorite();
-        }
-
-        selectedHistoryIndex = historyImages.length - 1;
-        scrollToThumbnailEnd = true;
-        saveHistoryToLocal();
-        notifyListeners();
-
         if (!context.mounted) {
           return;
         }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("이미지를 성공적으로 불러왔습니다!"),
-          ),
-        );
+        await addBytesToHistory(bytes, context); // 불러온 이미지는 저장 경로 없음(null)
       }
     } catch (e) {
       debugPrint("이미지 불러오기 오류: $e");
@@ -3378,6 +4345,49 @@ class AppState extends ChangeNotifier {
         ),
       );
     }
+  }
+
+  // 바이트를 히스토리에 추가하는 핵심 로직 (이미지 불러오기 / 갤러리 추가 공용)
+  // 바이트를 히스토리에 추가 (이미지 불러오기 / 갤러리 추가 공용)
+  // 핵심 적재는 addImageToHistory를 재사용하고, 메타 파싱·알림·메시지만 담당
+  Future<void> addBytesToHistory(
+    Uint8List bytes,
+    BuildContext context, {
+    String? filePath,
+    bool showSuccess = true,
+  }) async {
+    final NaiMetadata? parsedMeta = extractNovelAIMetadata(bytes);
+    await addImageToHistory(
+      image: bytes,
+      metadata: parsedMeta,
+      context: context,
+      presetFilePath: filePath, // 전달된 실제 경로 사용 (없으면 null)
+      skipAutoSave: true, // 불러온/기존 파일은 자동저장 안 함
+    );
+    notifyListeners();
+
+    if (!showSuccess || !context.mounted) {
+      return;
+    }
+  }
+
+  // 여러 파일을 한 번에 히스토리에 추가 (갤러리 다중 선택용)
+  Future<int> addFilesToHistory(List<File> files, BuildContext context) async {
+    int added = 0;
+    for (final f in files) {
+      try {
+        final bytes = await f.readAsBytes();
+        if (!context.mounted) {
+          return added;
+        }
+        await addBytesToHistory(bytes, context, filePath: f.path, showSuccess: false);
+        added++;
+      } catch (e) {
+        debugPrint("히스토리 일괄 추가 실패 (${f.path}): $e");
+      }
+    }
+    if (context.mounted && added > 0) {}
+    return added;
   }
 
   // ============================================================================
@@ -3463,6 +4473,8 @@ class AppState extends ChangeNotifier {
     required NaiMetadata? metadata,
     BuildContext? context,
     bool forceSave = false, // true면 isAutoSave 무시하고 저장
+    String? presetFilePath, // 이미 디스크에 있는 파일(갤러리 등): 이 경로 사용
+    bool skipAutoSave = false, // 불러오기/갤러리 추가: 자동저장 안 함
   }) async {
     if (historyImages.length >= 100) {
       _removeOldestNonFavorite();
@@ -3472,7 +4484,9 @@ class AppState extends ChangeNotifier {
     historyMetadata.add(metadata);
 
     String? savedPath;
-    if (forceSave || isAutoSave) {
+    if (presetFilePath != null) {
+      savedPath = presetFilePath;
+    } else if (!skipAutoSave && (forceSave || isAutoSave)) {
       savedPath = await autoSaveImage((context != null && context.mounted) ? context : null, image);
     }
     historyFilePaths.add(savedPath);
@@ -3483,6 +4497,147 @@ class AppState extends ChangeNotifier {
     await _trimHistoryMemory();
 
     return savedPath;
+  }
+
+  // ===== i2i 스크래치 릴 =====
+  // 결과를 릴에 추가 (디스크 저장 안 함 — 스크래치)
+  // i2iHistoryDisabled가 켜져 있으면 릴 대신 메인 히스토리에 저장 (기존 동작)
+  void addI2iResult(Uint8List bytes, NaiMetadata? metadata) {
+    if (i2iHistoryDisabled) {
+      addImageToHistory(image: bytes, metadata: metadata, forceSave: true);
+      return;
+    }
+    i2iResults.add(I2iResult(bytes: bytes, metadata: metadata));
+    _trimI2iResults();
+    notifyListeners();
+  }
+
+  // 비즐겨찾기 결과가 상한을 넘으면 오래된 것부터 제거 (즐겨찾기는 유지)
+  void _trimI2iResults() {
+    while (i2iResults.where((r) => !r.favorite).length > i2iResultsCap) {
+      final idx = i2iResults.indexWhere((r) => !r.favorite);
+      if (idx < 0) {
+        break;
+      }
+      i2iResults.removeAt(idx);
+    }
+  }
+
+  // 즐겨찾기 토글 (영속 저장)
+  // 반환: true=토글됨, false=즐겨찾기 한도(4) 초과로 막힘
+  bool toggleI2iFavorite(int index) {
+    if (index < 0 || index >= i2iResults.length) {
+      return true;
+    }
+    final r = i2iResults[index];
+    if (!r.favorite) {
+      final favCount = i2iResults.where((x) => x.favorite).length;
+      if (favCount >= i2iFavoriteCap) {
+        return false; // 한도 초과 — 호출 측에서 안내
+      }
+    }
+    r.favorite = !r.favorite;
+    saveI2iFavorites();
+    notifyListeners();
+    return true;
+  }
+
+  // 릴에서 결과 삭제 (내역에서 제거)
+  void removeI2iResult(int index) {
+    if (index < 0 || index >= i2iResults.length) {
+      return;
+    }
+    final bool wasFav = i2iResults[index].favorite;
+    i2iResults.removeAt(index);
+    if (wasFav) {
+      saveI2iFavorites();
+    }
+    notifyListeners();
+  }
+
+  // 다음 targetI2iImage 변경 시 마스킹(_strokes)을 유지할지 신호.
+  // 릴 탭(useI2iResult)=true(유지), 보내기(sendToI2i)=false(초기화)
+  bool i2iPreserveMaskOnNextChange = false;
+
+  // 인페인트 결과 발생 시 마스킹을 "즉시" 해제하라는 1회용 신호.
+  // (이미지 자동 전환 여부와 무관하게 결과가 나온 순간 해제 — i2i_tab이 소비)
+  bool i2iRequestMaskClear = false;
+
+  // 릴의 결과를 작업 이미지로 채택 (이어서 인페인트 등)
+  void useI2iResult(int index) {
+    if (index < 0 || index >= i2iResults.length) {
+      return;
+    }
+    i2iPreserveMaskOnNextChange = true; // 릴 탭은 마스킹 유지
+    targetI2iImage = i2iResults[index].bytes;
+    targetI2iMetadata = i2iResults[index].metadata;
+    notifyListeners();
+  }
+
+  // 메인 히스토리로 보내기 (디스크 저장 포함)
+  Future<void> promoteI2iToHistory(int index, BuildContext context) async {
+    if (index < 0 || index >= i2iResults.length) {
+      return;
+    }
+    final r = i2iResults[index];
+    await addImageToHistory(
+      image: r.bytes,
+      metadata: r.metadata,
+      context: context.mounted ? context : null,
+      forceSave: true,
+    );
+    if (context.mounted) {}
+  }
+
+  // 폴더에 저장 (DNaiApp 갤러리 폴더로)
+  Future<void> saveI2iToFolder(int index, BuildContext context) async {
+    if (index < 0 || index >= i2iResults.length) {
+      return;
+    }
+    final r = i2iResults[index];
+    final path = await autoSaveImage(context.mounted ? context : null, r.bytes);
+    if (!context.mounted) {
+      return;
+    }
+    if (path != null) {
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("저장에 실패했습니다.")));
+    }
+  }
+
+  Future<void> saveI2iFavorites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final favs = i2iResults.where((r) => r.favorite).map((r) => r.toJson()).toList();
+      await prefs.setString('i2iFavorites', jsonEncode(favs));
+    } catch (e) {
+      debugPrint("i2i 즐겨찾기 저장 실패: $e");
+    }
+  }
+
+  Future<void> loadI2iFavorites() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      i2iHandleBottom = prefs.getDouble('i2iHandleBottom') ?? -1;
+      final s = prefs.getString('i2iFavorites');
+      if (s == null || s.isEmpty) {
+        return;
+      }
+      final list = jsonDecode(s) as List;
+      i2iResults = list.map((e) => I2iResult.fromJson(Map<String, dynamic>.from(e))).toList();
+    } catch (e) {
+      debugPrint("i2i 즐겨찾기 로드 실패: $e");
+    }
+  }
+
+  Future<void> saveI2iHandleBottom(double value) async {
+    i2iHandleBottom = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('i2iHandleBottom', value);
+    } catch (e) {
+      debugPrint("i2i 핸들 위치 저장 실패: $e");
+    }
   }
 
   void deleteAllHistory() {
@@ -4155,15 +5310,6 @@ class AppState extends ChangeNotifier {
           historyFilePaths[index] = savedPath;
         }
         saveHistoryToLocal();
-
-        if (context.mounted && showGenerationMessage) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              duration: const Duration(milliseconds: 2400),
-              content: Text("이미지 재생성 및 저장 완료!"),
-            ),
-          );
-        }
       } else if (result.error != null && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -4214,31 +5360,17 @@ class AppState extends ChangeNotifier {
 
     String fileName = _getFormattedFileName("");
     final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
-    final messenger = context != null ? ScaffoldMessenger.of(context) : null;
 
-    // 1차 시도: 커스텀 경로
-    String basePath = customSavePathController.text.trim();
-    if (basePath.isNotEmpty) {
-      try {
-        final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
-        if (!await directory.exists()) {
-          await directory.create(recursive: true);
-        }
-        final file = File("${directory.path}/$fileName.$ext");
-        await file.writeAsBytes(bytes);
-        _scanMedia(file.path);
-        if (showGenerationMessage) {
-          messenger?.showSnackBar(
-            SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
-          );
-        }
-        return file.path;
-      } catch (e) {
-        debugPrint("커스텀 경로 저장 실패 ($basePath): $e");
+    // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
+    if (safRootUri != null) {
+      final safPath = await _saveImageViaSaf(bytes, fileName, ext);
+      if (safPath != null) {
+        return safPath;
       }
+      // SAF 저장 실패 시 아래 기존 경로로 폴백
     }
 
-    // 2차 시도: 앱 전용 외부 디렉토리 (권한 불필요)
+    // 앱 전용 외부 디렉토리 (권한 불필요)
     try {
       final appDir = await getExternalStorageDirectory();
       if (appDir != null) {
@@ -4249,11 +5381,6 @@ class AppState extends ChangeNotifier {
         final file = File("${directory.path}/$fileName.$ext");
         await file.writeAsBytes(bytes);
         _scanMedia(file.path);
-        if (showGenerationMessage) {
-          messenger?.showSnackBar(
-            SnackBar(content: Text("자동 저장 완료 ($fileName)"), duration: const Duration(seconds: 1)),
-          );
-        }
         return file.path;
       }
     } catch (e) {
@@ -4281,31 +5408,17 @@ class AppState extends ChangeNotifier {
     final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
     final messenger = ScaffoldMessenger.of(context); // async gap 전에 캡처
 
-    // 1차: 커스텀 경로
-    String basePath = customSavePathController.text.trim();
-    if (basePath.isNotEmpty) {
-      try {
-        final directory = Directory('$basePath/DNaiApp/$sessionFolderName');
-        if (!await directory.exists()) {
-          await directory.create(recursive: true);
-        }
-        final file = File("${directory.path}/$fileName.$ext");
-        await file.writeAsBytes(bytes);
-        _scanMedia(file.path);
-        messenger.showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("이미지가 지정된 경로에 저장되었습니다!"),
-          ),
-        );
+    // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
+    if (safRootUri != null) {
+      final safPath = await _saveImageViaSaf(bytes, fileName, ext);
+      if (safPath != null) {
         notifyListeners();
         return;
-      } catch (e) {
-        debugPrint("커스텀 경로 수동 저장 실패: $e");
       }
+      // SAF 저장 실패 시 아래 기존 경로로 폴백
     }
 
-    // 2차: 앱 전용 디렉토리
+    // 앱 전용 디렉토리 (권한 불필요)
     try {
       final appDir = await getExternalStorageDirectory();
       if (appDir != null) {
@@ -4316,12 +5429,6 @@ class AppState extends ChangeNotifier {
         final file = File("${directory.path}/$fileName.$ext");
         await file.writeAsBytes(bytes);
         _scanMedia(file.path);
-        messenger.showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("이미지가 앱 폴더에 저장되었습니다."),
-          ),
-        );
         notifyListeners();
         return;
       }

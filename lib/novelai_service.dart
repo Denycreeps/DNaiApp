@@ -387,6 +387,14 @@ class NovelAiService {
     String effectiveUserId = hasCredentials ? gelbooruUserId : fallbackUserId;
     String effectiveApiKey = hasCredentials ? gelbooruApiKey : fallbackApiKey;
 
+    // 검색 범위(가져올 페이지 수)를 API 키 유무에 따라 조정:
+    // - 본인 API 키 있음 → 적극적 (레이트 리밋 넉넉)
+    // - 키 없음(공용 fallback 키) → 소극적 (공용 키 부담 줄이고 429 회피)
+    // maxPagesToFetch가 명시적으로 전달되면(기본 20과 다르면) 그 값 우선.
+    final int effectiveMaxPages = (maxPagesToFetch != 20)
+        ? maxPagesToFetch
+        : (hasCredentials ? 40 : 15);
+
     // OR 태그가 있으면 각 옵션별로 검색 → 합치기
     // 없으면 단일 검색
     List<List<String>> queryVariants = [];
@@ -400,7 +408,7 @@ class NovelAiService {
     }
 
     // 각 변형별 페이지 수 분배
-    int pagesPerVariant = (maxPagesToFetch / queryVariants.length).ceil();
+    int pagesPerVariant = (effectiveMaxPages / queryVariants.length).ceil();
 
     List<dynamic> allValidPosts = [];
     Set<String> allUniqueTags = {};
@@ -411,47 +419,67 @@ class NovelAiService {
     int failedRequests = 0;
     int timeoutRequests = 0;
     int serverErrors = 0;
-    String? lastErrorDetail;
+    int rateLimitErrors = 0; // 429 별도 카운트
+    int clientErrors = 0; // 4xx (429 제외)
 
     for (var apiTags in queryVariants) {
       String tagQuery = Uri.encodeQueryComponent(apiTags.join(' '));
 
-      final pageResponses = await Future.wait(
-        List.generate(pagesPerVariant, (page) async {
-          totalRequests++;
-          String gelbooruUrl =
-              "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
-          gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
-          try {
-            return await http
-                .get(
-                  Uri.parse(gelbooruUrl),
-                  headers: {
-                    'User-Agent':
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-                  },
-                )
-                .timeout(const Duration(seconds: 10));
-          } on TimeoutException {
-            timeoutRequests++;
-            lastErrorDetail = "서버 응답 시간 초과 (10초)";
-            return null;
-          } catch (e) {
-            failedRequests++;
-            lastErrorDetail = e.toString();
-            debugPrint("겔보루 요청 에러: $e");
-            return null;
-          }
-        }),
-      );
+      // 페이지 요청을 배치로 나눠 실행 (한 번에 너무 많이 쏘면 429 위험).
+      // 배치 크기: 키 있으면 10, 없으면 5 (공용 키 보호).
+      final int batchSize = hasCredentials ? 10 : 5;
+      final List<http.Response?> pageResponses = [];
+
+      Future<http.Response?> fetchPage(int page) async {
+        totalRequests++;
+        String gelbooruUrl =
+            "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
+        gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
+        try {
+          return await http
+              .get(
+                Uri.parse(gelbooruUrl),
+                headers: {
+                  'User-Agent':
+                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+                },
+              )
+              .timeout(const Duration(seconds: 10));
+        } on TimeoutException {
+          timeoutRequests++;
+          return null;
+        } catch (e) {
+          failedRequests++;
+          debugPrint("겔보루 요청 에러: $e");
+          return null;
+        }
+      }
+
+      for (int start = 0; start < pagesPerVariant; start += batchSize) {
+        final end = (start + batchSize).clamp(0, pagesPerVariant);
+        final batch = await Future.wait(List.generate(end - start, (i) => fetchPage(start + i)));
+        pageResponses.addAll(batch);
+        // 다음 배치 전 짧은 간격 (서버 부담 완화)
+        if (end < pagesPerVariant) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      }
 
       for (var response in pageResponses) {
         if (response == null) {
           continue;
         }
         if (response.statusCode != 200) {
-          serverErrors++;
-          lastErrorDetail = "서버 응답 코드: ${response.statusCode}";
+          final code = response.statusCode;
+          if (code == 429) {
+            rateLimitErrors++;
+          } else if (code >= 500) {
+            serverErrors++;
+          } else if (code >= 400) {
+            clientErrors++;
+          } else {
+            serverErrors++;
+          }
           continue;
         }
         try {
@@ -492,22 +520,33 @@ class NovelAiService {
       }
     } // queryVariants 루프 끝
 
-    // 전부 실패했으면 상세 에러 throw
-    if (allValidPosts.isEmpty && (failedRequests + timeoutRequests + serverErrors) > 0) {
+    // 결과 종합 판정
+    final int totalErrors =
+        failedRequests + timeoutRequests + serverErrors + rateLimitErrors + clientErrors;
+
+    if (allValidPosts.isEmpty) {
+      // 에러가 전혀 없었으면 → 순수하게 검색 결과 0개 (범위 문제)
+      if (totalErrors == 0) {
+        throw Exception("__NO_RESULTS__"); // 호출 측에서 "범위를 넓혀 다시 검색" 안내
+      }
+      // 에러가 있었으면 → 종류별 구체적 메시지
       List<String> errorParts = [];
+      if (rateLimitErrors > 0) {
+        errorParts.add("⏱ 요청 과다 (429): $rateLimitErrors건 — 잠시 후 다시 시도해주세요");
+      }
       if (timeoutRequests > 0) {
-        errorParts.add("시간 초과: $timeoutRequests건");
+        errorParts.add("⏱ 시간 초과: $timeoutRequests건 — 서버 응답이 느립니다");
       }
       if (serverErrors > 0) {
-        errorParts.add("서버 오류: $serverErrors건");
+        errorParts.add("🔧 서버 오류: $serverErrors건 — 서버가 불안정합니다");
+      }
+      if (clientErrors > 0) {
+        errorParts.add("⚠️ 요청 오류: $clientErrors건 — 태그/API 키 확인 필요");
       }
       if (failedRequests > 0) {
-        errorParts.add("연결 실패: $failedRequests건");
+        errorParts.add("📡 연결 실패: $failedRequests건 — 네트워크를 확인해주세요");
       }
-      errorParts.add("총 요청: $totalRequests건");
-      if (lastErrorDetail != null) {
-        errorParts.add("상세: $lastErrorDetail");
-      }
+      errorParts.add("(총 $totalRequests건 요청 중)");
       throw Exception(errorParts.join('\n'));
     }
 
@@ -661,7 +700,7 @@ class NovelAiService {
     bool useCharacterPosition = true,
     List<Map<String, dynamic>>? vibeTransfers,
     List<Map<String, dynamic>>? preciseRefs,
-    int maxAttempts = 6,
+    int maxAttempts = 4,
     void Function(String)? onStatus,
   }) async {
     try {
@@ -893,7 +932,7 @@ class NovelAiService {
       int currentAttempt = 0;
       final Random random = Random();
       // infill은 서버 처리 시간이 길어 재시도 횟수를 더 많이 줌
-      final int effectiveMaxAttempts = (action == "infill") ? 10 : maxAttempts;
+      final int effectiveMaxAttempts = (action == "infill") ? 6 : maxAttempts;
       bool lastWasConcurrent = false;
 
       onStatus?.call("서버에 요청 전송 중...");
@@ -910,7 +949,7 @@ class NovelAiService {
                 },
                 body: jsonEncode(requestBody),
               )
-              .timeout(const Duration(seconds: 120));
+              .timeout(const Duration(seconds: 60));
 
           if (response.statusCode == 201 || response.statusCode == 200) {
             onStatus?.call("이미지 수신 완료!");
@@ -952,22 +991,38 @@ class NovelAiService {
             try {
               errorMsg = jsonDecode(response.body)['message']?.toString() ?? response.body;
             } catch (_) {}
-            return NaiResponse(error: "치명적 에러 [${response.statusCode}]: $errorMsg");
+            final code = response.statusCode;
+            String friendly;
+            if (code == 400) {
+              friendly = "잘못된 요청 (400)\n프롬프트나 설정에 문제가 있을 수 있어요.\n$errorMsg";
+            } else if (code == 401) {
+              friendly = "인증 실패 (401)\nAPI 키가 올바른지 설정 탭에서 확인해주세요.\n$errorMsg";
+            } else if (code == 402) {
+              friendly = "결제/구독 필요 (402)\nAnlas(크레딧)나 구독 상태를 확인해주세요.\n$errorMsg";
+            } else if (code == 403) {
+              friendly = "접근 거부 (403)\nAPI 키 권한을 확인해주세요.\n$errorMsg";
+            } else {
+              friendly = "요청 실패 [$code]\n$errorMsg";
+            }
+            return NaiResponse(error: friendly);
           }
         } catch (e) {
           lastWasConcurrent = false;
           if (currentAttempt >= effectiveMaxAttempts - 1) {
-            return NaiResponse(error: "네트워크 한도 초과 및 연결 실패: $e");
+            if (e is TimeoutException) {
+              return NaiResponse(error: "⏱ 생성 시간 초과 (60초)\n서버가 너무 느리거나 혼잡합니다. 잠시 후 다시 시도해주세요.");
+            }
+            return NaiResponse(error: "📡 연결 실패\n네트워크를 확인하거나 잠시 후 다시 시도해주세요.\n$e");
           }
         }
 
         currentAttempt++;
         if (currentAttempt < effectiveMaxAttempts) {
           final int exponentialDelay = pow(2, currentAttempt).toInt();
-          // concurrent lock이면 최소 20초 대기 (서버가 ghost request를 마칠 시간 확보)
+          // concurrent lock이면 10~30초 대기 (서버가 ghost request 마칠 시간), 일반은 최대 30초
           final int baseDelay = lastWasConcurrent
-              ? exponentialDelay.clamp(20, 60)
-              : exponentialDelay;
+              ? exponentialDelay.clamp(10, 30)
+              : exponentialDelay.clamp(2, 30);
           final int jitterMs = random.nextInt(1000);
           debugPrint('[재시도] ${baseDelay}s 후 재시도 (시도 $currentAttempt/$effectiveMaxAttempts)');
           onStatus?.call("$baseDelay초 후 재시도 ($currentAttempt/$effectiveMaxAttempts)...");
@@ -1031,7 +1086,9 @@ class NovelAiService {
   Future<Map<String, int>?> fetchUserInfo(String token) async {
     try {
       final cleanToken = token.trim().replaceFirst('Bearer ', '').trim();
-      final url = Uri.parse('https://api.novelai.net/user/subscription');
+      // NAI 서버 마이그레이션(2026): /user/* 는 image.novelai.net에서 호출해야 함.
+      // 기존 api.novelai.net/user/subscription 은 현재 작동하지 않음.
+      final url = Uri.parse('https://image.novelai.net/user/subscription');
 
       final response = await http.get(
         url,

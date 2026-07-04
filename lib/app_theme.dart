@@ -12,8 +12,8 @@ class AppColors {
   static const Color surfaceAlt = Color(0xFF2A2A2D); // 대체 표면색
   static const Color surfaceButton = Color(0xFF2A2A35); // 버튼 배경
 
-  // 액센트 (탭별 테마)
-  static const Color accent = Colors.deepPurpleAccent;
+  // 액센트 (탭별 테마) — 런타임에 사용자가 바꿀 수 있어 non-const (AppState.setThemeAccent에서 대입)
+  static Color accent = Colors.deepPurpleAccent;
   static const Color teal = Color(0xFF00BFA5); // 긍정적 프롬프트
   static const Color blue = Color(0xFF29B6F6); // 선행 프롬프트
   static const Color orange = Color(0xFFFFA000); // 후행 프롬프트

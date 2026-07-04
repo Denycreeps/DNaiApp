@@ -365,538 +365,574 @@ class _PromptTabState extends State<PromptTab> {
                             ),
                           );
                         }
-                        return ListView.separated(
+                        return ReorderableListView.builder(
                           itemCount: filtered.length,
-                          separatorBuilder: (context, index) =>
-                              const Divider(height: 1, color: Colors.white12),
+                          onReorderItem: (oldIndex, newIndex) {
+                            _reorderPreset(consumerState, selectedCategory, oldIndex, newIndex);
+                          },
                           itemBuilder: (context, index) {
                             final originalIndex = filtered[index].key;
                             final preset = filtered[index].value;
-                            return ListTile(
-                              dense: true,
-                              visualDensity: const VisualDensity(vertical: -3),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 0,
+                            return Container(
+                              key: ValueKey(preset),
+                              decoration: const BoxDecoration(
+                                border: Border(bottom: BorderSide(color: Colors.white12, width: 1)),
                               ),
-                              // 기타 제외 카테고리에서만 미리보기 이미지 표시
-                              leading: selectedCategory != 'etc'
-                                  ? SizedBox(
-                                      width: 36,
-                                      height: 36,
-                                      child: preset.previewImage != null
-                                          ? ClipRRect(
-                                              borderRadius: BorderRadius.circular(6),
-                                              child: Image.memory(
-                                                base64Decode(preset.previewImage!),
-                                                fit: BoxFit.cover,
-                                              ),
-                                            )
-                                          : Container(
-                                              decoration: BoxDecoration(
-                                                color: Colors.white.withValues(alpha: 0.05),
-                                                borderRadius: BorderRadius.circular(6),
-                                                border: Border.all(color: Colors.white12),
-                                              ),
-                                              child: const Icon(
-                                                Icons.image_outlined,
-                                                color: Colors.white24,
-                                                size: 18,
-                                              ),
-                                            ),
-                                    )
-                                  : null,
-                              title: Text(
-                                preset.name,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                              child: ListTile(
+                                dense: true,
+                                visualDensity: const VisualDensity(vertical: -3),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 0,
                                 ),
-                              ),
-                              subtitle: Text(
-                                preset.savedFields
-                                    .map((f) {
-                                      const labels = {
-                                        'positive': '긍정',
-                                        'negative': '부정',
-                                        'prefix': '선행',
-                                        'suffix': '후행',
-                                        'settings': '설정',
-                                        'characters': '캐릭터',
-                                      };
-                                      return labels[f] ?? f;
-                                    })
-                                    .join(' · '),
-                                style: const TextStyle(color: Colors.white54, fontSize: 11),
-                              ),
-                              onTap: () {
-                                final category = _getPresetCategory(preset);
-                                final bool isEtc = category == 'etc';
+                                // 기타 제외 카테고리에서만 미리보기 이미지 표시
+                                leading: selectedCategory != 'etc'
+                                    ? SizedBox(
+                                        width: 36,
+                                        height: 36,
+                                        child: preset.previewImage != null
+                                            ? ClipRRect(
+                                                borderRadius: BorderRadius.circular(6),
+                                                child: Image.memory(
+                                                  base64Decode(preset.previewImage!),
+                                                  fit: BoxFit.cover,
+                                                ),
+                                              )
+                                            : Container(
+                                                decoration: BoxDecoration(
+                                                  color: Colors.white.withValues(alpha: 0.05),
+                                                  borderRadius: BorderRadius.circular(6),
+                                                  border: Border.all(color: Colors.white12),
+                                                ),
+                                                child: const Icon(
+                                                  Icons.image_outlined,
+                                                  color: Colors.white24,
+                                                  size: 18,
+                                                ),
+                                              ),
+                                      )
+                                    : null,
+                                title: Text(
+                                  preset.name,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  preset.savedFields
+                                      .map((f) {
+                                        const labels = {
+                                          'positive': '긍정',
+                                          'negative': '부정',
+                                          'prefix': '선행',
+                                          'suffix': '후행',
+                                          'settings': '설정',
+                                          'characters': '캐릭터',
+                                        };
+                                        return labels[f] ?? f;
+                                      })
+                                      .join(' · '),
+                                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                                ),
+                                onTap: () {
+                                  final category = _getPresetCategory(preset);
+                                  final bool isEtc = category == 'etc';
 
-                                showDialog(
-                                  context: modalContext,
-                                  builder: (ctx) {
-                                    Set<String> expandedSections = {};
+                                  showDialog(
+                                    context: modalContext,
+                                    builder: (ctx) {
+                                      Set<String> expandedSections = {};
 
-                                    return StatefulBuilder(
-                                      builder: (ctx, setDialogState) {
-                                        Widget buildSection(
-                                          String label,
-                                          String text,
-                                          Color color,
-                                        ) {
-                                          if (text.trim().isEmpty) {
-                                            return const SizedBox.shrink();
-                                          }
+                                      return StatefulBuilder(
+                                        builder: (ctx, setDialogState) {
+                                          Widget buildSection(
+                                            String label,
+                                            String text,
+                                            Color color,
+                                          ) {
+                                            if (text.trim().isEmpty) {
+                                              return const SizedBox.shrink();
+                                            }
 
-                                          if (!isEtc) {
-                                            // 긍정/선행/캐릭터: 항상 펼쳐진 상태
+                                            if (!isEtc) {
+                                              // 긍정/선행/캐릭터: 항상 펼쳐진 상태
+                                              return Padding(
+                                                padding: const EdgeInsets.only(bottom: 8),
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Container(
+                                                      width: double.infinity,
+                                                      padding: const EdgeInsets.symmetric(
+                                                        horizontal: 10,
+                                                        vertical: 8,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: color.withValues(alpha: 0.1),
+                                                        borderRadius: const BorderRadius.vertical(
+                                                          top: Radius.circular(8),
+                                                        ),
+                                                        border: Border.all(
+                                                          color: color.withValues(alpha: 0.3),
+                                                        ),
+                                                      ),
+                                                      child: Text(
+                                                        label,
+                                                        style: TextStyle(
+                                                          color: color,
+                                                          fontSize: 14,
+                                                          fontWeight: FontWeight.bold,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    Container(
+                                                      width: double.infinity,
+                                                      padding: const EdgeInsets.all(10),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black26,
+                                                        borderRadius: const BorderRadius.vertical(
+                                                          bottom: Radius.circular(8),
+                                                        ),
+                                                        border: Border.all(
+                                                          color: color.withValues(alpha: 0.2),
+                                                        ),
+                                                      ),
+                                                      child: Text(
+                                                        text,
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 15,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              );
+                                            }
+
+                                            // 기타: 접기/펴기
+                                            final isExpanded = expandedSections.contains(label);
                                             return Padding(
                                               padding: const EdgeInsets.only(bottom: 8),
                                               child: Column(
                                                 crossAxisAlignment: CrossAxisAlignment.start,
                                                 children: [
-                                                  Container(
-                                                    width: double.infinity,
-                                                    padding: const EdgeInsets.symmetric(
-                                                      horizontal: 10,
-                                                      vertical: 8,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color: color.withValues(alpha: 0.1),
-                                                      borderRadius: const BorderRadius.vertical(
-                                                        top: Radius.circular(8),
+                                                  GestureDetector(
+                                                    onTap: () {
+                                                      setDialogState(() {
+                                                        if (isExpanded) {
+                                                          expandedSections.remove(label);
+                                                        } else {
+                                                          expandedSections.add(label);
+                                                        }
+                                                      });
+                                                    },
+                                                    child: Container(
+                                                      width: double.infinity,
+                                                      padding: const EdgeInsets.symmetric(
+                                                        horizontal: 10,
+                                                        vertical: 8,
                                                       ),
-                                                      border: Border.all(
-                                                        color: color.withValues(alpha: 0.3),
+                                                      decoration: BoxDecoration(
+                                                        color: color.withValues(alpha: 0.1),
+                                                        borderRadius: BorderRadius.circular(8),
+                                                        border: Border.all(
+                                                          color: color.withValues(alpha: 0.3),
+                                                        ),
                                                       ),
-                                                    ),
-                                                    child: Text(
-                                                      label,
-                                                      style: TextStyle(
-                                                        color: color,
-                                                        fontSize: 14,
-                                                        fontWeight: FontWeight.bold,
+                                                      child: Row(
+                                                        children: [
+                                                          Icon(
+                                                            isExpanded
+                                                                ? Icons.expand_more
+                                                                : Icons.chevron_right,
+                                                            color: color,
+                                                            size: 18,
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                          Flexible(
+                                                            flex: 2,
+                                                            child: Text(
+                                                              label,
+                                                              style: TextStyle(
+                                                                color: color,
+                                                                fontSize: 14,
+                                                                fontWeight: FontWeight.bold,
+                                                              ),
+                                                              overflow: TextOverflow.ellipsis,
+                                                            ),
+                                                          ),
+                                                          if (!isExpanded) ...[
+                                                            const SizedBox(width: 8),
+                                                            Flexible(
+                                                              flex: 3,
+                                                              child: Text(
+                                                                text,
+                                                                style: TextStyle(
+                                                                  color: color.withValues(
+                                                                    alpha: 0.5,
+                                                                  ),
+                                                                  fontSize: 12,
+                                                                ),
+                                                                overflow: TextOverflow.ellipsis,
+                                                                maxLines: 1,
+                                                                textAlign: TextAlign.right,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ],
                                                       ),
                                                     ),
                                                   ),
-                                                  Container(
-                                                    width: double.infinity,
-                                                    padding: const EdgeInsets.all(10),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.black26,
-                                                      borderRadius: const BorderRadius.vertical(
-                                                        bottom: Radius.circular(8),
+                                                  if (isExpanded)
+                                                    Container(
+                                                      width: double.infinity,
+                                                      padding: const EdgeInsets.all(10),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.black26,
+                                                        borderRadius: const BorderRadius.vertical(
+                                                          bottom: Radius.circular(8),
+                                                        ),
+                                                        border: Border.all(
+                                                          color: color.withValues(alpha: 0.2),
+                                                        ),
                                                       ),
-                                                      border: Border.all(
-                                                        color: color.withValues(alpha: 0.2),
+                                                      child: Text(
+                                                        text,
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                          fontSize: 15,
+                                                        ),
                                                       ),
                                                     ),
-                                                    child: Text(
-                                                      text,
-                                                      style: const TextStyle(
-                                                        color: Colors.white70,
-                                                        fontSize: 15,
-                                                      ),
-                                                    ),
-                                                  ),
                                                 ],
                                               ),
                                             );
                                           }
 
-                                          // 기타: 접기/펴기
-                                          final isExpanded = expandedSections.contains(label);
-                                          return Padding(
-                                            padding: const EdgeInsets.only(bottom: 8),
-                                            child: Column(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                          return AlertDialog(
+                                            backgroundColor: const Color(0xFF1E1E1E),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(16),
+                                            ),
+                                            title: Row(
                                               children: [
-                                                GestureDetector(
-                                                  onTap: () {
-                                                    setDialogState(() {
-                                                      if (isExpanded) {
-                                                        expandedSections.remove(label);
-                                                      } else {
-                                                        expandedSections.add(label);
-                                                      }
-                                                    });
-                                                  },
-                                                  child: Container(
-                                                    width: double.infinity,
-                                                    padding: const EdgeInsets.symmetric(
-                                                      horizontal: 10,
-                                                      vertical: 8,
-                                                    ),
-                                                    decoration: BoxDecoration(
-                                                      color: color.withValues(alpha: 0.1),
-                                                      borderRadius: BorderRadius.circular(8),
-                                                      border: Border.all(
-                                                        color: color.withValues(alpha: 0.3),
-                                                      ),
+                                                const Icon(
+                                                  Icons.info_outline,
+                                                  color: Colors.deepPurpleAccent,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Expanded(
+                                                  child: GestureDetector(
+                                                    onTap: () => _showRenamePresetDialog(
+                                                      ctx,
+                                                      consumerState,
+                                                      preset,
+                                                      setDialogState,
                                                     ),
                                                     child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
                                                       children: [
-                                                        Icon(
-                                                          isExpanded
-                                                              ? Icons.expand_more
-                                                              : Icons.chevron_right,
-                                                          color: color,
-                                                          size: 18,
-                                                        ),
-                                                        const SizedBox(width: 4),
                                                         Flexible(
-                                                          flex: 2,
                                                           child: Text(
-                                                            label,
-                                                            style: TextStyle(
-                                                              color: color,
-                                                              fontSize: 14,
+                                                            preset.name,
+                                                            style: const TextStyle(
+                                                              color: Colors.white,
+                                                              fontSize: 18,
                                                               fontWeight: FontWeight.bold,
                                                             ),
                                                             overflow: TextOverflow.ellipsis,
                                                           ),
                                                         ),
-                                                        if (!isExpanded) ...[
-                                                          const SizedBox(width: 8),
-                                                          Flexible(
-                                                            flex: 3,
-                                                            child: Text(
-                                                              text,
-                                                              style: TextStyle(
-                                                                color: color.withValues(alpha: 0.5),
-                                                                fontSize: 12,
-                                                              ),
-                                                              overflow: TextOverflow.ellipsis,
-                                                              maxLines: 1,
-                                                              textAlign: TextAlign.right,
-                                                            ),
-                                                          ),
-                                                        ],
+                                                        const SizedBox(width: 6),
+                                                        const Icon(
+                                                          Icons.edit,
+                                                          size: 15,
+                                                          color: Colors.white38,
+                                                        ),
                                                       ],
                                                     ),
                                                   ),
                                                 ),
-                                                if (isExpanded)
-                                                  Container(
-                                                    width: double.infinity,
-                                                    padding: const EdgeInsets.all(10),
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.black26,
-                                                      borderRadius: const BorderRadius.vertical(
-                                                        bottom: Radius.circular(8),
-                                                      ),
-                                                      border: Border.all(
-                                                        color: color.withValues(alpha: 0.2),
-                                                      ),
-                                                    ),
-                                                    child: Text(
-                                                      text,
-                                                      style: const TextStyle(
-                                                        color: Colors.white70,
-                                                        fontSize: 15,
-                                                      ),
-                                                    ),
-                                                  ),
                                               ],
                                             ),
-                                          );
-                                        }
-
-                                        return AlertDialog(
-                                          backgroundColor: const Color(0xFF1E1E1E),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(16),
-                                          ),
-                                          title: Row(
-                                            children: [
-                                              const Icon(
-                                                Icons.info_outline,
-                                                color: Colors.deepPurpleAccent,
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  preset.name,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 18,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          content: SingleChildScrollView(
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              crossAxisAlignment: CrossAxisAlignment.start,
-                                              children: [
-                                                // 미리보기 이미지 (기타 제외)
-                                                if (!isEtc) ...[
-                                                  Center(
-                                                    child: GestureDetector(
-                                                      onTap: () async {
-                                                        final picker = ImagePicker();
-                                                        final picked = await picker.pickImage(
-                                                          source: ImageSource.gallery,
-                                                          maxWidth: 200,
-                                                        );
-                                                        if (picked != null) {
-                                                          final bytes = await picked.readAsBytes();
-                                                          // 100px 썸네일로 변환
-                                                          final decoded = img.decodeImage(bytes);
-                                                          if (decoded != null) {
-                                                            final thumb = img.copyResize(
-                                                              decoded,
-                                                              width: 200,
-                                                            );
-                                                            final jpgBytes = Uint8List.fromList(
-                                                              img.encodeJpg(thumb, quality: 85),
-                                                            );
-                                                            preset.previewImage = base64Encode(
-                                                              jpgBytes,
-                                                            );
-                                                            state.saveAllSettings();
-                                                            state.refreshUI();
-                                                            setDialogState(() {});
+                                            content: SingleChildScrollView(
+                                              child: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  // 미리보기 이미지 (기타 제외)
+                                                  if (!isEtc) ...[
+                                                    Center(
+                                                      child: GestureDetector(
+                                                        onTap: () async {
+                                                          final picker = ImagePicker();
+                                                          final picked = await picker.pickImage(
+                                                            source: ImageSource.gallery,
+                                                            maxWidth: 200,
+                                                          );
+                                                          if (picked != null) {
+                                                            final bytes = await picked
+                                                                .readAsBytes();
+                                                            // 100px 썸네일로 변환
+                                                            final decoded = img.decodeImage(bytes);
+                                                            if (decoded != null) {
+                                                              final thumb = img.copyResize(
+                                                                decoded,
+                                                                width: 200,
+                                                              );
+                                                              final jpgBytes = Uint8List.fromList(
+                                                                img.encodeJpg(thumb, quality: 85),
+                                                              );
+                                                              preset.previewImage = base64Encode(
+                                                                jpgBytes,
+                                                              );
+                                                              state.saveAllSettings();
+                                                              state.refreshUI();
+                                                              setDialogState(() {});
+                                                            }
                                                           }
-                                                        }
-                                                      },
-                                                      child: preset.previewImage != null
-                                                          ? ClipRRect(
-                                                              borderRadius: BorderRadius.circular(
-                                                                10,
-                                                              ),
-                                                              child: Image.memory(
-                                                                base64Decode(preset.previewImage!),
-                                                                width: 100,
-                                                                height: 100,
-                                                                fit: BoxFit.cover,
-                                                              ),
-                                                            )
-                                                          : Container(
-                                                              width: 100,
-                                                              height: 100,
-                                                              decoration: BoxDecoration(
-                                                                color: Colors.white.withValues(
-                                                                  alpha: 0.05,
-                                                                ),
+                                                        },
+                                                        child: preset.previewImage != null
+                                                            ? ClipRRect(
                                                                 borderRadius: BorderRadius.circular(
                                                                   10,
                                                                 ),
-                                                                border: Border.all(
-                                                                  color: Colors.white24,
-                                                                  style: BorderStyle.solid,
+                                                                child: Image.memory(
+                                                                  base64Decode(
+                                                                    preset.previewImage!,
+                                                                  ),
+                                                                  width: 100,
+                                                                  height: 100,
+                                                                  fit: BoxFit.cover,
+                                                                ),
+                                                              )
+                                                            : Container(
+                                                                width: 100,
+                                                                height: 100,
+                                                                decoration: BoxDecoration(
+                                                                  color: Colors.white.withValues(
+                                                                    alpha: 0.05,
+                                                                  ),
+                                                                  borderRadius:
+                                                                      BorderRadius.circular(10),
+                                                                  border: Border.all(
+                                                                    color: Colors.white24,
+                                                                    style: BorderStyle.solid,
+                                                                  ),
+                                                                ),
+                                                                child: const Column(
+                                                                  mainAxisAlignment:
+                                                                      MainAxisAlignment.center,
+                                                                  children: [
+                                                                    Icon(
+                                                                      Icons
+                                                                          .add_photo_alternate_outlined,
+                                                                      color: Colors.white30,
+                                                                      size: 28,
+                                                                    ),
+                                                                    SizedBox(height: 4),
+                                                                    Text(
+                                                                      "미리보기 추가",
+                                                                      style: TextStyle(
+                                                                        color: Colors.white30,
+                                                                        fontSize: 10,
+                                                                      ),
+                                                                    ),
+                                                                  ],
                                                                 ),
                                                               ),
-                                                              child: const Column(
-                                                                mainAxisAlignment:
-                                                                    MainAxisAlignment.center,
-                                                                children: [
-                                                                  Icon(
-                                                                    Icons
-                                                                        .add_photo_alternate_outlined,
-                                                                    color: Colors.white30,
-                                                                    size: 28,
-                                                                  ),
-                                                                  SizedBox(height: 4),
-                                                                  Text(
-                                                                    "미리보기 추가",
-                                                                    style: TextStyle(
-                                                                      color: Colors.white30,
-                                                                      fontSize: 10,
-                                                                    ),
-                                                                  ),
-                                                                ],
-                                                              ),
-                                                            ),
+                                                      ),
                                                     ),
-                                                  ),
-                                                  const SizedBox(height: 12),
-                                                ],
-                                                buildSection(
-                                                  "선행",
-                                                  preset.prefix,
-                                                  const Color(0xFF29B6F6),
-                                                ),
-                                                buildSection(
-                                                  "긍정적",
-                                                  preset.positive,
-                                                  const Color(0xFF00BFA5),
-                                                ),
-                                                buildSection(
-                                                  "후행",
-                                                  preset.suffix,
-                                                  const Color(0xFFFFA000),
-                                                ),
-                                                buildSection(
-                                                  "부정적",
-                                                  preset.negative,
-                                                  const Color(0xFFFF5252),
-                                                ),
-                                                if (preset.settings != null)
+                                                    const SizedBox(height: 12),
+                                                  ],
                                                   buildSection(
-                                                    "설정",
-                                                    "모델: ${preset.settings!['model'] ?? '-'}\n"
-                                                        "샘플러: ${preset.settings!['sampler'] ?? '-'}\n"
-                                                        "스텝: ${preset.settings!['steps'] ?? '-'} / CFG: ${preset.settings!['cfg'] ?? '-'}",
-                                                    Colors.amber,
+                                                    "선행",
+                                                    preset.prefix,
+                                                    const Color(0xFF29B6F6),
                                                   ),
-                                                if (preset.characters != null &&
-                                                    preset.characters!.isNotEmpty)
-                                                  ...preset.characters!.asMap().entries.map((
-                                                    entry,
-                                                  ) {
-                                                    final i = entry.key;
-                                                    final c = entry.value;
-                                                    final pos = c['positive'] ?? '';
-                                                    final neg = c['uc'] ?? c['negative'] ?? '';
-                                                    final display = [
-                                                      if (pos.toString().isNotEmpty) "긍정: $pos",
-                                                      if (neg.toString().isNotEmpty) "부정: $neg",
-                                                    ].join('\n');
-                                                    return buildSection(
-                                                      c['name']?.toString().isNotEmpty == true
-                                                          ? c['name']
-                                                          : "캐릭터 ${i + 1}",
-                                                      display.isEmpty ? '(비어있음)' : display,
-                                                      Colors.deepPurpleAccent,
-                                                    );
-                                                  }),
-                                                if (preset.prefix.isEmpty &&
-                                                    preset.positive.isEmpty &&
-                                                    preset.suffix.isEmpty &&
-                                                    preset.negative.isEmpty &&
-                                                    preset.settings == null &&
-                                                    preset.characters == null)
-                                                  const Text(
-                                                    "저장된 내용이 없습니다.",
-                                                    style: TextStyle(color: Colors.white54),
+                                                  buildSection(
+                                                    "긍정적",
+                                                    preset.positive,
+                                                    const Color(0xFF00BFA5),
                                                   ),
-                                              ],
+                                                  buildSection(
+                                                    "후행",
+                                                    preset.suffix,
+                                                    const Color(0xFFFFA000),
+                                                  ),
+                                                  buildSection(
+                                                    "부정적",
+                                                    preset.negative,
+                                                    const Color(0xFFFF5252),
+                                                  ),
+                                                  if (preset.settings != null)
+                                                    buildSection(
+                                                      "설정",
+                                                      "모델: ${preset.settings!['model'] ?? '-'}\n"
+                                                          "샘플러: ${preset.settings!['sampler'] ?? '-'}\n"
+                                                          "스텝: ${preset.settings!['steps'] ?? '-'} / CFG: ${preset.settings!['cfg'] ?? '-'}",
+                                                      Colors.amber,
+                                                    ),
+                                                  if (preset.characters != null &&
+                                                      preset.characters!.isNotEmpty)
+                                                    ...preset.characters!.asMap().entries.map((
+                                                      entry,
+                                                    ) {
+                                                      final i = entry.key;
+                                                      final c = entry.value;
+                                                      final pos = c['positive'] ?? '';
+                                                      final neg = c['uc'] ?? c['negative'] ?? '';
+                                                      final display = [
+                                                        if (pos.toString().isNotEmpty) "긍정: $pos",
+                                                        if (neg.toString().isNotEmpty) "부정: $neg",
+                                                      ].join('\n');
+                                                      return buildSection(
+                                                        c['name']?.toString().isNotEmpty == true
+                                                            ? c['name']
+                                                            : "캐릭터 ${i + 1}",
+                                                        display.isEmpty ? '(비어있음)' : display,
+                                                        Colors.deepPurpleAccent,
+                                                      );
+                                                    }),
+                                                  if (preset.prefix.isEmpty &&
+                                                      preset.positive.isEmpty &&
+                                                      preset.suffix.isEmpty &&
+                                                      preset.negative.isEmpty &&
+                                                      preset.settings == null &&
+                                                      preset.characters == null)
+                                                    const Text(
+                                                      "저장된 내용이 없습니다.",
+                                                      style: TextStyle(color: Colors.white54),
+                                                    ),
+                                                ],
+                                              ),
                                             ),
-                                          ),
-                                          actions: [
-                                            ElevatedButton(
-                                              onPressed: () => Navigator.pop(ctx),
-                                              style: ElevatedButton.styleFrom(
-                                                backgroundColor: Colors.deepPurpleAccent,
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius: BorderRadius.circular(8),
+                                            actions: [
+                                              ElevatedButton(
+                                                onPressed: () => Navigator.pop(ctx),
+                                                style: ElevatedButton.styleFrom(
+                                                  backgroundColor: Colors.deepPurpleAccent,
+                                                  shape: RoundedRectangleBorder(
+                                                    borderRadius: BorderRadius.circular(8),
+                                                  ),
+                                                ),
+                                                child: const Text(
+                                                  "닫기",
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
                                                 ),
                                               ),
-                                              child: const Text(
-                                                "닫기",
-                                                style: TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                                            ],
+                                          );
+                                        },
+                                      );
+                                    },
+                                  );
+                                },
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // 복사 버튼
+                                    OutlinedButton(
+                                      onPressed: () {
+                                        final category = _getPresetCategory(preset);
+                                        if (category == 'etc') {
+                                          // 기타: 어떤 항목을 복사할지 선택
+                                          _showPresetCopyDialog(modalContext, preset);
+                                        } else {
+                                          // 단일 카테고리: 해당 내용 바로 복사
+                                          String text = '';
+                                          if (category == 'positive') {
+                                            text = preset.positive;
+                                          } else if (category == 'prefix') {
+                                            text = preset.prefix;
+                                          } else if (category == 'characters' &&
+                                              preset.characters != null) {
+                                            text = preset.characters!
+                                                .map((c) => c['positive'] ?? '')
+                                                .where((s) => s.toString().isNotEmpty)
+                                                .join(', ');
+                                          }
+                                          if (text.isNotEmpty) {
+                                            Clipboard.setData(ClipboardData(text: text));
+                                            ScaffoldMessenger.of(modalContext).showSnackBar(
+                                              SnackBar(
+                                                duration: const Duration(milliseconds: 2400),
+                                                content: Text("클립보드에 복사했습니다."),
                                               ),
-                                            ),
-                                          ],
-                                        );
-                                      },
-                                    );
-                                  },
-                                );
-                              },
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  // 복사 버튼
-                                  OutlinedButton(
-                                    onPressed: () {
-                                      final category = _getPresetCategory(preset);
-                                      if (category == 'etc') {
-                                        // 기타: 어떤 항목을 복사할지 선택
-                                        _showPresetCopyDialog(modalContext, preset);
-                                      } else {
-                                        // 단일 카테고리: 해당 내용 바로 복사
-                                        String text = '';
-                                        if (category == 'positive') {
-                                          text = preset.positive;
-                                        } else if (category == 'prefix') {
-                                          text = preset.prefix;
-                                        } else if (category == 'characters' &&
-                                            preset.characters != null) {
-                                          text = preset.characters!
-                                              .map((c) => c['positive'] ?? '')
-                                              .where((s) => s.toString().isNotEmpty)
-                                              .join(', ');
+                                            );
+                                          }
                                         }
-                                        if (text.isNotEmpty) {
-                                          Clipboard.setData(ClipboardData(text: text));
-                                          ScaffoldMessenger.of(modalContext).showSnackBar(
+                                      },
+                                      style: OutlinedButton.styleFrom(
+                                        side: const BorderSide(color: Colors.white24),
+                                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                                      ),
+                                      child: const Icon(
+                                        Icons.copy,
+                                        color: Colors.white54,
+                                        size: 16,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    // 적용 버튼
+                                    OutlinedButton(
+                                      onPressed: () {
+                                        final category = _getPresetCategory(preset);
+                                        if (category == 'etc') {
+                                          // 기타: 어떤 항목을 불러올지 선택
+                                          _showPresetApplyDialog(
+                                            context,
+                                            modalContext,
+                                            consumerState,
+                                            preset,
+                                          );
+                                        } else {
+                                          // 단일 카테고리: 바로 적용
+                                          _applyPreset(consumerState, preset, preset.savedFields);
+                                          Navigator.pop(modalContext);
+                                          ScaffoldMessenger.of(context).showSnackBar(
                                             SnackBar(
                                               duration: const Duration(milliseconds: 2400),
-                                              content: Text("클립보드에 복사했습니다."),
+                                              content: Text("'${preset.name}' 프리셋을 불러왔습니다."),
                                             ),
                                           );
                                         }
-                                      }
-                                    },
-                                    style: OutlinedButton.styleFrom(
-                                      side: const BorderSide(color: Colors.white24),
-                                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                                    ),
-                                    child: const Icon(Icons.copy, color: Colors.white54, size: 16),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  // 적용 버튼
-                                  OutlinedButton(
-                                    onPressed: () {
-                                      final category = _getPresetCategory(preset);
-                                      if (category == 'etc') {
-                                        // 기타: 어떤 항목을 불러올지 선택
-                                        _showPresetApplyDialog(
-                                          context,
-                                          modalContext,
-                                          consumerState,
-                                          preset,
-                                        );
-                                      } else {
-                                        // 단일 카테고리: 바로 적용
-                                        _applyPreset(consumerState, preset, preset.savedFields);
-                                        Navigator.pop(modalContext);
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(
-                                            duration: const Duration(milliseconds: 2400),
-                                            content: Text("'${preset.name}' 프리셋을 불러왔습니다."),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                    style: OutlinedButton.styleFrom(
-                                      side: const BorderSide(color: Colors.deepPurpleAccent),
-                                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                                    ),
-                                    child: const Text(
-                                      "적용",
-                                      style: TextStyle(
-                                        color: Colors.deepPurpleAccent,
-                                        fontWeight: FontWeight.bold,
+                                      },
+                                      style: OutlinedButton.styleFrom(
+                                        side: const BorderSide(color: Colors.deepPurpleAccent),
+                                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                                      ),
+                                      child: const Text(
+                                        "적용",
+                                        style: TextStyle(
+                                          color: Colors.deepPurpleAccent,
+                                          fontWeight: FontWeight.bold,
+                                        ),
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  SizedBox(
-                                    width: 32,
-                                    height: 32,
-                                    child: IconButton(
-                                      padding: EdgeInsets.zero,
-                                      iconSize: 20,
-                                      icon: const Icon(Icons.delete, color: Colors.redAccent),
-                                      onPressed: () {
-                                        consumerState.presets.removeAt(originalIndex);
-                                        consumerState.saveAllSettings();
-                                        consumerState.refreshUI();
-                                      },
+                                    const SizedBox(width: 4),
+                                    SizedBox(
+                                      width: 32,
+                                      height: 32,
+                                      child: IconButton(
+                                        padding: EdgeInsets.zero,
+                                        iconSize: 20,
+                                        icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                        onPressed: () {
+                                          consumerState.presets.removeAt(originalIndex);
+                                          consumerState.saveAllSettings();
+                                          consumerState.refreshUI();
+                                        },
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -947,271 +983,115 @@ class _PromptTabState extends State<PromptTab> {
     );
   }
 
-  // 프리셋 저장 다이얼로그 (분리)
+  // 프리셋 저장 다이얼로그 (공용 showPresetSaveDialog 위임)
   void _showPresetSaveDialog(BuildContext parentContext, AppState state) {
-    TextEditingController nameCtrl = TextEditingController();
-    Map<String, bool> fields = {
-      'positive': true,
-      'negative': true,
-      'prefix': true,
-      'suffix': true,
-      'characters': false,
-      'settings': false,
-    };
-    // 캐릭터 개별 선택
-    Set<int> selectedCharIndices = {};
-    for (int i = 0; i < state.characters.length; i++) {
-      if (state.characters[i].isActive) {
-        selectedCharIndices.add(i);
+    showPresetSaveDialog(
+      parentContext,
+      state,
+      positive: state.positiveController.text,
+      negative: state.negativeController.text,
+      prefix: state.prefixController.text,
+      suffix: state.suffixController.text,
+      characters: state.characters,
+      settingsProvider: () => state.getSettingsSnapshot(),
+      allowPrefixSuffix: true,
+      allowSettings: true,
+    );
+  }
+
+  // 프리셋 순서 변경 (카테고리 필터 내 드래그 → 전체 presets 리스트에 반영)
+  void _reorderPreset(AppState state, String category, int oldIndex, int newIndex) {
+    // onReorderItem 콜백은 newIndex를 이미 보정해서 넘겨줌 (수동 보정 불필요)
+    // 현재 카테고리에 속한 프리셋들의 전체 인덱스(표시 순서)
+    final filteredFullIdx = state.presets
+        .asMap()
+        .entries
+        .where((e) => _getPresetCategory(e.value) == category)
+        .map((e) => e.key)
+        .toList();
+    if (oldIndex < 0 || oldIndex >= filteredFullIdx.length) {
+      return;
+    }
+    final fromFull = filteredFullIdx[oldIndex];
+    final moved = state.presets.removeAt(fromFull);
+
+    // 제거 후 같은 카테고리의 전체 인덱스 재계산
+    final afterFullIdx = state.presets
+        .asMap()
+        .entries
+        .where((e) => _getPresetCategory(e.value) == category)
+        .map((e) => e.key)
+        .toList();
+
+    int insertFull;
+    if (newIndex >= afterFullIdx.length) {
+      insertFull = afterFullIdx.isEmpty ? state.presets.length : afterFullIdx.last + 1;
+    } else {
+      insertFull = afterFullIdx[newIndex];
+    }
+    state.presets.insert(insertFull, moved);
+    state.saveAllSettings();
+    state.refreshUI();
+  }
+
+  // 프리셋 이름 변경 다이얼로그 (상세창에서 이름 탭 시)
+  void _showRenamePresetDialog(
+    BuildContext context,
+    AppState state,
+    NaiPreset preset,
+    StateSetter setDialogState,
+  ) {
+    final TextEditingController renameCtrl = TextEditingController(text: preset.name);
+    void commit(BuildContext rctx) {
+      final n = renameCtrl.text.trim();
+      if (n.isNotEmpty) {
+        preset.name = n;
+        state.saveAllSettings();
+        state.refreshUI();
+        setDialogState(() {});
       }
+      Navigator.pop(rctx);
     }
 
     showDialog(
-      context: parentContext,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          Widget fieldChip(String key, String label, Color color) {
-            final selected = fields[key]!;
-            return GestureDetector(
-              onTap: () => setDialogState(() => fields[key] = !selected),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                decoration: BoxDecoration(
-                  color: selected
-                      ? color.withValues(alpha: 0.15)
-                      : Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(
-                    color: selected ? color : Colors.white24,
-                    width: selected ? 1.5 : 1,
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      selected ? Icons.check_circle : Icons.circle_outlined,
-                      size: 16,
-                      color: selected ? color : Colors.white38,
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      label,
-                      style: TextStyle(
-                        color: selected ? color : Colors.white38,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: const Text(
-              "프리셋 저장",
+      context: context,
+      builder: (rctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          "이름 변경",
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        content: TextField(
+          controller: renameCtrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: "새 프리셋 이름",
+            hintStyle: const TextStyle(color: Colors.white30),
+            filled: true,
+            fillColor: const Color(0xFF121212),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: BorderSide.none,
+            ),
+          ),
+          onSubmitted: (_) => commit(rctx),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(rctx),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => commit(rctx),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            child: const Text(
+              "저장",
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
             ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: nameCtrl,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      hintText: "프리셋 이름을 입력하세요",
-                      hintStyle: const TextStyle(color: Colors.white30),
-                      filled: true,
-                      fillColor: const Color(0xFF121212),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text("저장할 항목 선택", style: TextStyle(color: Colors.white54, fontSize: 12)),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(child: fieldChip('positive', '긍정적', const Color(0xFF00BFA5))),
-                      const SizedBox(width: 8),
-                      Expanded(child: fieldChip('negative', '부정적', const Color(0xFFFF5252))),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(child: fieldChip('prefix', '선행', const Color(0xFF29B6F6))),
-                      const SizedBox(width: 8),
-                      Expanded(child: fieldChip('suffix', '후행', const Color(0xFFFFA000))),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(child: fieldChip('characters', '캐릭터', Colors.deepPurpleAccent)),
-                      const SizedBox(width: 8),
-                      Expanded(child: fieldChip('settings', '설정', Colors.amber)),
-                    ],
-                  ),
-                  // 캐릭터 체크 시 캐릭터 목록 표시
-                  ...(fields['characters']! && state.characters.isNotEmpty
-                      ? [
-                          const SizedBox(height: 8),
-                          ...state.characters.asMap().entries.map((entry) {
-                            final i = entry.key;
-                            final c = entry.value;
-                            final isSelected = selectedCharIndices.contains(i);
-                            final charName = c.name.isNotEmpty ? c.name : "캐릭터 ${i + 1}";
-                            final preview = c.positive.isNotEmpty ? c.positive : '(비어있음)';
-                            return GestureDetector(
-                              onTap: () => setDialogState(() {
-                                if (isSelected) {
-                                  selectedCharIndices.remove(i);
-                                } else {
-                                  selectedCharIndices.add(i);
-                                }
-                              }),
-                              child: Container(
-                                margin: const EdgeInsets.only(bottom: 4),
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: isSelected
-                                      ? Colors.deepPurpleAccent.withValues(alpha: 0.1)
-                                      : Colors.transparent,
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color: isSelected
-                                        ? Colors.deepPurpleAccent.withValues(alpha: 0.4)
-                                        : Colors.white10,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      isSelected ? Icons.check_circle : Icons.circle_outlined,
-                                      size: 16,
-                                      color: isSelected ? Colors.deepPurpleAccent : Colors.white38,
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Text(
-                                      charName,
-                                      style: TextStyle(
-                                        color: isSelected ? Colors.white : Colors.white54,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Expanded(
-                                      child: Text(
-                                        preview,
-                                        style: const TextStyle(color: Colors.white30, fontSize: 11),
-                                        overflow: TextOverflow.ellipsis,
-                                        maxLines: 1,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          }),
-                        ]
-                      : []),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text("취소", style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                onPressed: () {
-                  if (nameCtrl.text.trim().isEmpty) {
-                    final now = DateTime.now();
-                    nameCtrl.text =
-                        "${now.year.toString().substring(2)}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}";
-                  }
-                  final savedFields = fields.entries
-                      .where((e) => e.value)
-                      .map((e) => e.key)
-                      .toSet();
-
-                  // 비어있는 필드는 저장에서 제외
-                  if (savedFields.contains('positive') &&
-                      state.positiveController.text.trim().isEmpty) {
-                    savedFields.remove('positive');
-                  }
-                  if (savedFields.contains('negative') &&
-                      state.negativeController.text.trim().isEmpty) {
-                    savedFields.remove('negative');
-                  }
-                  if (savedFields.contains('prefix') &&
-                      state.prefixController.text.trim().isEmpty) {
-                    savedFields.remove('prefix');
-                  }
-                  if (savedFields.contains('suffix') &&
-                      state.suffixController.text.trim().isEmpty) {
-                    savedFields.remove('suffix');
-                  }
-
-                  // 선택된 캐릭터만 저장
-                  List<Map<String, dynamic>>? charsToSave;
-                  if (savedFields.contains('characters') && selectedCharIndices.isNotEmpty) {
-                    charsToSave = selectedCharIndices
-                        .toList()
-                        .where((i) => i < state.characters.length)
-                        .map((i) => state.characters[i].toJson())
-                        .toList();
-                  } else {
-                    savedFields.remove('characters');
-                  }
-
-                  if (savedFields.isEmpty) {
-                    Navigator.pop(ctx);
-                    return;
-                  }
-                  state.presets.add(
-                    NaiPreset(
-                      name: nameCtrl.text.trim(),
-                      positive: savedFields.contains('positive')
-                          ? state.positiveController.text
-                          : '',
-                      negative: savedFields.contains('negative')
-                          ? state.negativeController.text
-                          : '',
-                      prefix: savedFields.contains('prefix') ? state.prefixController.text : '',
-                      suffix: savedFields.contains('suffix') ? state.suffixController.text : '',
-                      settings: savedFields.contains('settings')
-                          ? state.getSettingsSnapshot()
-                          : null,
-                      characters: charsToSave,
-                      savedFields: savedFields,
-                    ),
-                  );
-                  state.saveAllSettings();
-                  state.refreshUI();
-                  Navigator.pop(ctx);
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
-                child: const Text(
-                  "저장",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          );
-        },
+          ),
+        ],
       ),
     );
   }
@@ -3541,25 +3421,38 @@ class _PromptTabState extends State<PromptTab> {
                         maxLines: 4,
                         overflow: TextOverflow.ellipsis,
                       )
-                    : (WeightHighlightController.highlightEnabled
+                    : (controller is SyntaxHighlightController
                           ? RichText(
                               maxLines: 4,
                               overflow: TextOverflow.ellipsis,
-                              text: WeightHighlightController.buildWeightSpan(
+                              text: SyntaxHighlightController.buildSyntaxSpan(
                                 controller.text,
                                 const TextStyle(color: Colors.white, height: 1.5, fontSize: 14),
                               ),
                             )
-                          : Text(
-                              controller.text,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                height: 1.5,
-                                fontSize: 14,
-                              ),
-                              maxLines: 4,
-                              overflow: TextOverflow.ellipsis,
-                            )),
+                          : (WeightHighlightController.highlightEnabled
+                                ? RichText(
+                                    maxLines: 4,
+                                    overflow: TextOverflow.ellipsis,
+                                    text: WeightHighlightController.buildWeightSpan(
+                                      controller.text,
+                                      const TextStyle(
+                                        color: Colors.white,
+                                        height: 1.5,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                  )
+                                : Text(
+                                    controller.text,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      height: 1.5,
+                                      fontSize: 14,
+                                    ),
+                                    maxLines: 4,
+                                    overflow: TextOverflow.ellipsis,
+                                  ))),
               ),
               const SizedBox(width: 8),
               Icon(Icons.edit, color: color, size: 16),
@@ -4141,10 +4034,7 @@ class _PromptTabState extends State<PromptTab> {
                 child: child,
               );
             },
-            onReorder: (oldIndex, newIndex) {
-              if (newIndex > oldIndex) {
-                newIndex--;
-              }
+            onReorderItem: (oldIndex, newIndex) {
               final item = state.promptSectionOrder.removeAt(oldIndex);
               state.promptSectionOrder.insert(newIndex, item);
               state.saveAllSettings();

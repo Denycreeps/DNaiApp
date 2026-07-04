@@ -4,7 +4,7 @@ description: "My NovelAi image generate third-party app."
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 
-version: 2.6.0
+version: 2.7.1
 
 environment:
   sdk: ^3.11.0
@@ -30,6 +30,10 @@ dependencies:
   package_info_plus: ^8.3.0
 
   open_filex: ^4.5.0
+
+  # SAF (Storage Access Framework) — 임의 폴더/SD카드 저장·읽기
+  saf_util: ^2.2.0
+  saf_stream: ^0.12.3
 
 dev_dependencies:
   flutter_test:
