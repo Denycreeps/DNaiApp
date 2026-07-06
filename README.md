@@ -29,6 +29,7 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 * [캐릭터 탭](#캐릭터-탭)
 * [와일드 카드 탭](#와일드-카드-탭)
 * [설정 탭](#설정-탭)
+* [QnA](#QnA)
 
 ---
 
@@ -601,19 +602,19 @@ X모양을 누르면 그것만 삭제할 수 있음.
 <a id="히스토리-탭"></a>
 ## 🕒 히스토리 탭
 
-<img width="379" height="652" alt="image" src="https://github.com/user-attachments/assets/f8eb760d-b47d-49ca-aad5-6906bd9d730b" />
+<img width="380" height="694" alt="image" src="https://github.com/user-attachments/assets/7b19757c-856b-4971-9b88-ada57330f3e9" />
 
-기본적으로 '리스트 모드'가 표시되고 가장 최근에 생성, 작업된 이미지를 30개 까지 보여줌
 
-그림 옆에 화살표는 그냥 좌/우 옆 이미지로 넘어가는 버튼인데 설정에서 끄기 가능
+처음엔 '리스트 모드'가 표시되고 가장 최근에 생성, 작업된 이미지를 30개 까지 보여줌
 
 바로 아래 섬네일을 누르면 바로 해당 이미지를 볼 수 있고 저 섬네일을 꾹 누르면 히스토리에서 삭제 가능함.
 
-위에 그리드를 누르면 화면이 바뀌는데
+위에 `그리드`를 누르면 화면이 바뀌는데
 
 <br />
 
-<img width="378" height="254" alt="image" src="https://github.com/user-attachments/assets/f25c49ff-8169-4ffd-a27e-bbc7987d2688" />
+<img width="1440" height="742" alt="KakaoTalk_20260706_190938173" src="https://github.com/user-attachments/assets/051bf6e4-4b83-4d50-8235-23395590d515" />
+
 
 이런식으로 변하고 각 이미지 우측위 별표를 누르면 북마크 기능, 휴지통을 누르면 전체삭제를 할지 물어보는 버튼이 나옴.
 
@@ -648,6 +649,49 @@ X모양을 누르면 그것만 삭제할 수 있음.
 그리드 모드에 있는 불러오기도 동일하게 히스토리에 추가함
 
 ---
+
+### 갤러리 모드
+
+<br />
+
+위에 스크린샷들을 보면 `갤러리`라는 노란 버튼들이 있었을텐데 이걸 누르면
+
+<img width="384" height="254" alt="image" src="https://github.com/user-attachments/assets/ffff6213-4ebb-4596-a2e2-aed395ef9fb4" />
+
+이런식으로 갤러리 어플리케이션 같은 창이 나옴.
+
+`설정`에서 지정한 폴더안에 있는 폴더랑 이미지들이 보이고 폴더를 터치하면
+
+<br />
+
+<img width="388" height="359" alt="image" src="https://github.com/user-attachments/assets/4e4e3bb1-b0d5-4c67-a296-6e30e9bd47b8" />
+
+이렇게 나옴. 이 상태에서 이미지를 꾹 누르면 위에 `그리드` 상태일때처럼 삭제가 가능한데
+
+하나 다른게 있다면 오른쪽 위에 `동그라미 i` 버튼이 있음. 이건 이미지를 1개만 골랐을때랑 여러개 골랐을때가 다른데
+
+<br />
+
+<img width="373" height="296" alt="image" src="https://github.com/user-attachments/assets/4dd1be6b-78d2-4f5d-9659-d72c1e0bdeb5" />
+
+하나만 고른 상태에서 누르면 이런 메뉴들이 나오고
+
+<br />
+
+<img width="372" height="88" alt="image" src="https://github.com/user-attachments/assets/dbc56cc7-3e06-4f1a-8065-b2c7d598374a" />
+
+여러개 고른 상태에서 누르면 이런 메뉴가 나옴. 기능 자체는 기존에 봤던것들이랑 같은 기능들임
+
+<br />
+
+추가로 이 상태에서 그냥 이미지를 터치하면 이미지를 확대해서 볼 수 있는데
+
+<img width="369" height="658" alt="image" src="https://github.com/user-attachments/assets/d63d92fc-5998-4e3e-af0c-f7093843efd3" />
+
+이 상태에서도 이미지를 꾹 누르면 위에서도 보이던 메뉴가 나옴. 
+
+이런 느낌으로 이미지를 관리하거나 다루기 편하게 하려고 만든 기능임
+
 ---
 
 <a id="img2img-탭"></a>
@@ -834,10 +878,41 @@ X모양을 누르면 그것만 삭제할 수 있음.
 ---
 ---
 
+<a id="QnA"></a>
+% 질문 올만한거 모음 (순서는 딱히 상관없음)
+
+<br />
+<br />
+
+1. 왜 Danbooru로 검색안하고 Gelbooru로 검색함?
+<br />
+<img width="619" height="333" alt="image" src="https://github.com/user-attachments/assets/5617980e-fadf-4ae9-aeac-184645b083cb" />
+
+이라는 이유들도 있지만 어플리케이션에서 NAIA나 다른 웹브라우저 급의 퍼포먼스로 
+
+Danbooru 검색량을 확보하기가 힘들다는 결론에 도달했음
+
+<br />
+
+개인적인 생각이지만 API가 조금 불편할뿐 실제로 사용에 딱히 불만이 없기도 하고...
+
+<br />
+<br />
+
+2. 검색한거에 작가랑 퀄리티는 어떻게 지움?
+<br />
+
+퀄리티 관련(Metadata)이랑 작가(Artist)는 자동으로 지워지게 해뒀음
+
+필요한 사람이 있으면 따로 ON/OFF 할 수 있게 하겠는데 솔직히 없을꺼같음
+
+---
+---
+
 이 앱에서 필요한 권한은 
 
 - 백그라운드 실행 (이미지 생성중 앱을 내려도 생성되고 저장될 수 있게)
-- 폴더 접근 권한 (이미지 저장 및 불러올때 해당 폴더에 대한 권한)
+- SAF 권한 (특정 폴더를 지정하면 그 폴더 및 하위폴더 + 파일들에 대한 관람/수정 권한 부여)
 
 정도만 있음. 개인적으로 좀 민감한 부분이라 몇번이고 최소 권한으로 재설정했으니 걱정 안해도 됨
 
