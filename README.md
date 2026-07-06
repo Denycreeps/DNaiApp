@@ -35,16 +35,25 @@ NAIA랑 Prombot 그리고 NaiApp 이 3가지를 적당히 배낀 파쿠리 어�
 <a id="초기-설정-방법"></a>
 ## ⚙️ 초기 설정 방법
 
-<img width="374" height="389" alt="image" src="https://github.com/user-attachments/assets/2320be40-b18f-482f-b05d-c2e045ad1481" />
+<img width="379" height="481" alt="image" src="https://github.com/user-attachments/assets/4732988b-ca6e-4021-9035-a4da5541efc0" />
 
 <br />
 
-처음 어플을 켠 뒤 `설정탭`으로 가서 아래로 내리면 NovelAi API랑 Gelbooru API를 입력하는 창이 있음.
+처음 어플을 켠 뒤 `설정`의 `API`로 가면 NovelAi API랑 Gelbooru API를 입력하는 창이 있음.
 
 Gelbooru API가 필요한 이유는 앱 특성상 검색 기능을 최대한 효율적으로 쓰기 위해서 필요한거라고 생각해주셈.
 
-검색 기능에만 필요한 API라 없어도 다른 기능에는 지장없지만 사실 이 앱을 쓰는 이유중 하나라 쓰는걸 추천함.
+검색 기능에만 필요한 API고 없어도 약간의 범위로는 검색이 되는데 API가 있을때보다 범위가 많이 차이나니
 
+검색을 많이 하겠다하면 API를 넣는걸 추천함.
+
+<br />
+
+그리고 왜 Danbooru가 아니고 Gelbooru냐 하면 Ai랑 진득하게 고민한 결과 
+
+스마트폰 어플리케이션에선 Danbooru보다 Gelbooru에서 검색하는게 더 빠르고 범위면에서 널널하단 결론이 나와서
+
+<br />
 <br />
 
 <img width="456" height="349" alt="003" src="https://github.com/user-attachments/assets/c6e21a76-1d09-434c-a743-3cd92cd46f6c" />
@@ -85,6 +94,21 @@ NovelAi API는 넣는 순간 알아서 인증되니까 따로 버튼을 누를 �
 
 
 만약 아이디가 없으면 My Account를 눌렀을때 이렇게(왼쪽 스샷) 뜨니까 빨간 동그라미를 따라가서 새로 가입하면 됨
+
+<br />
+<br />
+
+<img width="382" height="312" alt="image" src="https://github.com/user-attachments/assets/2d7d496e-9190-46eb-9a99-5a12c3942de5" />
+
+그리고 다시 `설정`에서 `저장`으로 가서 `저장 폴더 (SAF)`로 간다음 `폴더 선택`버튼을 눌러서 저장할곳을 정해주셈
+
+`Download`같은 최상위 바로 아래에 있는 폴더는 지정 안되니까 가능하다면 `DNaiApp`으로 폴더를 만들어서 지정하는걸 추천.
+
+이유는 저장되는 폴더 규칙이 `\DNAiApp\날짜_시간` 인데 `DNaiApp`폴더로 지정하면 바로 `\날짜_시간` 폴더로 저장됨
+
+<br />
+
+저장관련에 대한 설명은 설정쪽에서도 다시 다루고 있으니 참조 부탁
 
 <br />
 <br />
@@ -824,57 +848,3 @@ X모양을 누르면 그것만 삭제할 수 있음.
 내가 즐기려고 만든거고 꽤 괜찮게 만들어진김에 다같이 쓰자고 올린거라 누구 해킹하고 그럴 생각 전혀 ㄴ
 
 마지막으로 그럴리 없겠지만 문제 생길 시 삭제하고 건의사항 있으면 아카라이브 홍보글에 댓글 써주셈
-
-
-
-반드시 github 참고! 반드시 github 참고! 반드시 github 참고! 
-반드시 github 참고! 반드시 github 참고! 반드시 github 참고! 
-반드시 github 참고! 반드시 github 참고! 반드시 github 참고! 
-
-파일 저장 방식 및 권한을 바꿨음. 그래봐야 처음 1번만 설정하면 되긴하는데
-기존에 권한이 "모든 파일에 대한 접속 권한" 이였던걸 안드로이드 공식 권장에 맞춰 SAF방식으로 변경함.
-
-1. 파일 저장 권한을 바꿈. 설정방법은 아래에
-<img width="381" height="319" alt="image" src="https://github.com/user-attachments/assets/b3d3f78e-510f-4458-9dc8-b329f763b111" />
-
-
-기존에도 있던 설정으로 가서 `저장`탭을 누르고 `저장 폴더 (SAF)`에 폴더 선택으로 가서
-
-원래 지정되어있던 폴더(이제 최상위 바로 아래에 존재하는 폴더들은 지정 불가. Download 라던가)를 지정하면됨.
-
-</br>
-
-임의의 폴더를 지정한 경우 기존처럼 아래에 `DNaiApp` 폴더를 만들고 그 아래에 `날짜_시간`폴더를 생성하는 방식이고
-
-지정한 폴더가 `DNaiApp`이면 그 바로 아래에 `날짜_시간`을 바로 만듬. 
-
-즉, 원래대로 사용하돼 나처럼 Download를 직접 지정한 사람은 그냥 그 아래에 만들어져있는 `DNaiApp` 폴더만 지정해주면 됨
-
-하는 법을 요약하자면
-
-| `원래 Download로 지정되어있던 사람` | Download 아래에 있는 DNaiApp 폴더를 지정|
-| `자기가 임의의 폴더를 지정했던 사람` | 지정했던 임의의 폴더 또는 그 아래에 있는 DNaiApp 폴더를 지정 |
-
-</br>
-
-해주면 문제 없이 돌아감
-
-
-그리고 폴더를 지정한 뒤에 
-
-
-<img width="359" height="200" alt="image" src="https://github.com/user-attachments/assets/365cf35b-850e-4ea9-905b-820299505259" />
-
-
-노란색 `앱 폴더의 기존 이미지를 SAF로 옮기기`를 눌러서
-
-
-<img width="298" height="282" alt="image" src="https://github.com/user-attachments/assets/68aa3eae-6654-4db1-8af0-57ce4a540f70" />
-
-여기서 복사 또는 이동을 고르면 끝. 
-
-이러고나면 이제 아예 신경쓸 필요 없어짐
-
-정말 가~끔 지정이 해제될 수 있다고는 하는데 그때는 폴더 지정만 다시 해주면됨
-
-
