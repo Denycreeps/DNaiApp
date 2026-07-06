@@ -843,7 +843,10 @@ X모양을 누르면 그것만 삭제할 수 있음.
 
 <img width="366" height="774" alt="image" src="https://github.com/user-attachments/assets/f8cf5f72-a145-4840-a097-4fba2d7e09dc" />
 
-우선 일반탭에 있는 애들부터 설명g
+우선 일반탭에 있는 애들부터 설명하면
+
+<br />
+<br />
 
 *랜덤 프롬프트 알파벳 순서*
  - 원래 프롬프트가 1girl, solo, from~, looking~ 등등 NovelAi 권장 설정을 제외하면 전부 랜덤배치인데 이걸 ON으로 하면 알파벳 순서대로 정렬됨.
@@ -869,7 +872,7 @@ X모양을 누르면 그것만 삭제할 수 있음.
 
 <img width="371" height="428" alt="image" src="https://github.com/user-attachments/assets/9b23d1c2-67c2-42aa-8a48-d9aa9d913841" />
 
-↑이런 창에 있는 폰트가 조절된다는 뜻
+↑ 이런 창에 있는 폰트가 조절된다는 뜻
 
 <br />
 
