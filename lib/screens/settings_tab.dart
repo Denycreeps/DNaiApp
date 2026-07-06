@@ -515,6 +515,56 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
           ],
         ),
       ),
+      // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E1E1E),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.format_size, color: Colors.deepPurpleAccent, size: 20),
+            const SizedBox(width: 8),
+            const Text(
+              "프롬프트 입력 폰트 크기",
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              state.promptEditorFontSize.toStringAsFixed(0),
+              style: const TextStyle(
+                color: Colors.deepPurpleAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderThemeData(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                  activeTrackColor: Colors.deepPurpleAccent,
+                  inactiveTrackColor: Colors.white12,
+                  thumbColor: Colors.deepPurpleAccent,
+                ),
+                child: Slider(
+                  value: state.promptEditorFontSize,
+                  min: 10.0,
+                  max: 28.0,
+                  divisions: 36,
+                  onChanged: (v) {
+                    state.promptEditorFontSize = v;
+                    state.refreshUI();
+                  },
+                  onChangeEnd: (_) => state.saveAllSettings(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
       // 4. 갤러리 모드 비활성화 (기본은 켜져 있음)
       _toggleTile(
         icon: Icons.photo_library_outlined,
@@ -1368,10 +1418,10 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
                     )
                   : state.hasUpdate
                   ? ElevatedButton.icon(
-                      onPressed: () => state.downloadAndInstallUpdate(context),
-                      icon: const Icon(Icons.download, color: Colors.white, size: 18),
+                      onPressed: () => _showUpdateDialog(context, state),
+                      icon: const Icon(Icons.system_update, color: Colors.white, size: 18),
                       label: Text(
-                        "v${state.latestVersion} 다운로드 및 설치",
+                        "v${state.latestVersion} 업데이트 보기",
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,

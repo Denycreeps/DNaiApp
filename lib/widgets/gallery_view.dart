@@ -360,6 +360,14 @@ class GalleryViewState extends State<GalleryView> {
     }
   }
 
+  // IO 모드 현재 디렉토리 새로고침 (당겨서 새로고침용)
+  Future<void> _reloadIoDir() async {
+    final p = _currentPath;
+    if (p != null) {
+      await _loadFolder(p);
+    }
+  }
+
   // SAF 폴더/이미지 정렬 (gallerySortMode 기준)
   void _sortSafLists() {
     final bool desc = widget.state.gallerySortMode == 'name_desc';
@@ -584,26 +592,48 @@ class GalleryViewState extends State<GalleryView> {
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-              : (_folders.isEmpty && _images.isEmpty)
-              ? const Center(
-                  child: Text("이 폴더는 비어있어요", style: TextStyle(color: Colors.white38, fontSize: 14)),
-                )
-              : GridView.builder(
-                  padding: const EdgeInsets.all(8),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    crossAxisSpacing: 6,
-                    mainAxisSpacing: 6,
-                    childAspectRatio: 1,
-                  ),
-                  itemCount: _folders.length + _images.length,
-                  itemBuilder: (ctx, index) {
-                    if (index < _folders.length) {
-                      return _buildFolderTile(_folders[index]);
+              : RefreshIndicator(
+                  color: Colors.deepPurpleAccent,
+                  backgroundColor: const Color(0xFF2A2A2A),
+                  // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
+                  onRefresh: () async {
+                    if (_selectMode || _loading) {
+                      return;
                     }
-                    final imgIndex = index - _folders.length;
-                    return _buildImageTile(_images[imgIndex], imgIndex);
+                    await _reloadIoDir();
                   },
+                  child: (_folders.isEmpty && _images.isEmpty)
+                      // 빈 폴더여도 당겨서 새로고침 가능하도록 스크롤 가능한 뷰로 감쌈
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 120),
+                            Center(
+                              child: Text(
+                                "이 폴더는 비어있어요",
+                                style: TextStyle(color: Colors.white38, fontSize: 14),
+                              ),
+                            ),
+                          ],
+                        )
+                      : GridView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.all(8),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: columns,
+                            crossAxisSpacing: 6,
+                            mainAxisSpacing: 6,
+                            childAspectRatio: 1,
+                          ),
+                          itemCount: _folders.length + _images.length,
+                          itemBuilder: (ctx, index) {
+                            if (index < _folders.length) {
+                              return _buildFolderTile(_folders[index]);
+                            }
+                            final imgIndex = index - _folders.length;
+                            return _buildImageTile(_images[imgIndex], imgIndex);
+                          },
+                        ),
                 ),
         ),
       ],
@@ -672,27 +702,49 @@ class GalleryViewState extends State<GalleryView> {
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
-              : total == 0
-              ? const Center(
-                  child: Text("이 폴더는 비어있어요", style: TextStyle(color: Colors.white38, fontSize: 14)),
-                )
-              : GridView.builder(
-                  padding: EdgeInsets.fromLTRB(8, 8, 8, 8 + bottomInset),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: columns,
-                    crossAxisSpacing: 6,
-                    mainAxisSpacing: 6,
-                    childAspectRatio: 1,
-                  ),
-                  itemCount: total,
-                  itemBuilder: (ctx, index) {
-                    // 폴더 먼저, 그 다음 이미지
-                    if (index < _safFolders.length) {
-                      return _buildSafFolderTile(_safFolders[index], columns);
+              : RefreshIndicator(
+                  color: Colors.deepPurpleAccent,
+                  backgroundColor: const Color(0xFF2A2A2A),
+                  // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
+                  onRefresh: () async {
+                    if (_safSelectMode || _loading) {
+                      return;
                     }
-                    final imgIndex = index - _safFolders.length;
-                    return _buildSafImageTile(_safImages[imgIndex], imgIndex);
+                    await _reloadSafDir();
                   },
+                  child: total == 0
+                      // 빈 폴더여도 당겨서 새로고침 가능하도록 스크롤 가능한 뷰로 감쌈
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 120),
+                            Center(
+                              child: Text(
+                                "이 폴더는 비어있어요",
+                                style: TextStyle(color: Colors.white38, fontSize: 14),
+                              ),
+                            ),
+                          ],
+                        )
+                      : GridView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: EdgeInsets.fromLTRB(8, 8, 8, 8 + bottomInset),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: columns,
+                            crossAxisSpacing: 6,
+                            mainAxisSpacing: 6,
+                            childAspectRatio: 1,
+                          ),
+                          itemCount: total,
+                          itemBuilder: (ctx, index) {
+                            // 폴더 먼저, 그 다음 이미지
+                            if (index < _safFolders.length) {
+                              return _buildSafFolderTile(_safFolders[index], columns);
+                            }
+                            final imgIndex = index - _safFolders.length;
+                            return _buildSafImageTile(_safImages[imgIndex], imgIndex);
+                          },
+                        ),
                 ),
         ),
       ],

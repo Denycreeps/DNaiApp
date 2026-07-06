@@ -238,9 +238,17 @@ class NovelAiService {
   // ============================================================================
   // 단보루 태그 파싱 로직 (기존 유지)
   // ============================================================================
-  Future<Map<String, int>> _getDanbooruTagCategories(List<String> uniqueTags) async {
+  // 태그 카테고리 조회: 1차 Danbooru(정확) → 2차 Gelbooru(겔부루 전용 태그 커버).
+  // Danbooru에 없는 겔부루 전용 작가가 '일반'으로 오인돼 프롬프트에 새는 것을 방지한다.
+  Future<Map<String, int>> _getDanbooruTagCategories(
+    List<String> uniqueTags,
+    String gelbooruUserId,
+    String gelbooruApiKey,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
-    String? cachedData = prefs.getString('danbooru_tag_cache');
+    // v2: 구버전 캐시는 겔부루 전용 작가가 0(일반)으로 오염됐을 수 있어 폐기
+    await prefs.remove('danbooru_tag_cache');
+    String? cachedData = prefs.getString('tag_category_cache_v2');
     Map<String, dynamic> persistentCache = cachedData != null ? jsonDecode(cachedData) : {};
 
     Map<String, int> finalCategoryMap = {};
@@ -265,42 +273,115 @@ class NovelAiService {
     bool isCacheUpdated = false;
 
     try {
-      // 병렬 요청: 모든 청크를 동시에 전송
+      // 청크 분할
       List<List<String>> chunks = [];
       for (int i = 0; i < tagsToFetch.length; i += chunkSize) {
         int end = (i + chunkSize < tagsToFetch.length) ? i + chunkSize : tagsToFetch.length;
         chunks.add(tagsToFetch.sublist(i, end));
       }
 
-      final results = await Future.wait(
-        chunks.map((chunk) async {
-          String names = Uri.encodeComponent(chunk.join(','));
-          try {
-            return await http
-                .get(
-                  Uri.parse(
-                    "$_danbooruProxy/tags.json?search[name_comma]=$names&limit=100&only=name,category",
-                  ),
-                  headers: {'User-Agent': 'PrombotApp/1.0'},
-                )
-                .timeout(const Duration(seconds: 15));
-          } catch (_) {
-            return null;
-          }
-        }),
-      );
+      // 배치 요청: Danbooru는 전역 10req/s 제한이라 한꺼번에 쏘면 429가 난다.
+      // 6개씩 보내고 짧게 쉬어 첫 검색(미지 태그 대량)에도 안정적으로 동작.
+      final List<http.Response?> results = [];
+      const int batchSize = 6;
+      for (int start = 0; start < chunks.length; start += batchSize) {
+        final end = (start + batchSize).clamp(0, chunks.length);
+        final batch = await Future.wait(
+          chunks.sublist(start, end).map((chunk) async {
+            String names = Uri.encodeComponent(chunk.join(','));
+            try {
+              return await http
+                  .get(
+                    Uri.parse(
+                      "$_danbooruProxy/tags.json?search[name_comma]=$names&limit=100&only=name,category",
+                    ),
+                    headers: {'User-Agent': 'PrombotApp/1.0'},
+                  )
+                  .timeout(const Duration(seconds: 15));
+            } catch (_) {
+              return null;
+            }
+          }),
+        );
+        results.addAll(batch);
+        if (end < chunks.length) {
+          await Future.delayed(const Duration(milliseconds: 250));
+        }
+      }
 
-      for (var response in results) {
+      final List<String> danbooruNotFound = [];
+      for (int i = 0; i < results.length; i++) {
+        final response = results[i];
         if (response != null && response.statusCode == 200) {
           List<dynamic> data = jsonDecode(response.body);
+          final Set<String> found = {};
           for (var tagInfo in data) {
             String name = tagInfo['name'];
             int category = tagInfo['category'];
+            found.add(name);
             finalCategoryMap[name] = category;
             persistentCache[name] = category;
             isCacheUpdated = true;
           }
+          // 응답에 없는 태그 = Danbooru에 없는 태그 → 겔부루 2차 분류로 넘김
+          for (final tag in chunks[i]) {
+            if (!found.contains(tag)) {
+              danbooruNotFound.add(tag);
+            }
+          }
         }
+      }
+
+      // 2차: Danbooru에 없는 태그는 Gelbooru 태그 DB로 분류.
+      // 포스트 출처가 겔부루이므로, 겔부루 전용 작가/태그도 여기서 정확히 잡힌다.
+      // (type: 0=일반, 1=작가, 3=작품, 4=캐릭터, 5=메타, 6=폐기)
+      if (danbooruNotFound.isNotEmpty) {
+        const int gChunkSize = 100;
+        for (int start = 0; start < danbooruNotFound.length; start += gChunkSize) {
+          final end = (start + gChunkSize).clamp(0, danbooruNotFound.length);
+          final chunk = danbooruNotFound.sublist(start, end);
+          try {
+            final names = Uri.encodeComponent(chunk.join(' '));
+            final resp = await http
+                .get(
+                  Uri.parse(
+                    "$_gelbooruProxy/index.php?page=dapi&s=tag&q=index&json=1&limit=100&names=$names&user_id=$gelbooruUserId&api_key=$gelbooruApiKey",
+                  ),
+                  headers: {
+                    'User-Agent':
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+                  },
+                )
+                .timeout(const Duration(seconds: 10));
+            if (resp.statusCode == 200) {
+              final decoded = jsonDecode(resp.body);
+              final List<dynamic> gTags = (decoded is Map ? decoded['tag'] : null) ?? [];
+              final Set<String> gFound = {};
+              for (final tagInfo in gTags) {
+                final String name = tagInfo['name'].toString();
+                final int type = int.tryParse(tagInfo['type'].toString()) ?? 0;
+                gFound.add(name);
+                finalCategoryMap[name] = type;
+                persistentCache[name] = type;
+                isCacheUpdated = true;
+              }
+              // 양쪽 DB 모두에 없는 태그만 일반(0)으로 캐시 → 무한 재조회 차단
+              for (final tag in chunk) {
+                if (!gFound.contains(tag)) {
+                  finalCategoryMap[tag] = 0;
+                  persistentCache[tag] = 0;
+                  isCacheUpdated = true;
+                }
+              }
+            }
+          } catch (e) {
+            debugPrint("겔부루 태그 분류 폴백 실패: $e");
+          }
+          if (end < danbooruNotFound.length) {
+            await Future.delayed(const Duration(milliseconds: 200));
+          }
+        }
+        debugPrint("🏷️ 태그 분류 2차(겔부루): ${danbooruNotFound.length}개 처리");
       }
 
       if (isCacheUpdated) {
@@ -313,7 +394,7 @@ class NovelAiService {
             persistentCache.remove(keys[i]);
           }
         }
-        await prefs.setString('danbooru_tag_cache', jsonEncode(persistentCache));
+        await prefs.setString('tag_category_cache_v2', jsonEncode(persistentCache));
       }
     } catch (e) {
       debugPrint("단보루 카테고리 페칭 실패: $e");
@@ -570,15 +651,23 @@ class NovelAiService {
 
     // 로컬 사전 필터링: metadata/copyright 태그를 Danbooru API에 보내기 전에 제거
     // → API 청크 수 감소 → 네트워크 호출 절감
+    // (이름 사전 3종: 로컬에서 이미 분류 확정이므로 API에 물어볼 필요 없음)
     final filteredUniqueTags = allUniqueTags.where((t) {
       final spaced = t.replaceAll('_', ' ');
       return !TagFilters.metadataTags.contains(spaced) &&
           !TagFilters.copyrightTags.contains(spaced) &&
+          !TagFilters.artistNames.contains(t) &&
+          !TagFilters.characterNames.contains(t) &&
+          !TagFilters.copyrightNames.contains(t) &&
           !TagFilters.commonGarbage.contains(t) &&
           !TagFilters.commonGarbage.contains(spaced);
     }).toList();
 
-    Map<String, int> tagCategories = await _getDanbooruTagCategories(filteredUniqueTags);
+    Map<String, int> tagCategories = await _getDanbooruTagCategories(
+      filteredUniqueTags,
+      effectiveUserId,
+      effectiveApiKey,
+    );
     List<String> newPrompts = [];
 
     for (var post in allValidPosts) {
@@ -602,6 +691,14 @@ class NovelAiService {
         }
         if (TagFilters.commonGarbage.contains(t) ||
             TagFilters.commonGarbage.contains(rawCleanTag)) {
+          continue;
+        }
+
+        // 로컬 이름 사전: 작가/캐릭터/작품 이름은 API 결과와 무관하게 즉시 제거
+        // (429·오프라인으로 카테고리 조회가 실패해도 이름 누출 방지)
+        if (TagFilters.artistNames.contains(t) ||
+            TagFilters.characterNames.contains(t) ||
+            TagFilters.copyrightNames.contains(t)) {
           continue;
         }
 

@@ -1076,9 +1076,16 @@ class AppState extends ChangeNotifier {
     if (updateNotes == null || updateNotes!.isEmpty) {
       return [];
     }
-    return updateNotes!
+    // GitHub 릴리즈 본문에 섞인 <br>, </br>, <br/> 류를 실제 줄바꿈으로 변환
+    final normalized = updateNotes!.replaceAll(
+      RegExp(r'<\s*/?\s*br\s*/?\s*>', caseSensitive: false),
+      '\n',
+    );
+    return normalized
         .split('\n')
         .map((line) => line.trim())
+        // 남아있는 다른 HTML 태그(<b>, <i>, <p> 등)도 제거
+        .map((line) => line.replaceAll(RegExp(r'<[^>]+>'), '').trim())
         .where((line) => line.isNotEmpty && !line.startsWith('![')) // 이미지 라인 제외
         .map((line) {
           // 마크다운 헤더 정리
@@ -1161,6 +1168,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> downloadAndInstallUpdate(BuildContext context) async {
+    // 이미 다운로드 중이면 중복 실행 무시 (버튼 연타/중복 호출 방지)
+    if (isDownloadingUpdate) {
+      return;
+    }
     if (apkDownloadUrl == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1321,6 +1332,7 @@ class AppState extends ChangeNotifier {
   // 갤러리 모드 상태
   String? galleryCurrentPath; // 현재 보고 있는 폴더 (마지막 본 폴더 기억)
   int galleryColumns = 3; // 갤러리 가로 표시 개수 (기본 3)
+  double promptEditorFontSize = 16.0; // 프롬프트 확대 입력창 폰트 크기 (기본 16)
   String gallerySortMode = 'name_asc'; // 갤러리 정렬 (name_asc/name_desc, 추후 date_* 등 확장)
 
   // ===== SAF 저장 폴더 (Phase 1: 선택/해제/로드만, 저장·읽기 연결은 다음 단계) =====
@@ -1886,7 +1898,7 @@ class AppState extends ChangeNotifier {
   // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
   bool inpaintAutoSwitchResult = true; // 인페인트 결과를 작업 이미지로 자동 전환 (기본 ON)
   bool inpaintAutoClearMask = false; // 인페인트 시 마스킹 자동 해제 (기본 OFF=유지)
-  bool galleryModeEnabled = true; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 ON
+  bool galleryModeEnabled = false; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 OFF
 
   // SAF (Storage Access Framework) — 사용자가 고른 저장 폴더의 트리 URI
   final SafUtil _safUtil = SafUtil();
@@ -2067,9 +2079,10 @@ class AppState extends ChangeNotifier {
     i2iHistoryDisabled = prefs.getBool('i2iHistoryDisabled') ?? false;
     inpaintAutoSwitchResult = prefs.getBool('inpaintAutoSwitchResult') ?? true;
     inpaintAutoClearMask = prefs.getBool('inpaintAutoClearMask') ?? false;
-    galleryModeEnabled = prefs.getBool('galleryModeEnabled') ?? true;
+    galleryModeEnabled = prefs.getBool('galleryModeEnabled') ?? false;
     galleryCurrentPath = prefs.getString('galleryCurrentPath');
     galleryColumns = prefs.getInt('galleryColumns') ?? 3;
+    promptEditorFontSize = prefs.getDouble('promptEditorFontSize') ?? 16.0;
     gallerySortMode = prefs.getString('gallerySortMode') ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
@@ -2262,6 +2275,7 @@ class AppState extends ChangeNotifier {
       'galleryModeEnabled': galleryModeEnabled,
       'galleryCurrentPath': galleryCurrentPath,
       'galleryColumns': galleryColumns,
+      'promptEditorFontSize': promptEditorFontSize,
       'gallerySortMode': gallerySortMode,
       'batchDelay': batchDelay,
       'historyTabEnabled': historyTabEnabled,
@@ -2380,9 +2394,10 @@ class AppState extends ChangeNotifier {
     i2iHistoryDisabled = data['i2iHistoryDisabled'] ?? false;
     inpaintAutoSwitchResult = data['inpaintAutoSwitchResult'] ?? true;
     inpaintAutoClearMask = data['inpaintAutoClearMask'] ?? false;
-    galleryModeEnabled = data['galleryModeEnabled'] ?? true;
+    galleryModeEnabled = data['galleryModeEnabled'] ?? false;
     galleryCurrentPath = data['galleryCurrentPath'];
     galleryColumns = data['galleryColumns'] ?? 3;
+    promptEditorFontSize = (data['promptEditorFontSize'] as num?)?.toDouble() ?? 16.0;
     gallerySortMode = data['gallerySortMode'] ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
@@ -2554,6 +2569,7 @@ class AppState extends ChangeNotifier {
         await prefs.setString('galleryCurrentPath', galleryCurrentPath!);
       }
       await prefs.setInt('galleryColumns', galleryColumns);
+      await prefs.setDouble('promptEditorFontSize', promptEditorFontSize);
       await prefs.setString('gallerySortMode', gallerySortMode);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
@@ -3048,6 +3064,14 @@ class AppState extends ChangeNotifier {
     for (String t in rawTags) {
       String cleanTag = t.replaceAll('_', ' ');
       if (t.contains('(') || t.contains(')')) {
+        continue;
+      }
+      // 작가/캐릭터/작품 '이름' 백스톱: 검색 단계에서 카테고리 조회가 실패했거나(429/오프라인)
+      // 과거에 저장된 프롬프트에 이름이 남아있는 경우를 여기서 최종 차단
+      final String underscored = cleanTag.replaceAll(' ', '_');
+      if (TagFilters.artistNames.contains(underscored) ||
+          TagFilters.characterNames.contains(underscored) ||
+          TagFilters.copyrightNames.contains(underscored)) {
         continue;
       }
       if (TagFilters.commonGarbage.contains(t) || TagFilters.commonGarbage.contains(cleanTag)) {

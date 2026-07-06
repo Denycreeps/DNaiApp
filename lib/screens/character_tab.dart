@@ -113,6 +113,7 @@ class _CharacterTabState extends State<CharacterTab> {
             }
 
             return Dialog(
+              insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
@@ -154,7 +155,11 @@ class _CharacterTabState extends State<CharacterTab> {
                         },
                         maxLines: null,
                         expands: true,
-                        style: const TextStyle(color: Colors.white, height: 1.5),
+                        style: TextStyle(
+                          color: Colors.white,
+                          height: 1.5,
+                          fontSize: state.promptEditorFontSize,
+                        ),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           contentPadding: EdgeInsets.all(16),
