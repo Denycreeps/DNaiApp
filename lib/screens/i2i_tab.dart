@@ -41,16 +41,35 @@ class _I2iTabState extends State<I2iTab>
   void initState() {
     super.initState();
     _glowController = AnimationController(vsync: this, duration: const Duration(milliseconds: 700));
+    // 릴(핸들)이 열려있을 때 뒤로가기 → 닫기
+    // (I2iTab은 생성자 주입이 아니라 Provider에서 state를 얻으므로 context.read 사용)
+    final state = context.read<AppState>();
+    _appStateRef = state;
+    state.i2iBackHandler = () {
+      if (_reelOpen) {
+        setState(() => _reelOpen = false);
+        return true;
+      }
+      return false;
+    };
   }
+
+  // dispose 시점엔 context 접근이 불안정하므로 initState에서 참조를 저장해 둔다.
+  AppState? _appStateRef;
 
   @override
   void dispose() {
+    if (_appStateRef?.i2iBackHandler != null) {
+      _appStateRef!.i2iBackHandler = null;
+    }
     _glowController.dispose();
     _reelScroll.dispose();
     super.dispose();
   }
 
   String _currentTool = 'pencil';
+
+  bool _maskVisible = true; // 마스킹(스트로크) 표시 ON/OFF — 눈알 버튼으로 토글
 
   double _brushSize = 20.0;
   double _eraserSize = 20.0;
@@ -422,6 +441,7 @@ class _I2iTabState extends State<I2iTab>
     Offset localPosition = renderBox.globalToLocal(details.globalPosition);
 
     setState(() {
+      _maskVisible = true; // 칠하거나 지우면 마스킹 자동 표시
       _mosaicPreviewImage = null; // 새 마스크 → 미리보기 초기화
       _currentStroke = MaskStroke(
         points: [localPosition],
@@ -754,9 +774,16 @@ class _I2iTabState extends State<I2iTab>
     }
   }
 
-  Widget _buildToolIcon(String toolId, IconData icon, String tooltip) {
+  Widget _buildToolIcon(
+    String toolId,
+    IconData icon,
+    String tooltip, {
+    bool? selectedOverride, // 강조 여부 직접 지정 (null이면 _currentTool 기준)
+    VoidCallback? onTapOverride, // 탭 동작 직접 지정 (null이면 _selectTool)
+  }) {
     bool isSelected =
-        _currentTool == toolId || (_currentTool.startsWith('zoom') && toolId == 'zoom');
+        selectedOverride ??
+        (_currentTool == toolId || (_currentTool.startsWith('zoom') && toolId == 'zoom'));
 
     IconData displayIcon = icon;
     if (toolId == 'zoom') {
@@ -776,19 +803,19 @@ class _I2iTabState extends State<I2iTab>
       iconSize = 24;
     }
 
-    // 인페인트 모드는 여유있으니 원래 크기
+    // 인페인트 모드는 여유있으니 원래 크기 (살짝 축소)
     final bool compact = _i2iMode == 'mosaic';
-    final double btnW = compact ? 44 : 52;
-    final double btnH = compact ? 40 : 46;
+    final double btnW = compact ? 44 : 48;
+    final double btnH = compact ? 40 : 42;
     if (!compact) {
-      iconSize = sizeText != null ? 18 : 22;
-      if (toolId == 'zoom') iconSize = 28;
+      iconSize = sizeText != null ? 17 : 20;
+      if (toolId == 'zoom') iconSize = 25;
     }
 
     return Tooltip(
       message: tooltip,
       child: InkWell(
-        onTap: () => _selectTool(toolId),
+        onTap: onTapOverride ?? () => _selectTool(toolId),
         borderRadius: BorderRadius.circular(8),
         child: Container(
           width: btnW,
@@ -1094,7 +1121,7 @@ class _I2iTabState extends State<I2iTab>
             }
 
             return Dialog(
-              insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              insetPadding: PromptUtils.promptEditorDialogInsets,
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
@@ -1136,11 +1163,7 @@ class _I2iTabState extends State<I2iTab>
                         },
                         maxLines: null,
                         expands: true,
-                        style: TextStyle(
-                          color: Colors.white,
-                          height: 1.5,
-                          fontSize: state.promptEditorFontSize,
-                        ),
+                        style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           contentPadding: EdgeInsets.all(16),
@@ -1537,9 +1560,20 @@ class _I2iTabState extends State<I2iTab>
                                   decoration: BoxDecoration(
                                     borderRadius: BorderRadius.circular(8),
                                     border: Border.all(
-                                      color: isCurrent ? Colors.deepPurpleAccent : Colors.white12,
-                                      width: isCurrent ? 2 : 1,
+                                      color: isCurrent
+                                          ? const Color(0xFF00E5FF) // 선택: 밝은 시안 (어두운 릴에서 확 띔)
+                                          : Colors.white12,
+                                      width: isCurrent ? 3.5 : 1,
                                     ),
+                                    boxShadow: isCurrent
+                                        ? [
+                                            BoxShadow(
+                                              color: const Color(0xFF00E5FF).withValues(alpha: 0.6),
+                                              blurRadius: 8,
+                                              spreadRadius: 1,
+                                            ),
+                                          ]
+                                        : null,
                                   ),
                                   child: ClipRRect(
                                     borderRadius: BorderRadius.circular(7),
@@ -1808,6 +1842,7 @@ class _I2iTabState extends State<I2iTab>
                                             painter: MaskPainter(
                                               strokes:
                                                   (_i2iMode == 'upscale' ||
+                                                      !_maskVisible ||
                                                       (_mosaicPreviewImage != null &&
                                                           _i2iMode == 'mosaic'))
                                                   ? []
@@ -1849,6 +1884,17 @@ class _I2iTabState extends State<I2iTab>
                               if (_i2iMode == 'inpaint') ...[
                                 const SizedBox(width: 8),
                                 _buildStrengthButton(state),
+                                const SizedBox(width: 8),
+                                // 마스킹 표시 ON/OFF — 옆 툴 버튼과 완전히 동일한 위젯 사용
+                                _buildToolIcon(
+                                  'mask_visible',
+                                  _maskVisible ? Icons.visibility : Icons.visibility_off,
+                                  "마스킹 표시 켜기/끄기",
+                                  selectedOverride: _maskVisible,
+                                  onTapOverride: () {
+                                    setState(() => _maskVisible = !_maskVisible);
+                                  },
+                                ),
                               ],
                               if (_i2iMode == 'mosaic') ...[
                                 const SizedBox(width: 6),
@@ -1899,7 +1945,7 @@ class _I2iTabState extends State<I2iTab>
                                           },
                                     borderRadius: BorderRadius.circular(8),
                                     child: Container(
-                                      width: 40,
+                                      width: 44,
                                       height: 40,
                                       decoration: BoxDecoration(
                                         color: _mosaicPreviewImage != null

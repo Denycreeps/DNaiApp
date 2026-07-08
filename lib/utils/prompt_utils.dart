@@ -6,6 +6,25 @@ import 'package:flutter/widgets.dart';
 
 class PromptUtils {
   // ============================================================================
+  // 확대 입력창(프롬프트 편집 다이얼로그) 공용 스타일
+  //   prompt_tab / i2i_tab / character_tab 의 확대 입력 다이얼로그가 공유.
+  //   ※ 껍데기(여백·폰트)만 공용화하고, 자동완성/저장 로직은 각 탭이 그대로 유지.
+  // ============================================================================
+
+  /// 확대 입력 다이얼로그의 좌우/상하 여백 (Dialog.insetPadding)
+  static const EdgeInsets promptEditorDialogInsets = EdgeInsets.symmetric(
+    horizontal: 16,
+    vertical: 24,
+  );
+
+  /// 확대 입력창 TextField 텍스트 스타일.
+  /// [fontSize]에는 AppState.promptEditorFontSize 값을 그대로 넘긴다.
+  /// (AppState를 직접 참조하지 않아 순환 import를 피함)
+  static TextStyle promptEditorTextStyle(double fontSize) {
+    return TextStyle(color: const Color(0xFFFFFFFF), height: 1.5, fontSize: fontSize);
+  }
+
+  // ============================================================================
   // 자동완성 태그 삽입 유틸리티 (모든 탭에서 공유)
   // ============================================================================
   static String buildCompletedText(String beforeCursor, String tag) {

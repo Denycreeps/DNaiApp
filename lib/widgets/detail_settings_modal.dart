@@ -413,7 +413,10 @@ void showDetailSettingsModal(BuildContext context) {
                             buildInputContainer(
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
-                                  value: state.selectedModel,
+                                  // 저장된 모델이 목록에 없으면(예: 제거된 테스트 모델) 기본값으로 폴백
+                                  value: _models.contains(state.selectedModel)
+                                      ? state.selectedModel
+                                      : "nai-diffusion-4-5-full",
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: const Color(0xFF2A2A2D),

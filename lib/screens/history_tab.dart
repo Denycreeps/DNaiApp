@@ -1238,7 +1238,7 @@ class _HistoryTabState extends State<HistoryTab> {
                           child: const Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.close, size: 18, color: Colors.white54),
+                              Icon(Icons.close, size: 16, color: Colors.white54),
                               SizedBox(width: 4),
                               Text(
                                 "취소",

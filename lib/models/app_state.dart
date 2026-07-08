@@ -1076,21 +1076,21 @@ class AppState extends ChangeNotifier {
     if (updateNotes == null || updateNotes!.isEmpty) {
       return [];
     }
-    // GitHub 릴리즈 본문에 섞인 <br>, </br>, <br/> 류를 실제 줄바꿈으로 변환
-    final normalized = updateNotes!.replaceAll(
-      RegExp(r'<\s*/?\s*br\s*/?\s*>', caseSensitive: false),
-      '\n',
-    );
-    return normalized
+    String text = updateNotes!;
+    // 1) <br>, </br>, <br/>, <br /> 등 줄바꿈 태그 → 실제 줄바꿈
+    text = text.replaceAll(RegExp(r'<\s*/?\s*br\s*/?\s*>', caseSensitive: false), '\n');
+    // 2) HTML 주석 <!-- ... --> 제거 (여러 줄 포함)
+    text = text.replaceAll(RegExp(r'<!--[\s\S]*?-->'), '');
+    // 3) 그 외 모든 HTML 태그 (<...>로 둘러싼 것) 제거
+    text = text.replaceAll(RegExp(r'<[^>]*>'), '');
+    return text
         .split('\n')
         .map((line) => line.trim())
-        // 남아있는 다른 HTML 태그(<b>, <i>, <p> 등)도 제거
-        .map((line) => line.replaceAll(RegExp(r'<[^>]+>'), '').trim())
         .where((line) => line.isNotEmpty && !line.startsWith('![')) // 이미지 라인 제외
         .map((line) {
           // 마크다운 헤더 정리
           line = line.replaceAll(RegExp(r'^#+\s*'), '');
-          // 30자 넘으면 자르기
+          // 40자 넘으면 자르기
           if (line.length > 40) {
             return '${line.substring(0, 40)}...';
           }
@@ -1299,6 +1299,7 @@ class AppState extends ChangeNotifier {
   int batchRemaining = 0; // 남은 생성 수
   bool isBatchMode = false;
   double batchDelay = 0.5; // 연속 생성 딜레이 (초)
+  bool autoNextPromptInBatch = false; // 자동생성 중 이미지 1장마다 다음 프롬프트 자동 전환
 
   // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
   bool historyTabEnabled = true;
@@ -1435,11 +1436,17 @@ class AppState extends ChangeNotifier {
   // main의 PopScope가 히스토리 탭일 때 호출 → 상위폴더 이동/선택해제 처리.
   bool Function()? galleryBackHandler;
 
+  // i2i 탭이 등록하는 뒤로가기 핸들러. 릴(핸들)이 열려있으면 닫고 true 반환.
+  bool Function()? i2iBackHandler;
+
   // 설정탭이 등록하는 "첫 탭([일반])으로 리셋" 핸들러. main이 설정 진입 시 호출.
   void Function()? settingsTabReset;
 
   // SAF에 이미지가 저장될 때마다 증가. 갤러리가 이 값 변화를 감지해 자동 갱신한다.
   int gallerySafRevision = 0;
+
+  // 마지막으로 이미지를 저장한 세션 폴더 URI (갤러리 자동 갱신 시 대상 판별용).
+  String? get lastSavedSafDirUri => _safSessionDirUri;
 
   String? safBrowseDirUri;
   String? safBrowseDirName;
@@ -1572,6 +1579,55 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint('deleteSafImage 실패: $e');
       return false;
+    }
+  }
+
+  // SAF 파일을 다른 폴더로 이동. 권한받은 루트 트리 내부 폴더 간에만 동작.
+  //   fileUri: 이동할 파일 URI
+  //   fromParentUri: 현재 파일이 든 부모 폴더 URI
+  //   toParentUri: 이동 대상 폴더 URI
+  // 반환: 성공 시 이동된 파일의 새 URI, 실패 시 null.
+  Future<String?> moveSafImage(String fileUri, String fromParentUri, String toParentUri) async {
+    if (!Platform.isAndroid) {
+      return null;
+    }
+    // 같은 폴더로의 이동은 무의미 → 그대로 성공 처리(새 uri 없음)
+    if (fromParentUri == toParentUri) {
+      return fileUri;
+    }
+    try {
+      final moved = await _safUtil.moveTo(
+        fileUri,
+        false, // isDir=false
+        fromParentUri,
+        toParentUri,
+      );
+      return moved.uri;
+    } catch (e) {
+      debugPrint('moveSafImage 실패: $e');
+      return null;
+    }
+  }
+
+  // SAF 폴더의 하위 폴더 목록만 조회 (이동 대상 선택용).
+  // 반환: (uri, name) 리스트. 실패 시 빈 리스트.
+  Future<List<({String uri, String name})>> listSafSubFolders(String dirUri) async {
+    if (!Platform.isAndroid) {
+      return [];
+    }
+    try {
+      final items = await _safUtil.list(dirUri);
+      final folders = <({String uri, String name})>[];
+      for (final f in items) {
+        if (f.isDir) {
+          folders.add((uri: f.uri, name: f.name));
+        }
+      }
+      folders.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      return folders;
+    } catch (e) {
+      debugPrint('listSafSubFolders 실패: $e');
+      return [];
     }
   }
 
@@ -2086,6 +2142,7 @@ class AppState extends ChangeNotifier {
     gallerySortMode = prefs.getString('gallerySortMode') ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
+    autoNextPromptInBatch = prefs.getBool('autoNextPromptInBatch') ?? false;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
@@ -2103,6 +2160,10 @@ class AppState extends ChangeNotifier {
       collapsedSections = collapsedJson.toSet();
     }
     selectedModel = prefs.getString('model') ?? "nai-diffusion-4-5-full";
+    // 제거된 테스트 모델이 저장돼 있으면 실제 v4.5로 교정 (드롭다운 크래시 방지)
+    if (selectedModel == "nai-diffusion-4-5-full-test") {
+      selectedModel = "nai-diffusion-4-5-full";
+    }
     selectedSampler = prefs.getString('sampler') ?? "k_euler_ancestral";
     selectedScheduler = prefs.getString('scheduler') ?? "karras";
     selectedResolution = prefs.getString('resolution') ?? "832 x 1216";
@@ -2278,6 +2339,7 @@ class AppState extends ChangeNotifier {
       'promptEditorFontSize': promptEditorFontSize,
       'gallerySortMode': gallerySortMode,
       'batchDelay': batchDelay,
+      'autoNextPromptInBatch': autoNextPromptInBatch,
       'historyTabEnabled': historyTabEnabled,
       'i2iTabEnabled': i2iTabEnabled,
       'characterTabEnabled': characterTabEnabled,
@@ -2362,6 +2424,9 @@ class AppState extends ChangeNotifier {
     customHeightController.text = data['custom_height'] ?? '1216';
     customRemoveController.text = data['custom_remove'] ?? '';
     selectedModel = data['model'] ?? 'nai-diffusion-4-5-full';
+    if (selectedModel == "nai-diffusion-4-5-full-test") {
+      selectedModel = "nai-diffusion-4-5-full";
+    }
     selectedSampler = data['sampler'] ?? 'k_euler_ancestral';
     selectedScheduler = data['scheduler'] ?? 'karras';
     resolutionMode = data['resolutionMode'] ?? '수동';
@@ -2401,6 +2466,7 @@ class AppState extends ChangeNotifier {
     gallerySortMode = data['gallerySortMode'] ?? 'name_asc';
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
+    autoNextPromptInBatch = data['autoNextPromptInBatch'] ?? false;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
     characterTabEnabled = data['characterTabEnabled'] ?? true;
@@ -2572,6 +2638,7 @@ class AppState extends ChangeNotifier {
       await prefs.setDouble('promptEditorFontSize', promptEditorFontSize);
       await prefs.setString('gallerySortMode', gallerySortMode);
       await prefs.setDouble('batchDelay', batchDelay);
+      await prefs.setBool('autoNextPromptInBatch', autoNextPromptInBatch);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
       await prefs.setBool('historyTabEnabled', historyTabEnabled);
       await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
@@ -3955,26 +4022,41 @@ class AppState extends ChangeNotifier {
     isBatchMode = count > 1 || count == 0;
     notifyListeners();
 
+    // 연속 생성(2개 이상 또는 무한) + 자동 전환 ON이면, 첫 생성 "전에" 다음 프롬프트로 1번 넘긴다.
+    // → 이전 배치의 마지막 프롬프트와 겹치는 것을 방지 (예: 이전이 A B C면 다음은 B C D).
+    // 1개 생성일 때는 "지금 보는 프롬프트로 1장" 의도를 존중해 넘기지 않는다.
+    if (isBatchMode && autoNextPromptInBatch) {
+      handleNextPrompt();
+    }
+
     while (batchRemaining > 0) {
-      if (!context.mounted) {
-        break;
-      }
+      // 탭을 옮겨 프롬프트 탭이 dispose돼도(context unmounted) 자동생성은 계속되어야 한다.
+      // → context.mounted로 중단하지 않는다. 중단 조건은 API 끊김 / 남은 수 소진 / 사용자 정지뿐.
       if (!isApiConnected) {
         break;
       } // API 끊기면 중지
 
+      // context가 죽어도 handleGenerate 내부에서 (context.mounted ? context : null)로
+      // 안전 처리되므로, 여기서는 의도적으로 mounted 가드 없이 넘긴다.
+      // ignore: use_build_context_synchronously
       await handleGenerate(context, onScrollToHistoryEnd);
 
       // 생성 중 취소 확인
       if (!isBatchMode && batchCount != 0) {
         break;
       }
-      if (batchRemaining <= 0) {
-        break;
-      }
 
       if (count != 0) {
         batchRemaining--;
+      }
+
+      // 다음 생성이 남아있을 때만 다음 프롬프트로 전환 (마지막 생성 뒤엔 넘기지 않음).
+      // → 넘기면 인덱스가 앞서가서 다음 배치가 겹치게 됨.
+      if (batchRemaining <= 0) {
+        break;
+      }
+      if (autoNextPromptInBatch) {
+        handleNextPrompt();
       }
       notifyListeners();
 
@@ -4124,8 +4206,9 @@ class AppState extends ChangeNotifier {
       } else if (result.image != null) {
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
 
-        // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로
-        addI2iResult(result.image!, parsedMeta);
+        // ⚠️ 순서 중요: 이미지 전환/마스크 신호를 먼저 세팅한 뒤 addI2iResult를 호출한다.
+        // addI2iResult가 내부에서 notifyListeners()를 부르므로, 그 전에 신호가 정해져 있어야
+        // i2i_tab build가 마스크 유지/해제를 올바르게 판단한다.
 
         // 마스킹 자동 해제: 결과가 나온 즉시 해제 요청 (자동 전환 여부와 무관)
         if (inpaintAutoClearMask) {
@@ -4139,6 +4222,9 @@ class AppState extends ChangeNotifier {
           targetI2iImage = result.image!;
           targetI2iMetadata = parsedMeta;
         }
+
+        // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로 (여기서 notifyListeners 발생)
+        addI2iResult(result.image!, parsedMeta);
       }
 
       await fetchAnlas();

@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image/image.dart' as img;
 import 'tag_filters.dart';
+import 'models/model_caps.dart';
 
 class NaiResponse {
   final Uint8List? image;
@@ -806,11 +807,15 @@ class NovelAiService {
         finalPrompt = "fur dataset, $positive";
       }
 
+      // 모델 능력(capability) 조회 — 기능 지원 여부/서버 전송용 문자열의 단일 출처
+      final caps = modelCapsFor(model);
+
+      // 서버로 실제 전송할 모델 문자열 (테스트 모델은 여기서 실제 v4.5 등으로 매핑됨)
       // infill 액션 시 모델명에 -inpainting 접미사 추가 (nai-diffusion-2 예외)
       // 예: nai-diffusion-4-5-full → nai-diffusion-4-5-full-inpainting
-      String apiModel = model;
-      if (action == "infill" && model != "nai-diffusion-2") {
-        apiModel = "$model-inpainting";
+      String apiModel = caps.serverModelId;
+      if (action == "infill" && caps.serverModelId != "nai-diffusion-2") {
+        apiModel = "${caps.serverModelId}-inpainting";
       }
 
       Map<String, dynamic> parameters = {
@@ -941,8 +946,8 @@ class NovelAiService {
 
       // Vibe Transfer
       if (vibeTransfers != null && vibeTransfers.isNotEmpty) {
-        if (apiModel.startsWith("nai-diffusion-4")) {
-          // V4: encode-vibe로 인코딩 필요 (캐시 활용)
+        if (caps.usesEncodeVibe) {
+          // V4 이상: encode-vibe로 인코딩 필요 (캐시 활용)
           List<String> encodedVibes = [];
           List<double> vibeStrengths = [];
           for (final v in vibeTransfers) {
@@ -990,7 +995,7 @@ class NovelAiService {
       }
 
       // Precise Reference (V4.5 전용, Vibe Transfer와 동시 사용 불가)
-      if (preciseRefs != null && preciseRefs.isNotEmpty && apiModel.startsWith("nai-diffusion-4")) {
+      if (preciseRefs != null && preciseRefs.isNotEmpty && caps.supportsPrecise) {
         parameters["params_version"] = 3;
         parameters["director_reference_images"] = preciseRefs
             .map((r) => r['image'] as String)

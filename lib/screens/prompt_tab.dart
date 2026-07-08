@@ -131,7 +131,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Container(
-          height: 44,
+          constraints: const BoxConstraints(minHeight: 44, maxHeight: 132),
           decoration: BoxDecoration(
             border: Border.all(color: Colors.deepPurpleAccent),
             borderRadius: BorderRadius.circular(4),
@@ -139,6 +139,8 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
           child: TextField(
             controller: widget.controller,
             focusNode: focusNode,
+            minLines: 1,
+            maxLines: 4, // 태그가 길어지면 최대 4줄까지 자동 줄바꿈 (그 이상은 내부 스크롤)
             onChanged: (_) {
               onTextChanged();
               _saveDebounce?.cancel();
@@ -2892,7 +2894,7 @@ class _PromptTabState extends State<PromptTab> {
             }
 
             return Dialog(
-              insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              insetPadding: PromptUtils.promptEditorDialogInsets,
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
@@ -2934,11 +2936,7 @@ class _PromptTabState extends State<PromptTab> {
                         },
                         maxLines: null,
                         expands: true,
-                        style: TextStyle(
-                          color: Colors.white,
-                          height: 1.5,
-                          fontSize: state.promptEditorFontSize,
-                        ),
+                        style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           contentPadding: EdgeInsets.all(16),
@@ -3646,49 +3644,110 @@ class _PromptTabState extends State<PromptTab> {
                           final ctrl = TextEditingController(
                             text: state.batchCount <= 0 ? '' : state.batchCount.toString(),
                           );
-                          return AlertDialog(
-                            backgroundColor: const Color(0xFF1E1E1E),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                            title: const Text(
-                              "배치 생성 횟수",
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                              ),
-                            ),
-                            content: TextField(
-                              controller: ctrl,
-                              keyboardType: TextInputType.number,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                hintText: "1~999",
-                                hintStyle: const TextStyle(color: Colors.white30),
-                                filled: true,
-                                fillColor: const Color(0xFF121212),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                  borderSide: BorderSide.none,
+                          // 현재 배치가 무한(0)인지 다이얼로그 내부에서 추적
+                          bool isInfinite = state.batchCount == 0;
+                          return StatefulBuilder(
+                            builder: (ctx, setDialogState) {
+                              return AlertDialog(
+                                backgroundColor: const Color(0xFF1E1E1E),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
                                 ),
-                              ),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx),
-                                child: const Text("취소", style: TextStyle(color: Colors.grey)),
-                              ),
-                              ElevatedButton(
-                                onPressed: () {
-                                  final val = int.tryParse(ctrl.text) ?? 1;
-                                  setState(() => state.batchCount = val.clamp(1, 999));
-                                  Navigator.pop(ctx);
-                                },
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF8B5CF6),
+                                title: const Text(
+                                  "배치 생성 횟수",
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
                                 ),
-                                child: const Text("확인", style: TextStyle(color: Colors.white)),
-                              ),
-                            ],
+                                content: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // 무한일 땐 입력 비활성 + 안내문 표시, 터치하면 해제되어 입력 가능
+                                    GestureDetector(
+                                      onTap: isInfinite
+                                          ? () {
+                                              setDialogState(() {
+                                                isInfinite = false;
+                                                ctrl.clear();
+                                              });
+                                            }
+                                          : null,
+                                      child: AbsorbPointer(
+                                        absorbing: isInfinite, // 무한이면 TextField 대신 위 onTap이 먹도록
+                                        child: TextField(
+                                          controller: ctrl,
+                                          enabled: !isInfinite,
+                                          keyboardType: TextInputType.number,
+                                          style: TextStyle(
+                                            color: isInfinite ? Colors.white54 : Colors.white,
+                                          ),
+                                          decoration: InputDecoration(
+                                            hintText: isInfinite ? "무한 생성 중 (터치 시 해제)" : "1~999",
+                                            hintStyle: const TextStyle(color: Colors.white38),
+                                            filled: true,
+                                            fillColor: const Color(0xFF121212),
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(8),
+                                              borderSide: BorderSide.none,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    // 자동 생성 중 이미지마다 다음 프롬프트 자동 전환
+                                    Row(
+                                      children: [
+                                        const Expanded(
+                                          child: Text(
+                                            "프롬프트 자동 전환",
+                                            style: TextStyle(color: Colors.white, fontSize: 14),
+                                          ),
+                                        ),
+                                        Transform.scale(
+                                          scale: 0.85,
+                                          child: Switch(
+                                            value: state.autoNextPromptInBatch,
+                                            activeThumbColor: const Color(0xFF8B5CF6),
+                                            onChanged: (v) {
+                                              setDialogState(() {
+                                                state.autoNextPromptInBatch = v;
+                                              });
+                                              state.saveAllSettings();
+                                              state.refreshUI();
+                                            },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx),
+                                    child: const Text("취소", style: TextStyle(color: Colors.grey)),
+                                  ),
+                                  ElevatedButton(
+                                    onPressed: () {
+                                      if (isInfinite) {
+                                        // 무한 생성
+                                        setState(() => state.batchCount = 0);
+                                      } else {
+                                        final val = int.tryParse(ctrl.text) ?? 1;
+                                        setState(() => state.batchCount = val.clamp(1, 999));
+                                      }
+                                      Navigator.pop(ctx);
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF8B5CF6),
+                                    ),
+                                    child: const Text("확인", style: TextStyle(color: Colors.white)),
+                                  ),
+                                ],
+                              );
+                            },
                           );
                         },
                       );
@@ -3729,7 +3788,11 @@ class _PromptTabState extends State<PromptTab> {
                   ),
                   const SizedBox(width: 16),
                   ElevatedButton.icon(
-                    onPressed: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
+                    onPressed:
+                        (state.isLoading ||
+                            state.isBatchMode ||
+                            state.isInpaintLoading ||
+                            state.isUpscaleLoading)
                         ? () {
                             if (state.isBatchMode) {
                               state.cancelBatch();
@@ -3818,12 +3881,19 @@ class _PromptTabState extends State<PromptTab> {
                       fixedSize: const Size(160, 40),
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       backgroundColor:
-                          (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
+                          (state.isLoading ||
+                              state.isBatchMode ||
+                              state.isInpaintLoading ||
+                              state.isUpscaleLoading)
                           ? Colors.grey[700]
                           : const Color(0xFF8B5CF6),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
                     ),
-                    icon: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
+                    icon:
+                        (state.isLoading ||
+                            state.isBatchMode ||
+                            state.isInpaintLoading ||
+                            state.isUpscaleLoading)
                         ? const SizedBox(
                             width: 16,
                             height: 16,
@@ -3831,7 +3901,7 @@ class _PromptTabState extends State<PromptTab> {
                           )
                         : const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                     label: Text(
-                      state.isLoading
+                      (state.isLoading || state.isBatchMode)
                           ? (state.isBatchMode ? "생성중(${state.batchRemaining})..." : "생성 중...")
                           : (state.isInpaintLoading
                                 ? "인페인트 중..."

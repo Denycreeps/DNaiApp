@@ -413,6 +413,13 @@ class _NovelAiAppState extends State<NovelAiApp>
             return;
           }
         }
+        // 1-2. i2i 탭이면 릴(핸들) 닫기 위임
+        if (currentOrigIdx == 2) {
+          final handled = state.i2iBackHandler?.call() ?? false;
+          if (handled) {
+            return;
+          }
+        }
         // 2. 두 번 눌러 종료
         final now = DateTime.now();
         final last = _lastBackPress;
