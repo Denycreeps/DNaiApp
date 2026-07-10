@@ -39,6 +39,9 @@ class _HistoryTabState extends State<HistoryTab> {
     _appState = context.read<AppState>();
     _currentIndex = _appState.selectedHistoryIndex >= 0 ? _appState.selectedHistoryIndex : 0;
     _pageController = PageController(initialPage: _currentIndex);
+    // 탭 재생성 시 기존 이미지들을 "새로 추가된 것"으로 오인해
+    // 불필요한 점프/스크롤이 발동하지 않도록 현재 개수를 기준선으로 잡는다.
+    _prevImageCount = _appState.historyImages.length;
 
     _thumbnailScrollController = ScrollController(
       initialScrollOffset: _appState.historyThumbnailScrollOffset,

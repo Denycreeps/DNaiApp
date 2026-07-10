@@ -51,7 +51,6 @@ class _NovelAiAppState extends State<NovelAiApp>
   TabController? _tabController;
   late PageController _pageController;
   final ScrollController _historyScrollController = ScrollController();
-  bool _updateDialogShown = false;
   bool _updateDialogVisible = false;
   List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
   DateTime? _lastBackPress; // 두 번 눌러 종료 판정용
@@ -276,9 +275,9 @@ class _NovelAiAppState extends State<NovelAiApp>
       );
     }
 
-    // 업데이트 알림 (앱 실행 후 1회만)
-    if (state.hasUpdate && !_updateDialogShown) {
-      _updateDialogShown = true;
+    // 업데이트 알림 (앱 실행 후 1회만) — 가드는 AppState 공유 (수동 열기와 중복 방지)
+    if (state.hasUpdate && !state.updateDialogShown) {
+      state.updateDialogShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           return;

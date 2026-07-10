@@ -814,7 +814,7 @@ class NovelAiService {
       // infill 액션 시 모델명에 -inpainting 접미사 추가 (nai-diffusion-2 예외)
       // 예: nai-diffusion-4-5-full → nai-diffusion-4-5-full-inpainting
       String apiModel = caps.serverModelId;
-      if (action == "infill" && caps.serverModelId != "nai-diffusion-2") {
+      if (action == "infill" && caps.serverModelId != NaiModels.v2) {
         apiModel = "${caps.serverModelId}-inpainting";
       }
 

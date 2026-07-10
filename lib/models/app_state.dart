@@ -22,6 +22,31 @@ import '../novelai_service.dart';
 import '../tag_filters.dart';
 import '../app_theme.dart';
 import 'nai_character.dart';
+import 'model_caps.dart';
+
+// i2i 작업 이미지가 바뀔 때 마스킹(_strokes)을 어떻게 처리할지.
+// 1회용 소비 신호 대신 이 값을 함께 세팅하여 build 타이밍 문제를 방지한다.
+enum I2iMaskAction {
+  clearMask, // 마스크 초기화 (i2i로 새 이미지 보내기 등)
+  keepMask, // 마스크 유지 (릴 결과 채택 등)
+  followInpaintSetting, // 인페인트 자동 해제 설정(inpaintAutoClearMask)을 따름
+}
+
+// 인페인트 마스크의 한 획. AppState에 보관하여 i2i 탭 위젯이 재생성돼도(PageView가
+// 멀리 있는 페이지를 정리하는 경우) 마스크가 사라지지 않도록 한다.
+class MaskStroke {
+  final List<Offset> points;
+  final double size;
+  final bool isEraser;
+  final bool isCircle;
+
+  MaskStroke({
+    required this.points,
+    required this.size,
+    required this.isEraser,
+    required this.isCircle,
+  });
+}
 
 // ============================================================================
 // 스마트 태그 매칭: 공백으로 단어 조각을 구분하여 검색
@@ -1068,6 +1093,10 @@ class AppState extends ChangeNotifier {
   bool isDownloadingUpdate = false;
   double downloadProgress = 0.0;
 
+  // 업데이트 다이얼로그가 이번 세션에 이미 표시됐는지 (자동 알림/수동 열기 공유 가드).
+  // 수동으로 열 때도 이 값을 켜서, main의 자동 알림이 겹쳐 뜨지 않게 한다.
+  bool updateDialogShown = false;
+
   bool get hasUpdate =>
       latestVersion != null && _compareVersions(latestVersion!, currentVersion) > 0;
 
@@ -1894,7 +1923,7 @@ class AppState extends ChangeNotifier {
     return docDir.path;
   }
 
-  String selectedModel = "nai-diffusion-4-5-full";
+  String selectedModel = NaiModels.v45Full;
   String selectedSampler = "k_euler_ancestral";
   String selectedScheduler = "karras";
   String selectedResolution = "832 x 1216";
@@ -2159,10 +2188,10 @@ class AppState extends ChangeNotifier {
     if (collapsedJson != null) {
       collapsedSections = collapsedJson.toSet();
     }
-    selectedModel = prefs.getString('model') ?? "nai-diffusion-4-5-full";
+    selectedModel = prefs.getString('model') ?? NaiModels.v45Full;
     // 제거된 테스트 모델이 저장돼 있으면 실제 v4.5로 교정 (드롭다운 크래시 방지)
     if (selectedModel == "nai-diffusion-4-5-full-test") {
-      selectedModel = "nai-diffusion-4-5-full";
+      selectedModel = NaiModels.v45Full;
     }
     selectedSampler = prefs.getString('sampler') ?? "k_euler_ancestral";
     selectedScheduler = prefs.getString('scheduler') ?? "karras";
@@ -2423,9 +2452,9 @@ class AppState extends ChangeNotifier {
     customWidthController.text = data['custom_width'] ?? '832';
     customHeightController.text = data['custom_height'] ?? '1216';
     customRemoveController.text = data['custom_remove'] ?? '';
-    selectedModel = data['model'] ?? 'nai-diffusion-4-5-full';
+    selectedModel = data['model'] ?? NaiModels.v45Full;
     if (selectedModel == "nai-diffusion-4-5-full-test") {
-      selectedModel = "nai-diffusion-4-5-full";
+      selectedModel = NaiModels.v45Full;
     }
     selectedSampler = data['sampler'] ?? 'k_euler_ancestral';
     selectedScheduler = data['scheduler'] ?? 'karras';
@@ -2764,9 +2793,10 @@ class AppState extends ChangeNotifier {
   }
 
   void sendToI2i(Uint8List imageBytes, NaiMetadata? metadata) {
-    i2iPreserveMaskOnNextChange = false; // 보내기는 항상 마스킹 초기화
+    i2iMaskActionOnChange = I2iMaskAction.clearMask; // 보내기는 항상 마스킹 초기화
     targetI2iImage = imageBytes;
     targetI2iMetadata = metadata;
+    recordI2iView(imageBytes, metadata, reset: true); // 본 이미지 기록 새로 시작
     // i2i 탭이 꺼져 있으면 자동으로 켜기
     if (!i2iTabEnabled) {
       i2iTabEnabled = true;
@@ -4206,22 +4236,20 @@ class AppState extends ChangeNotifier {
       } else if (result.image != null) {
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
 
-        // ⚠️ 순서 중요: 이미지 전환/마스크 신호를 먼저 세팅한 뒤 addI2iResult를 호출한다.
-        // addI2iResult가 내부에서 notifyListeners()를 부르므로, 그 전에 신호가 정해져 있어야
-        // i2i_tab build가 마스크 유지/해제를 올바르게 판단한다.
-
-        // 마스킹 자동 해제: 결과가 나온 즉시 해제 요청 (자동 전환 여부와 무관)
-        if (inpaintAutoClearMask) {
-          i2iRequestMaskClear = true;
-        }
-
-        // 결과 자동 전환 설정이 ON일 때만 인페인트 결과를 작업 이미지로 표시
+        // ⚠️ 순서 중요: 마스크 처리 방식/이미지 전환을 먼저 정한 뒤 addI2iResult를 호출한다.
+        // addI2iResult가 notifyListeners()를 부르므로, 그 전에 상태가 정해져 있어야
+        // i2i_tab build가 올바르게 판단한다.
         if (inpaintAutoSwitchResult) {
-          // 자동 해제가 아니면 전환 시 마스킹 유지 (결과 비교·덧칠 편의)
-          i2iPreserveMaskOnNextChange = !inpaintAutoClearMask;
+          // 결과를 작업 이미지로 자동 전환 → 이미지 변경 시 자동 해제 설정을 따라 마스크 처리
+          i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
           targetI2iImage = result.image!;
           targetI2iMetadata = parsedMeta;
+          recordI2iView(result.image!, parsedMeta); // 본 이미지 기록 추가
+        } else if (inpaintAutoClearMask) {
+          // 자동 전환은 안 하지만 자동 해제는 ON → 이미지는 그대로 두고 마스크만 즉시 해제
+          i2iMaskClearRevision++;
         }
+        // (자동 전환 OFF + 자동 해제 OFF → 아무것도 안 함, 마스크 유지)
 
         // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로 (여기서 notifyListeners 발생)
         addI2iResult(result.image!, parsedMeta);
@@ -4665,22 +4693,85 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // 다음 targetI2iImage 변경 시 마스킹(_strokes)을 유지할지 신호.
-  // 릴 탭(useI2iResult)=true(유지), 보내기(sendToI2i)=false(초기화)
-  bool i2iPreserveMaskOnNextChange = false;
+  // ── i2i 마스크 처리 방식 (1회용 소비 신호 대신 "상태 기반"으로 관리) ──
+  // targetI2iImage를 바꾸는 쪽이 "왜 바꾸는지"를 함께 세팅하고,
+  // i2i_tab은 이미지 변경을 감지하면 이 값을 읽어 마스크를 어떻게 할지 결정한다.
+  // enum은 소비하지 않으므로(다음 변경 시 덮어써짐) build 타이밍에 안전하다.
+  I2iMaskAction i2iMaskActionOnChange = I2iMaskAction.clearMask;
 
-  // 인페인트 결과 발생 시 마스킹을 "즉시" 해제하라는 1회용 신호.
-  // (이미지 자동 전환 여부와 무관하게 결과가 나온 순간 해제 — i2i_tab이 소비)
-  bool i2iRequestMaskClear = false;
+  // 인페인트 마스크 획 목록. 위젯(i2i_tab)이 아니라 여기 보관하여 탭 재생성에도 유지.
+  final List<MaskStroke> i2iMaskStrokes = [];
+
+  // ── i2i "본 이미지" 기록 (직전 이미지 버튼용) ──
+  // 이미지가 바뀔 때마다 본 순서를 기록하고, 버튼으로 한 칸씩 거꾸로 걷는다.
+  // 새 이미지 전송(마스크 무조건 초기화 타이밍) 시 기록을 리셋하고 새로 시작.
+  final List<({Uint8List bytes, NaiMetadata? meta})> _i2iViewHistory = [];
+  int _i2iViewCursor = -1; // 현재 보고 있는 기록 위치
+  static const int _i2iViewHistoryMax = 30; // 기록 상한 (오래된 것부터 버림)
+
+  // 본 이미지 기록. reset=true면 기록을 비우고 새 세션 시작 (새 이미지 전송/모자이크).
+  // 버튼으로 되돌아간 전환은 이 함수를 부르지 않으므로 기록되지 않는다 (계속 거꾸로 걷기 가능).
+  void recordI2iView(Uint8List bytes, NaiMetadata? meta, {bool reset = false}) {
+    if (reset) {
+      _i2iViewHistory.clear();
+      _i2iViewCursor = -1;
+    }
+    // 지금 보고 있는 것과 같은 이미지는 중복 기록하지 않음
+    if (_i2iViewCursor >= 0 && identical(_i2iViewHistory[_i2iViewCursor].bytes, bytes)) {
+      return;
+    }
+    // 커서가 중간이면(되돌아간 상태에서 새 전환) 커서 뒤를 잘라냄 — 브라우저 히스토리 방식
+    if (_i2iViewCursor < _i2iViewHistory.length - 1) {
+      _i2iViewHistory.removeRange(_i2iViewCursor + 1, _i2iViewHistory.length);
+    }
+    _i2iViewHistory.add((bytes: bytes, meta: meta));
+    if (_i2iViewHistory.length > _i2iViewHistoryMax) {
+      _i2iViewHistory.removeAt(0);
+    }
+    _i2iViewCursor = _i2iViewHistory.length - 1;
+  }
+
+  // 직전에 본 이미지로 전환 (기록을 한 칸 뒤로). 더 갈 곳이 없으면 false (무반응).
+  bool i2iGoBackView() {
+    if (_i2iViewCursor <= 0) {
+      return false;
+    }
+    _i2iViewCursor--;
+    final entry = _i2iViewHistory[_i2iViewCursor];
+    i2iMaskActionOnChange = I2iMaskAction.keepMask; // 비교 용도의 전환 → 마스크 유지
+    targetI2iImage = entry.bytes;
+    targetI2iMetadata = entry.meta;
+    notifyListeners();
+    return true;
+  }
+
+  // 앞으로(기록을 한 칸 앞으로) — 뒤로 갔던 것을 되돌린다. 최상위면 false (무반응).
+  bool i2iGoForwardView() {
+    if (_i2iViewCursor < 0 || _i2iViewCursor >= _i2iViewHistory.length - 1) {
+      return false;
+    }
+    _i2iViewCursor++;
+    final entry = _i2iViewHistory[_i2iViewCursor];
+    i2iMaskActionOnChange = I2iMaskAction.keepMask; // 비교 용도의 전환 → 마스크 유지
+    targetI2iImage = entry.bytes;
+    targetI2iMetadata = entry.meta;
+    notifyListeners();
+    return true;
+  }
+
+  // 이미지를 바꾸지 않고 "마스크만 즉시 해제"해야 할 때 쓰는 리비전 카운터.
+  // (예: 인페인트 자동전환 OFF + 자동해제 ON) 증가시키면 i2i_tab이 1회만 반영.
+  int i2iMaskClearRevision = 0;
 
   // 릴의 결과를 작업 이미지로 채택 (이어서 인페인트 등)
   void useI2iResult(int index) {
     if (index < 0 || index >= i2iResults.length) {
       return;
     }
-    i2iPreserveMaskOnNextChange = true; // 릴 탭은 마스킹 유지
+    i2iMaskActionOnChange = I2iMaskAction.keepMask; // 릴 탭은 마스킹 유지
     targetI2iImage = i2iResults[index].bytes;
     targetI2iMetadata = i2iResults[index].metadata;
+    recordI2iView(i2iResults[index].bytes, i2iResults[index].metadata); // 본 이미지 기록 추가
     notifyListeners();
   }
 
@@ -5330,14 +5421,15 @@ class AppState extends ChangeNotifier {
     }
 
     // 버전 키워드 매칭 (구체적인 것부터 체크)
+    // ⚠️ v5 출시 시 이 목록에 v5 키워드 추가 필요 (안 하면 v5 메타가 v4로 오인됨)
     if (lower.contains('v4.5')) {
-      return 'nai-diffusion-4-5-full';
+      return NaiModels.v45Full;
     }
     if (lower.contains('v4')) {
-      return 'nai-diffusion-4-full';
+      return NaiModels.v4Full;
     }
     if (lower.contains('v3')) {
-      return 'nai-diffusion-3';
+      return NaiModels.v3;
     }
 
     // 매칭 실패 → 현재 선택된 모델 사용

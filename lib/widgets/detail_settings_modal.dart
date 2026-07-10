@@ -4,8 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
+import '../models/model_caps.dart';
 
-const List<String> _models = ["nai-diffusion-4-full", "nai-diffusion-4-5-full"];
+const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full];
 const List<String> _samplers = [
   "k_euler_ancestral",
   "k_euler",
@@ -416,7 +417,7 @@ void showDetailSettingsModal(BuildContext context) {
                                   // 저장된 모델이 목록에 없으면(예: 제거된 테스트 모델) 기본값으로 폴백
                                   value: _models.contains(state.selectedModel)
                                       ? state.selectedModel
-                                      : "nai-diffusion-4-5-full",
+                                      : NaiModels.v45Full,
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: const Color(0xFF2A2A2D),

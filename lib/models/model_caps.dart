@@ -23,6 +23,7 @@ class NaiModels {
   static const String v4Curated = 'nai-diffusion-4-curated';
   static const String v3 = 'nai-diffusion-3';
   static const String furryV3 = 'nai-diffusion-furry-3';
+  static const String v2 = 'nai-diffusion-2'; // infill 접미사 예외 처리용 (레거시)
 
   // ---- v5 (아직 정식 출시 전 · API 문자열 미공개) ----
   // NovelAI가 6월에 "V5 학습 중"이라고만 언급. 정식 출시 시 실제 문자열로 교체할 것.

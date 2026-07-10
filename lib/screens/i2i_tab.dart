@@ -7,20 +7,6 @@ import 'package:image/image.dart' as img;
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
 
-class MaskStroke {
-  final List<Offset> points;
-  final double size;
-  final bool isEraser;
-  final bool isCircle;
-
-  MaskStroke({
-    required this.points,
-    required this.size,
-    required this.isEraser,
-    required this.isCircle,
-  });
-}
-
 class I2iTab extends StatefulWidget {
   const I2iTab({super.key});
 
@@ -45,22 +31,87 @@ class _I2iTabState extends State<I2iTab>
     // (I2iTab은 생성자 주입이 아니라 Provider에서 state를 얻으므로 context.read 사용)
     final state = context.read<AppState>();
     _appStateRef = state;
-    state.i2iBackHandler = () {
+    _myBackHandler = () {
       if (_reelOpen) {
         setState(() => _reelOpen = false);
         return true;
       }
       return false;
     };
+    state.i2iBackHandler = _myBackHandler;
+    // 마스크 처리는 build가 아니라 리스너에서 (탭 가시성과 무관하게 즉시 1회 처리 — 지연/재실행 방지)
+    _lastI2iImage = state.targetI2iImage; // 현재 이미지를 기준선으로 (초기 오탐 방지)
+    _lastMaskClearRevision = state.i2iMaskClearRevision;
+    // 탭이 재생성돼도(PageView가 페이지 정리) 기존 릴 결과를 "새 결과"로 오인해
+    // 핸들이 깜빡이지 않도록, 현재 결과 개수를 기준선으로 잡아둔다.
+    _lastResultCount = state.i2iResults.length;
+    state.addListener(_handleI2iMaskChanges);
+  }
+
+  // app_state 변화 시 마스크 처리 (build 밖에서 실행 → 탭 전환 rebuild에 안 휩쓸림)
+  void _handleI2iMaskChanges() {
+    if (!mounted) {
+      return;
+    }
+    final state = _appStateRef;
+    if (state == null) {
+      return;
+    }
+    bool changed = false;
+
+    // ① 작업 이미지가 바뀐 경우: 지정된 마스크 처리 방식에 따라
+    if (state.targetI2iImage != null && state.targetI2iImage != _lastI2iImage) {
+      _lastI2iImage = state.targetI2iImage;
+      _mosaicPreviewImage = null;
+      _isPreviewLoading = false;
+
+      bool clearMask;
+      switch (state.i2iMaskActionOnChange) {
+        case I2iMaskAction.keepMask:
+          clearMask = false;
+          break;
+        case I2iMaskAction.followInpaintSetting:
+          clearMask = state.inpaintAutoClearMask;
+          break;
+        case I2iMaskAction.clearMask:
+          clearMask = true;
+          break;
+      }
+      if (clearMask) {
+        _strokes.clear();
+        changed = true;
+      }
+      if (state.i2iMaskActionOnChange == I2iMaskAction.clearMask) {
+        _transformController.value = Matrix4.identity();
+      }
+    }
+
+    // ② 이미지는 그대로 두고 마스크만 즉시 해제 (자동 전환 OFF + 자동 해제 ON)
+    if (state.i2iMaskClearRevision != _lastMaskClearRevision) {
+      _lastMaskClearRevision = state.i2iMaskClearRevision;
+      _strokes.clear();
+      changed = true;
+    }
+
+    if (changed) {
+      setState(() {}); // 캔버스(CustomPaint) 갱신
+    }
   }
 
   // dispose 시점엔 context 접근이 불안정하므로 initState에서 참조를 저장해 둔다.
   AppState? _appStateRef;
+  // 뒤로가기 핸들러 클로저 (dispose 시 identity 비교용 — PageView가 같은 탭을
+  // 잠깐 두 인스턴스로 만들 때, 옛 인스턴스가 새 인스턴스의 핸들러를 지우지 않도록)
+  late final bool Function() _myBackHandler;
 
   @override
   void dispose() {
-    if (_appStateRef?.i2iBackHandler != null) {
-      _appStateRef!.i2iBackHandler = null;
+    if (_appStateRef != null) {
+      _appStateRef!.removeListener(_handleI2iMaskChanges);
+      // 내 핸들러가 아직 등록돼 있을 때만 해제 (새 인스턴스가 이미 덮어썼으면 건드리지 않음)
+      if (identical(_appStateRef!.i2iBackHandler, _myBackHandler)) {
+        _appStateRef!.i2iBackHandler = null;
+      }
     }
     _glowController.dispose();
     _reelScroll.dispose();
@@ -110,7 +161,9 @@ class _I2iTabState extends State<I2iTab>
     Colors.yellowAccent,
   ];
 
-  final List<MaskStroke> _strokes = [];
+  // 마스크 획은 AppState에 보관 → i2i 탭이 PageView에서 재생성돼도 유지된다.
+  List<MaskStroke> get _strokes => _appStateRef?.i2iMaskStrokes ?? _fallbackStrokes;
+  final List<MaskStroke> _fallbackStrokes = []; // _appStateRef 준비 전 안전용
   MaskStroke? _currentStroke;
 
   final TransformationController _transformController = TransformationController();
@@ -118,6 +171,7 @@ class _I2iTabState extends State<I2iTab>
   final GlobalKey _canvasKey = GlobalKey();
 
   Uint8List? _lastI2iImage; // 이전 i2i 이미지 추적 (마스크 자동 초기화용)
+  int _lastMaskClearRevision = 0; // 마지막으로 반영한 마스크 즉시 해제 리비전
 
   // ============================================================================
   // 모자이크 타입 헬퍼
@@ -295,13 +349,10 @@ class _I2iTabState extends State<I2iTab>
       if (tool == 'pencil' || tool == 'eraser') {
         _showSizeDialog(tool);
       } else if (tool == 'pan') {
-        // 손 도구를 다시 누름 + 현재 배율이 100%(초기 배율)면 이미지를 정 가운데로 정렬
-        final scale = _transformController.value.getMaxScaleOnAxis();
-        if (scale <= 1.01) {
-          setState(() {
-            _transformController.value = Matrix4.identity();
-          });
-        }
+        // 손 도구를 다시 누르면 배율 100% + 정 가운데로 한 번에 초기화
+        setState(() {
+          _transformController.value = Matrix4.identity();
+        });
       }
     } else if (tool == 'zoom') {
       setState(() {
@@ -576,7 +627,9 @@ class _I2iTabState extends State<I2iTab>
       });
 
       if (pngBytes != null) {
+        state.i2iMaskActionOnChange = I2iMaskAction.clearMask; // 모자이크 결과 → 마스크 초기화
         state.targetI2iImage = pngBytes;
+        state.recordI2iView(pngBytes, null, reset: true); // 본 이미지 기록 새로 시작
         _strokes.clear();
 
         // 모자이크 결과는 메인 히스토리 대신 i2i 스크래치 릴로
@@ -780,6 +833,7 @@ class _I2iTabState extends State<I2iTab>
     String tooltip, {
     bool? selectedOverride, // 강조 여부 직접 지정 (null이면 _currentTool 기준)
     VoidCallback? onTapOverride, // 탭 동작 직접 지정 (null이면 _selectTool)
+    VoidCallback? onLongPressOverride, // 꾹 누르기 동작 (선택)
   }) {
     bool isSelected =
         selectedOverride ??
@@ -803,19 +857,15 @@ class _I2iTabState extends State<I2iTab>
       iconSize = 24;
     }
 
-    // 인페인트 모드는 여유있으니 원래 크기 (살짝 축소)
-    final bool compact = _i2iMode == 'mosaic';
-    final double btnW = compact ? 44 : 48;
-    final double btnH = compact ? 40 : 42;
-    if (!compact) {
-      iconSize = sizeText != null ? 17 : 20;
-      if (toolId == 'zoom') iconSize = 25;
-    }
+    // 인페인트/모자이크 공통 규격 (모자이크 기준 44×40으로 통일)
+    const double btnW = 44;
+    const double btnH = 40;
 
     return Tooltip(
       message: tooltip,
       child: InkWell(
         onTap: onTapOverride ?? () => _selectTool(toolId),
+        onLongPress: onLongPressOverride,
         borderRadius: BorderRadius.circular(8),
         child: Container(
           width: btnW,
@@ -858,8 +908,8 @@ class _I2iTabState extends State<I2iTab>
         onTap: _showStrengthDialog,
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          width: 52,
-          height: 46,
+          width: 44,
+          height: 40,
           decoration: BoxDecoration(
             color: Colors.transparent,
             border: Border.all(color: Colors.white24, width: 1.5),
@@ -870,9 +920,8 @@ class _I2iTabState extends State<I2iTab>
             children: [
               const Text(
                 "강도",
-                style: TextStyle(color: Colors.white54, fontSize: 11, fontWeight: FontWeight.bold),
+                style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 1),
               Text(
                 state.infillStrength.toStringAsFixed(2),
                 style: const TextStyle(
@@ -1682,27 +1731,8 @@ class _I2iTabState extends State<I2iTab>
     super.build(context);
     final state = context.watch<AppState>();
 
-    // i2i 작업 이미지가 바뀌면 상태 갱신 (모드는 유지)
-    if (state.targetI2iImage != null && state.targetI2iImage != _lastI2iImage) {
-      _lastI2iImage = state.targetI2iImage;
-      _mosaicPreviewImage = null; // 이전 이미지 기준 미리보기는 무효
-      _isPreviewLoading = false;
-      if (state.i2iPreserveMaskOnNextChange) {
-        // 릴에서 결과를 눌러 이미지만 바꾼 경우 → 마스킹·확대상태 유지 (결과 비교 편의)
-        state.i2iPreserveMaskOnNextChange = false; // 1회용 신호 소비
-      } else {
-        // i2i로 새 이미지를 보낸 경우 → 전체 초기화
-        _strokes.clear();
-        _transformController.value = Matrix4.identity(); // 확대/이동 초기화
-      }
-    }
-
-    // 인페인트 자동 마스크 해제: 이미지 전환 여부와 무관하게 결과가 나온 즉시 마스크만 해제
-    // (자동 전환 OFF일 때도 인페인트 순간 바로 지워지도록 — 확대상태는 그대로 둠)
-    if (state.i2iRequestMaskClear) {
-      state.i2iRequestMaskClear = false; // 1회용 신호 소비
-      _strokes.clear();
-    }
+    // ※ 마스크 처리(_strokes 초기화 등)는 _handleI2iMaskChanges 리스너에서 담당한다.
+    //   build에서 하면 탭 전환 등으로 인한 rebuild에 휩쓸려 엉뚱하게 마스크가 지워질 수 있음.
 
     bool canDraw =
         (_i2iMode != 'upscale') && (_currentTool == 'pencil' || _currentTool == 'eraser');
@@ -1871,20 +1901,34 @@ class _I2iTabState extends State<I2iTab>
                           child: Row(
                             children: [
                               _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
-                              SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                              const SizedBox(width: 6),
                               _buildToolIcon(
                                 'eraser',
                                 Icons.cleaning_services,
                                 "지우개 (한 번 더 누르면 크기 변경)",
                               ),
-                              SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                              const SizedBox(width: 6),
                               _buildToolIcon('zoom', Icons.zoom_in, "돋보기"),
-                              SizedBox(width: _i2iMode == 'mosaic' ? 6 : 8),
+                              const SizedBox(width: 6),
                               _buildToolIcon('pan', Icons.pan_tool, "손 (화면 이동)"),
                               if (_i2iMode == 'inpaint') ...[
-                                const SizedBox(width: 8),
+                                const SizedBox(width: 6),
                                 _buildStrengthButton(state),
-                                const SizedBox(width: 8),
+                                const SizedBox(width: 6),
+                                // 직전에 본 이미지로 전환 (탭=뒤로, 꾹=앞으로)
+                                _buildToolIcon(
+                                  'view_back',
+                                  Icons.undo,
+                                  "탭: 직전 이미지 · 꾹: 앞으로",
+                                  selectedOverride: false,
+                                  onTapOverride: () {
+                                    _appStateRef?.i2iGoBackView();
+                                  },
+                                  onLongPressOverride: () {
+                                    _appStateRef?.i2iGoForwardView();
+                                  },
+                                ),
+                                const SizedBox(width: 6),
                                 // 마스킹 표시 ON/OFF — 옆 툴 버튼과 완전히 동일한 위젯 사용
                                 _buildToolIcon(
                                   'mask_visible',

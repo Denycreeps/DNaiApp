@@ -24,16 +24,23 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
     _tabController = TabController(length: 4, vsync: this);
     // 설정 진입 시 항상 [일반] 탭으로 리셋되도록 핸들러 등록 (main onPageChanged가 호출)
     _appState = context.read<AppState>();
-    _appState.settingsTabReset = () {
+    _myResetHandler = () {
       if (mounted && _tabController.index != 0) {
         _tabController.animateTo(0);
       }
     };
+    _appState.settingsTabReset = _myResetHandler;
   }
+
+  // dispose 시 identity 비교용 (PageView가 같은 탭을 잠깐 두 인스턴스로 만들 때
+  // 옛 인스턴스가 새 인스턴스의 핸들러를 지우지 않도록)
+  late final void Function() _myResetHandler;
 
   @override
   void dispose() {
-    _appState.settingsTabReset = null;
+    if (identical(_appState.settingsTabReset, _myResetHandler)) {
+      _appState.settingsTabReset = null;
+    }
     _tabController.dispose();
     super.dispose();
   }
@@ -1472,6 +1479,8 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
   }
 
   void _showUpdateDialog(BuildContext context, AppState state) {
+    // 수동으로 열 때도 가드를 켜서, main의 자동 알림이 겹쳐 뜨지 않게 한다.
+    state.updateDialogShown = true;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
