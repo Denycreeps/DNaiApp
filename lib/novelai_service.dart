@@ -241,15 +241,34 @@ class NovelAiService {
   // ============================================================================
   // 태그 카테고리 조회: 1차 Danbooru(정확) → 2차 Gelbooru(겔부루 전용 태그 커버).
   // Danbooru에 없는 겔부루 전용 작가가 '일반'으로 오인돼 프롬프트에 새는 것을 방지한다.
+  // 응답에 포스트가 몇 개 들어있는지 (조기 종료 판정용, 필터 전 원시 개수)
+  int _countPostsInResponse(http.Response? response) {
+    if (response == null || response.statusCode != 200) {
+      return 0;
+    }
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded['post'] == null) {
+        return 0;
+      }
+      return (decoded['post'] as List).length;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   Future<Map<String, int>> _getDanbooruTagCategories(
     List<String> uniqueTags,
     String gelbooruUserId,
-    String gelbooruApiKey,
-  ) async {
+    String gelbooruApiKey, {
+    void Function(String stage)? onStage,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
-    // v2: 구버전 캐시는 겔부루 전용 작가가 0(일반)으로 오염됐을 수 있어 폐기
+    // v1/v2: 구버전 캐시는 (v1) 겔부루 전용 작가 0 오인, (v2) 실패 청크 미분류·겔부루
+    // 응답 누락으로 실존 작가가 0(일반)으로 오염됐을 수 있어 폐기하고 v3부터 새로 쌓는다.
     await prefs.remove('danbooru_tag_cache');
-    String? cachedData = prefs.getString('tag_category_cache_v2');
+    await prefs.remove('tag_category_cache_v2');
+    String? cachedData = prefs.getString('tag_category_cache_v3');
     Map<String, dynamic> persistentCache = cachedData != null ? jsonDecode(cachedData) : {};
 
     Map<String, int> finalCategoryMap = {};
@@ -330,6 +349,11 @@ class NovelAiService {
               danbooruNotFound.add(tag);
             }
           }
+        } else {
+          // [핵심] 응답 실패(타임아웃/429 등) 청크를 조용히 버리면 태그가 미분류로 남아
+          // 작가/캐릭터 이름이 프롬프트에 그대로 새어 나간다 → 겔부루 2차로 넘겨 분류 시도.
+          // (겔부루 2차도 실패하면 캐시에 안 남으므로 다음 검색 때 자동 재시도된다)
+          danbooruNotFound.addAll(chunks[i]);
         }
       }
 
@@ -337,7 +361,9 @@ class NovelAiService {
       // 포스트 출처가 겔부루이므로, 겔부루 전용 작가/태그도 여기서 정확히 잡힌다.
       // (type: 0=일반, 1=작가, 3=작품, 4=캐릭터, 5=메타, 6=폐기)
       if (danbooruNotFound.isNotEmpty) {
-        const int gChunkSize = 100;
+        // 청크 50: 100개를 공백으로 이으면 URL 길이/응답 상한 경계에 걸려
+        // 실존 태그가 응답에서 누락 → 0(일반)으로 영구 오염될 수 있다.
+        const int gChunkSize = 50;
         for (int start = 0; start < danbooruNotFound.length; start += gChunkSize) {
           final end = (start + gChunkSize).clamp(0, danbooruNotFound.length);
           final chunk = danbooruNotFound.sublist(start, end);
@@ -395,7 +421,8 @@ class NovelAiService {
             persistentCache.remove(keys[i]);
           }
         }
-        await prefs.setString('tag_category_cache_v2', jsonEncode(persistentCache));
+        onStage?.call("캐시 저장하는 중...");
+        await prefs.setString('tag_category_cache_v3', jsonEncode(persistentCache));
       }
     } catch (e) {
       debugPrint("단보루 카테고리 페칭 실패: $e");
@@ -416,6 +443,12 @@ class NovelAiService {
     required String gelbooruApiKey,
     List<String> localExcludeTags = const [],
     int maxPagesToFetch = 20,
+    // 검색 진행 상황 콜백 (완료 페이지 수, 전체 페이지 수, 지금까지 모인 유효 포스트 수)
+    void Function(int done, int total, int found)? onProgress,
+    // 검색 후 단계 메시지 콜백 (분류/필터/캐시 등 "지금 뭐 하는 중")
+    void Function(String stage)? onStage,
+    // [실험] 정렬 축 다양화: sort:random 외에 score/id 축도 섞어 중복을 줄이고 표본을 넓힘
+    bool diversifySort = false,
   }) async {
     List<String> incTags = includeTags
         .split(',')
@@ -479,18 +512,33 @@ class NovelAiService {
 
     // OR 태그가 있으면 각 옵션별로 검색 → 합치기
     // 없으면 단일 검색
+    // [실험] diversifySort ON: 각 태그 조합을 여러 정렬 축(random/score/id)으로 나눠
+    //   서로 다른 표본을 긁는다. sort:random만 쓰면 겹치는 포스트가 많은데,
+    //   score(고득점)·id(최신) 축을 섞으면 중복이 줄어 같은 페이지 수로 더 많은 고유 결과 확보.
+    final List<String> sortAxes = diversifySort
+        ? ["sort:random", "sort:score", "sort:id"]
+        : ["sort:random"];
+
     List<List<String>> queryVariants = [];
     if (orTags.isEmpty) {
-      queryVariants.add([...baseTags, "sort:random"]);
+      for (final axis in sortAxes) {
+        queryVariants.add([...baseTags, axis]);
+      }
     } else {
-      // 각 OR 옵션 + 고정 태그로 별도 쿼리 생성
+      // 각 OR 옵션 + 고정 태그 + 각 정렬 축으로 별도 쿼리 생성
       for (var orTag in orTags) {
-        queryVariants.add([...baseTags, orTag, "sort:random"]);
+        for (final axis in sortAxes) {
+          queryVariants.add([...baseTags, orTag, axis]);
+        }
       }
     }
 
     // 각 변형별 페이지 수 분배
     int pagesPerVariant = (effectiveMaxPages / queryVariants.length).ceil();
+    // 진행 표시용: 전체 페이지 수와 완료 수
+    final int totalPagesAll = pagesPerVariant * queryVariants.length;
+    int donePages = 0;
+    onProgress?.call(0, totalPagesAll, 0);
 
     List<dynamic> allValidPosts = [];
     Set<String> allUniqueTags = {};
@@ -510,7 +558,6 @@ class NovelAiService {
       // 페이지 요청을 배치로 나눠 실행 (한 번에 너무 많이 쏘면 429 위험).
       // 배치 크기: 키 있으면 10, 없으면 5 (공용 키 보호).
       final int batchSize = hasCredentials ? 10 : 5;
-      final List<http.Response?> pageResponses = [];
 
       Future<http.Response?> fetchPage(int page) async {
         totalRequests++;
@@ -537,19 +584,12 @@ class NovelAiService {
         }
       }
 
-      for (int start = 0; start < pagesPerVariant; start += batchSize) {
-        final end = (start + batchSize).clamp(0, pagesPerVariant);
-        final batch = await Future.wait(List.generate(end - start, (i) => fetchPage(start + i)));
-        pageResponses.addAll(batch);
-        // 다음 배치 전 짧은 간격 (서버 부담 완화)
-        if (end < pagesPerVariant) {
-          await Future.delayed(const Duration(milliseconds: 200));
-        }
-      }
-
-      for (var response in pageResponses) {
+      // 응답 1건을 즉시 파싱해 유효 포스트를 누적.
+      // (예전엔 전부 받은 뒤 일괄 파싱 → 배치마다 바로 처리해
+      //  '검색 : N' 카운트가 실시간으로 차오르게 한다)
+      void processResponse(http.Response? response) {
         if (response == null) {
-          continue;
+          return;
         }
         if (response.statusCode != 200) {
           final code = response.statusCode;
@@ -562,12 +602,12 @@ class NovelAiService {
           } else {
             serverErrors++;
           }
-          continue;
+          return;
         }
         try {
           final decoded = jsonDecode(response.body);
           if (decoded['post'] == null) {
-            continue;
+            return;
           }
 
           List<dynamic> posts = decoded['post'];
@@ -598,6 +638,32 @@ class NovelAiService {
           }
         } catch (e) {
           debugPrint("겔보루 파싱 에러: $e");
+        }
+      }
+
+      for (int start = 0; start < pagesPerVariant; start += batchSize) {
+        final end = (start + batchSize).clamp(0, pagesPerVariant);
+        final batch = await Future.wait(List.generate(end - start, (i) => fetchPage(start + i)));
+        int batchNewPosts = 0;
+        for (final r in batch) {
+          batchNewPosts += _countPostsInResponse(r);
+          processResponse(r);
+        }
+        // 진행 상황 알림 (완료 페이지 + 지금까지 모인 유효 포스트 수)
+        donePages += (end - start);
+        onProgress?.call(donePages, totalPagesAll, allValidPosts.length);
+
+        // 이 배치에서 포스트가 하나도 안 왔으면 = 결과 소진.
+        // 남은 빈 페이지를 계속 때리는 헛요청을 막고 조기 종료한다.
+        // (결과가 100개 미만이면 첫 페이지에 다 담기고 이후는 전부 빈 응답)
+        if (batchNewPosts == 0 && start > 0) {
+          // 진행 표시는 100%로 맞춰 마무리 (빈 페이지는 건너뛴 것)
+          onProgress?.call(totalPagesAll, totalPagesAll, allValidPosts.length);
+          break;
+        }
+        // 다음 배치 전 짧은 간격 (서버 부담 완화)
+        if (end < pagesPerVariant) {
+          await Future.delayed(const Duration(milliseconds: 200));
         }
       }
     } // queryVariants 루프 끝
@@ -637,7 +703,9 @@ class NovelAiService {
     }
 
     // 로컬 제외 필터링: 포스트의 태그에 제외 태그가 하나라도 포함되면 제거
+    // (이 단계에서 유효 포스트 수가 줄어들 수 있음 — 실시간 카운트는 필터 전 값이므로)
     if (localExcludeSet.isNotEmpty) {
+      onStage?.call("제외 태그 거르는 중...");
       allValidPosts.removeWhere((post) {
         String tagString = (post['tags'] ?? "").toString().toLowerCase();
         List<String> postTags = tagString.split(' ');
@@ -650,25 +718,31 @@ class NovelAiService {
       return [];
     }
 
+    // 이름 사전(에셋) 로드 — 최초 1회만 실제 로드되고 이후엔 즉시 반환
+    await TagFilters.ensureNamesLoaded();
+
     // 로컬 사전 필터링: metadata/copyright 태그를 Danbooru API에 보내기 전에 제거
     // → API 청크 수 감소 → 네트워크 호출 절감
-    // (이름 사전 3종: 로컬에서 이미 분류 확정이므로 API에 물어볼 필요 없음)
+    // (이름 판정은 isNameTag 하나로 통일: 정적 사전 + 에셋 사전 + 패턴 안전장치)
     final filteredUniqueTags = allUniqueTags.where((t) {
       final spaced = t.replaceAll('_', ' ');
       return !TagFilters.metadataTags.contains(spaced) &&
           !TagFilters.copyrightTags.contains(spaced) &&
-          !TagFilters.artistNames.contains(t) &&
-          !TagFilters.characterNames.contains(t) &&
-          !TagFilters.copyrightNames.contains(t) &&
+          !TagFilters.isNameTag(t) &&
           !TagFilters.commonGarbage.contains(t) &&
           !TagFilters.commonGarbage.contains(spaced);
     }).toList();
 
+    // 태그 분류 (작가/캐릭터/작품 판별) — 페이지 수신 후 가장 오래 걸리는 구간.
+    // 새 태그가 많으면 Danbooru/Gelbooru에 나눠 물어보느라 여기서 한참 멈춘 것처럼 보인다.
+    onStage?.call("태그 분류하는 중...");
     Map<String, int> tagCategories = await _getDanbooruTagCategories(
       filteredUniqueTags,
       effectiveUserId,
       effectiveApiKey,
+      onStage: onStage,
     );
+    onStage?.call("프롬프트 정리하는 중...");
     List<String> newPrompts = [];
 
     for (var post in allValidPosts) {
@@ -695,11 +769,9 @@ class NovelAiService {
           continue;
         }
 
-        // 로컬 이름 사전: 작가/캐릭터/작품 이름은 API 결과와 무관하게 즉시 제거
+        // 이름 판정 통합: 정적 사전 + 에셋 사전 + 패턴 안전장치
         // (429·오프라인으로 카테고리 조회가 실패해도 이름 누출 방지)
-        if (TagFilters.artistNames.contains(t) ||
-            TagFilters.characterNames.contains(t) ||
-            TagFilters.copyrightNames.contains(t)) {
+        if (TagFilters.isNameTag(t)) {
           continue;
         }
 
@@ -794,8 +866,11 @@ class NovelAiService {
     Uint8List? mask,
     String action = "generate",
     double infillStrength = 0.7,
+    double img2imgStrength = 0.5, // img2img: 원본을 얼마나 바꿀지 (낮을수록 원본 충실)
+    double img2imgNoise = 0.1, // img2img: 새 디테일 추가량
     bool variancePlus = false,
     bool useCharacterPosition = true,
+    bool randomCharacterOrder = false, // 캐릭터 순서 랜덤 (배치 적용과 상호 배타)
     List<Map<String, dynamic>>? vibeTransfers,
     List<Map<String, dynamic>>? preciseRefs,
     int maxAttempts = 4,
@@ -860,7 +935,7 @@ class NovelAiService {
           "use_coords": false,
         });
       } else {
-        // generate 전용 파라미터
+        // generate / img2img 공통 파라미터
         parameters.addAll({
           "add_original_image": true,
           "qualityToggle": true,
@@ -872,6 +947,12 @@ class NovelAiService {
           // [수정] VAR+ ON: 58, OFF: null (기존 59.04... 하드코딩 제거)
           "skip_cfg_above_sigma": variancePlus ? 58 : null,
         });
+
+        // img2img 전용: 원본 변형 강도(strength)와 노이즈(noise)
+        // strength 낮음(0.2~0.4)=원본 충실 / 높음(0.6~0.8)=창의적 재해석
+        if (action == "img2img") {
+          parameters.addAll({"strength": img2imgStrength, "noise": img2imgNoise});
+        }
       }
 
       if (variancePlus) {
@@ -904,17 +985,20 @@ class NovelAiService {
       List<Map<String, dynamic>> negCharCaptions = [];
 
       // 캐릭터 좌표는 generate 전용
-      bool hasCustomPosition = false;
       if (action != "infill") {
-        for (var char in characters) {
+        // [랜덤 배치] ON이면 캐릭터 순서를 시드 기반으로 섞는다.
+        // V4는 use_order:true로 캡션 순서를 구도에 반영하므로(먼저 적힌 캐릭터가 왼쪽 경향),
+        // 순서를 섞으면 구도가 매번 달라진다. 시드 기반이라 같은 시드는 같은 구도로 재현.
+        // [배치 적용]/[랜덤 배치] 둘 다 OFF면 캐릭터 적용 순서 그대로 (원래 동작).
+        List<dynamic> orderedCharacters = List.of(characters);
+        if (randomCharacterOrder && orderedCharacters.length > 1) {
+          orderedCharacters.shuffle(Random(seed));
+        }
+
+        for (var char in orderedCharacters) {
           double cx = (char['gridX'] * 0.2) + 0.1;
           double cy = (char['gridY'] * 0.2) + 0.1;
           var center = {"x": cx, "y": cy};
-
-          // 기본 위치(C3 = gridX:2, gridY:2)가 아닌 캐릭터가 있는지 체크
-          if (char['gridX'] != 2 || char['gridY'] != 2) {
-            hasCustomPosition = true;
-          }
 
           if ((char['positive'] as String).isNotEmpty) {
             posCharCaptions.add({
@@ -933,8 +1017,12 @@ class NovelAiService {
 
       parameters["v4_prompt"] = {
         "caption": {"base_caption": finalPrompt, "char_captions": posCharCaptions},
-        // 하나라도 기본 위치(C3)가 아닌 캐릭터가 있고, 배치 적용이 켜져있을 때만 좌표 사용
-        "use_coords": action == "infill" ? false : (hasCustomPosition && useCharacterPosition),
+        // [배치 적용] ON이면 좌표 사용 — 전원 기본 위치(중앙)여도 그대로 중앙 배치(겹침 허용).
+        // 공식 스펙 정합: 포지션 기능은 캐릭터 2명 이상일 때만 활성 (1명은 공식도 비활성),
+        // 같은 셀 겹침은 공식도 그대로 전송(좌표는 강제가 아닌 '넛지', 랜덤 재배치 없음).
+        "use_coords": action == "infill"
+            ? false
+            : (useCharacterPosition && posCharCaptions.length >= 2),
         "use_order": true,
       };
       parameters["v4_negative_prompt"] = {

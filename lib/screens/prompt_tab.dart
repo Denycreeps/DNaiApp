@@ -213,6 +213,9 @@ class PromptTab extends StatefulWidget {
 }
 
 class _PromptTabState extends State<PromptTab> {
+  // [다음 프롬프트] 누름 팝 효과용 (누를 때마다 증가 → 애니메이션 재생)
+  int _nextPromptFx = 0;
+
   // 프리셋 카테고리 분류
   String _getPresetCategory(NaiPreset preset) {
     final f = preset.savedFields;
@@ -3579,21 +3582,35 @@ class _PromptTabState extends State<PromptTab> {
                     constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
                   ),
                   const SizedBox(width: 16),
-                  OutlinedButton(
-                    onPressed: canChangePrompt ? () => state.handleNextPrompt() : null,
-                    style: OutlinedButton.styleFrom(
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      fixedSize: const Size(160, 30),
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      side: BorderSide(color: promptActionColor, width: 1.5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-                    ),
-                    child: Text(
-                      "다음 프롬프트",
-                      style: TextStyle(
-                        color: promptActionColor,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
+                  TweenAnimationBuilder<double>(
+                    // 누를 때마다 key가 바뀌어 '눌렸다 튕겨나오는' 팝 애니메이션 재생
+                    key: ValueKey(_nextPromptFx),
+                    tween: Tween(begin: _nextPromptFx == 0 ? 1.0 : 0.82, end: 1.0),
+                    duration: const Duration(milliseconds: 260),
+                    curve: Curves.elasticOut,
+                    builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
+                    child: OutlinedButton(
+                      onPressed: canChangePrompt
+                          ? () {
+                              HapticFeedback.lightImpact(); // 살짝 진동 — 누른 맛!
+                              setState(() => _nextPromptFx++);
+                              state.handleNextPrompt();
+                            }
+                          : null,
+                      style: OutlinedButton.styleFrom(
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        fixedSize: const Size(160, 30),
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        side: BorderSide(color: promptActionColor, width: 1.5),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                      ),
+                      child: Text(
+                        "다음 프롬프트",
+                        style: TextStyle(
+                          color: promptActionColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
                       ),
                     ),
                   ),
@@ -3646,6 +3663,10 @@ class _PromptTabState extends State<PromptTab> {
                           );
                           // 현재 배치가 무한(0)인지 다이얼로그 내부에서 추적
                           bool isInfinite = state.batchCount == 0;
+                          // 같은 프롬프트 반복 횟수 입력용
+                          final repeatCtrl = TextEditingController(
+                            text: state.repeatSamePromptCount.toString(),
+                          );
                           return StatefulBuilder(
                             builder: (ctx, setDialogState) {
                               return AlertDialog(
@@ -3718,6 +3739,75 @@ class _PromptTabState extends State<PromptTab> {
                                               state.saveAllSettings();
                                               state.refreshUI();
                                             },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    // 같은 프롬프트로 N번 반복 후 다음으로 (자동 전환 ON일 때만 유효)
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            "같은 프롬프트 반복",
+                                            style: TextStyle(
+                                              color: state.autoNextPromptInBatch
+                                                  ? Colors.white
+                                                  : Colors.white38,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                        ),
+                                        // 작은 숫자 입력창
+                                        SizedBox(
+                                          width: 44,
+                                          height: 32,
+                                          child: TextField(
+                                            controller: repeatCtrl,
+                                            enabled:
+                                                state.autoNextPromptInBatch &&
+                                                state.repeatSamePromptEnabled,
+                                            keyboardType: TextInputType.number,
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 13,
+                                            ),
+                                            decoration: InputDecoration(
+                                              isDense: true,
+                                              contentPadding: const EdgeInsets.symmetric(
+                                                horizontal: 4,
+                                                vertical: 8,
+                                              ),
+                                              filled: true,
+                                              fillColor: const Color(0xFF121212),
+                                              border: OutlineInputBorder(
+                                                borderRadius: BorderRadius.circular(6),
+                                                borderSide: BorderSide.none,
+                                              ),
+                                            ),
+                                            onChanged: (v) {
+                                              final n = int.tryParse(v);
+                                              if (n != null) {
+                                                state.repeatSamePromptCount = n.clamp(1, 99);
+                                                state.saveAllSettings();
+                                              }
+                                            },
+                                          ),
+                                        ),
+                                        Transform.scale(
+                                          scale: 0.85,
+                                          child: Switch(
+                                            value: state.repeatSamePromptEnabled,
+                                            activeThumbColor: const Color(0xFF8B5CF6),
+                                            onChanged: state.autoNextPromptInBatch
+                                                ? (v) {
+                                                    setDialogState(() {
+                                                      state.repeatSamePromptEnabled = v;
+                                                    });
+                                                    state.saveAllSettings();
+                                                    state.refreshUI();
+                                                  }
+                                                : null, // 자동 전환 OFF면 비활성
                                           ),
                                         ),
                                       ],
@@ -3902,7 +3992,12 @@ class _PromptTabState extends State<PromptTab> {
                         : const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
                     label: Text(
                       (state.isLoading || state.isBatchMode)
-                          ? (state.isBatchMode ? "생성중(${state.batchRemaining})..." : "생성 중...")
+                          ? (state.isBatchMode
+                                ? (state.currentRepeatTotal > 1
+                                      // 반복 생성 중: 남은 회차 + 이번 회차의 반복 진행도
+                                      ? "생성중(${state.batchRemaining}) ${state.currentRepeatIndex}/${state.currentRepeatTotal}..."
+                                      : "생성중(${state.batchRemaining})...")
+                                : "생성 중...")
                           : (state.isInpaintLoading
                                 ? "인페인트 중..."
                                 : (state.isUpscaleLoading ? "업스케일 중..." : "이미지 생성 시작")),
@@ -4084,7 +4179,15 @@ class _PromptTabState extends State<PromptTab> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
                   child: Text(
-                    state.isGelbooruLoading ? "검색 중" : "검색",
+                    state.isGelbooruLoading
+                        ? (state.gelbooruSearchStage.isNotEmpty
+                              // 페이지 수신 완료 후: 분류/필터/캐시 등 현재 단계 표시
+                              ? state.gelbooruSearchStage
+                              : (state.gelbooruSearchTotal > 0
+                                    // 페이지 수신 중: 완료/전체 페이지
+                                    ? "검색 중 ${state.gelbooruSearchDone}/${state.gelbooruSearchTotal}"
+                                    : "검색 중"))
+                        : "검색",
                     style: const TextStyle(color: Colors.white),
                   ),
                 ),

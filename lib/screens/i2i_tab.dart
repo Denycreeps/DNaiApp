@@ -211,30 +211,304 @@ class _I2iTabState extends State<I2iTab>
       onTap: () => setState(() {
         _i2iMode = mode;
         _mosaicPreviewImage = null;
+        // 마스킹이 필요한 모드(인페인트/모자이크)는 연필로 시작하고,
+        // 그리기가 없는 모드(img2img/업스케일)는 손으로 전환한다.
+        if (mode == 'inpaint' || mode == 'mosaic') {
+          if (_currentTool != 'pencil' && _currentTool != 'eraser') {
+            _currentTool = 'pencil';
+          }
+        } else if (_currentTool == 'pencil' || _currentTool == 'eraser') {
+          _currentTool = 'pan';
+        }
       }),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        // Expanded 안에 들어가므로 주어진 칸을 꽉 채운다 (개수와 무관하게 균등 분배)
+        // 높이 22 + 마진 1.5 = 행당 25 → 2줄이어도 고정 영역(56) 안에 정확히 수납
+        height: 22,
+        margin: const EdgeInsets.all(1.5),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
         decoration: BoxDecoration(
           color: isActive ? color.withValues(alpha: 0.2) : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(6),
         ),
         child: Row(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisSize: MainAxisSize.max,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(icon, size: 16, color: isActive ? color : Colors.white38),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: isActive ? color : Colors.white38,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
+            Icon(icon, size: 14, color: isActive ? color : Colors.white38),
+            const SizedBox(width: 3),
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: isActive ? color : Colors.white38,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ],
         ),
       ),
     );
+  }
+
+  // ── 툴바 버튼 구성 (기본 배치: 한 줄 합침 / 대체 배치: 2줄 분리) ──
+
+  // 공통 도구: 연필/지우개(마스킹 모드만) + 돋보기/손
+  List<Widget> _commonToolWidgets() {
+    return [
+      // 그리기 도구는 마스킹이 필요한 모드에서만 (img2img는 불필요)
+      if (_i2iMode != 'img2img') ...[
+        _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
+        const SizedBox(width: 6),
+        _buildToolIcon('eraser', Icons.cleaning_services, "지우개 (한 번 더 누르면 크기 변경)"),
+        const SizedBox(width: 6),
+      ],
+      _buildToolIcon('zoom', Icons.zoom_in, "돋보기"),
+      const SizedBox(width: 6),
+      _buildToolIcon('pan', Icons.pan_tool, "손 (화면 이동)"),
+    ];
+  }
+
+  // 모드 전용 도구 (강도/노이즈/픽셀/미리보기/직전이미지/마스킹표시 등)
+  List<Widget> _modeToolWidgets(AppState state) {
+    return [
+      // img2img 전용: 강도/노이즈 + 직전 이미지
+      if (_i2iMode == 'img2img') ...[
+        _buildImg2ImgParamButton(state, isNoise: false),
+        const SizedBox(width: 6),
+        _buildImg2ImgParamButton(state, isNoise: true),
+        const SizedBox(width: 6),
+        _buildToolIcon(
+          'view_back',
+          Icons.undo,
+          "탭: 직전 이미지 · 꾹: 앞으로",
+          selectedOverride: false,
+          onTapOverride: () {
+            _appStateRef?.i2iGoBackView();
+          },
+          onLongPressOverride: () {
+            _appStateRef?.i2iGoForwardView();
+          },
+        ),
+      ],
+      if (_i2iMode == 'inpaint') ...[
+        _buildStrengthButton(state),
+        const SizedBox(width: 6),
+        // 직전에 본 이미지로 전환 (탭=뒤로, 꾹=앞으로)
+        _buildToolIcon(
+          'view_back',
+          Icons.undo,
+          "탭: 직전 이미지 · 꾹: 앞으로",
+          selectedOverride: false,
+          onTapOverride: () {
+            _appStateRef?.i2iGoBackView();
+          },
+          onLongPressOverride: () {
+            _appStateRef?.i2iGoForwardView();
+          },
+        ),
+        const SizedBox(width: 6),
+        // 마스킹 표시 ON/OFF — 옆 툴 버튼과 완전히 동일한 위젯 사용
+        _buildToolIcon(
+          'mask_visible',
+          _maskVisible ? Icons.visibility : Icons.visibility_off,
+          "마스킹 표시 켜기/끄기",
+          selectedOverride: _maskVisible,
+          onTapOverride: () {
+            setState(() => _maskVisible = !_maskVisible);
+          },
+        ),
+      ],
+      if (_i2iMode == 'mosaic') ...[
+        _buildMosaicStrengthButton(),
+        const SizedBox(width: 6),
+        GestureDetector(
+          onTap: () => setState(() {
+            if (_mosaicType == 'pixel') {
+              _mosaicType = 'blur';
+            } else if (_mosaicType == 'blur') {
+              _mosaicType = 'line';
+            } else {
+              _mosaicType = 'pixel';
+            }
+          }),
+          child: Container(
+            width: 44,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _getMosaicTypeColor().withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _getMosaicTypeColor(), width: 1.5),
+            ),
+            child: Center(
+              child: Text(
+                _getMosaicTypeLabel(),
+                style: TextStyle(
+                  color: _getMosaicTypeColor(),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Tooltip(
+          message: "모자이크 미리보기",
+          child: InkWell(
+            onTap: _isPreviewLoading
+                ? null
+                : () {
+                    if (_mosaicPreviewImage != null) {
+                      setState(() => _mosaicPreviewImage = null);
+                    } else {
+                      _generateMosaicPreview(state);
+                    }
+                  },
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              width: 44,
+              height: 40,
+              decoration: BoxDecoration(
+                color: _mosaicPreviewImage != null
+                    ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
+                    : Colors.transparent,
+                border: Border.all(
+                  color: _mosaicPreviewImage != null ? Colors.deepPurpleAccent : Colors.white24,
+                  width: 1.5,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: _isPreviewLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: CircularProgressIndicator(
+                        color: Colors.deepPurpleAccent,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : Icon(
+                      _mosaicPreviewImage != null ? Icons.visibility : Icons.visibility_outlined,
+                      color: _mosaicPreviewImage != null ? Colors.deepPurpleAccent : Colors.white54,
+                      size: 18,
+                    ),
+            ),
+          ),
+        ),
+      ],
+    ];
+  }
+
+  // 기본 배치용: 공통 + 모드 도구를 한 줄로 합침
+  List<Widget> _classicToolbarChildren(AppState state) {
+    final modeBtns = _modeToolWidgets(state);
+    return [
+      ..._commonToolWidgets(),
+      if (modeBtns.isNotEmpty) const SizedBox(width: 6),
+      ...modeBtns,
+    ];
+  }
+
+  // 실행 버튼 (두 배치가 크기만 다르게 공유)
+  Widget _buildExecuteButton(AppState state, {required double width, required double height}) {
+    return SizedBox(
+      width: width,
+      height: height,
+      child: ElevatedButton.icon(
+        onPressed: _getExecuteOnPressed(state, context),
+        icon: _getExecuteIcon(state),
+        label: Text(
+          _getExecuteLabel(state),
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+        ),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
+              ? Colors.grey[700]
+              : _getExecuteColor(),
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      ),
+    );
+  }
+
+  // 대체 배치 하단: 툴 2줄(좌) + 실행 버튼(우하단)
+  Widget _buildAltBottomBar(AppState state) {
+    // 업스케일은 도구가 없으므로 실행 버튼만 우측 정렬
+    if (_i2iMode == 'upscale') {
+      return Row(children: [const Spacer(), _buildExecuteButton(state, width: 140, height: 56)]);
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: _commonToolWidgets()),
+              ),
+              const SizedBox(height: 6),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(children: _modeToolWidgets(state)),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 8),
+        // 툴 2줄 높이(40+6+40=86)에 맞춘 큼직한 실행 버튼 — 우측 하단
+        _buildExecuteButton(state, width: 132, height: 86),
+      ],
+    );
+  }
+
+  // 켜져 있는 모드를 배치한다. 칩들은 주어진 폭을 균등하게 나눠 가지므로
+  // 모드 개수가 몇 개든 전체 영역(과 실행 버튼)의 크기는 변하지 않는다.
+  //  4개 → 2×2 / 3개 → 가로 3개 / 2개 → 가로 2개 / 1개 → 크게 1개
+  List<Widget> _buildModeChipRows(AppState state, {bool singleRow = false}) {
+    const specs = [
+      ('inpaint', '인페인트', Icons.format_paint, Color(0xFF00BFA5)),
+      ('mosaic', '모자이크', Icons.grid_on, Colors.deepPurpleAccent),
+      ('img2img', 'img2img', Icons.auto_fix_high, Color(0xFF3B82F6)),
+      ('upscale', '업스케일', Icons.high_quality, Color(0xFFFFA000)),
+    ];
+    final enabled = state.enabledI2iModes;
+    final active = [
+      for (final s in specs)
+        if (enabled.contains(s.$1)) s,
+    ];
+    if (active.isEmpty) {
+      return [];
+    }
+
+    Widget chip((String, String, IconData, Color) s) =>
+        Expanded(child: _buildModeChip(s.$1, s.$2, s.$3, s.$4));
+
+    if (singleRow) {
+      // 대체 배치: 켜진 모드 전부를 가로 한 줄로
+      return [
+        Row(children: [for (final s in active) chip(s)]),
+      ];
+    }
+
+    if (active.length == 4) {
+      // 2×2 (두 줄)
+      return [
+        Row(children: [chip(active[0]), chip(active[1])]),
+        Row(children: [chip(active[2]), chip(active[3])]),
+      ];
+    }
+    // 1~3개는 한 줄에 균등 분배
+    return [
+      Row(children: [for (final s in active) chip(s)]),
+    ];
   }
 
   Color _getExecuteColor() {
@@ -245,6 +519,8 @@ class _I2iTabState extends State<I2iTab>
         return Colors.deepPurpleAccent;
       case 'upscale':
         return Colors.amber[700]!;
+      case 'img2img':
+        return const Color(0xFF3B82F6); // 파랑
       default:
         return const Color(0xFF00BFA5);
     }
@@ -260,6 +536,8 @@ class _I2iTabState extends State<I2iTab>
         return _isMosaicProcessing ? "처리중..." : "모자이크 적용";
       case 'upscale':
         return "업스케일 실행";
+      case 'img2img':
+        return "img2img 실행";
       default:
         return "실행";
     }
@@ -285,6 +563,8 @@ class _I2iTabState extends State<I2iTab>
         return const Icon(Icons.grid_on, color: Colors.white, size: 18);
       case 'upscale':
         return const Icon(Icons.high_quality, color: Colors.white, size: 18);
+      case 'img2img':
+        return const Icon(Icons.auto_fix_high, color: Colors.white, size: 18);
       default:
         return const Icon(Icons.play_arrow, color: Colors.white, size: 18);
     }
@@ -338,6 +618,19 @@ class _I2iTabState extends State<I2iTab>
             return;
           }
           state.handleUpscaleGenerate(context);
+        };
+      case 'img2img':
+        return () {
+          if (state.targetI2iImage == null || state.targetI2iMetadata == null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                duration: const Duration(milliseconds: 2400),
+                content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
+              ),
+            );
+            return;
+          }
+          state.handleImg2ImgGenerate(context);
         };
       default:
         return null;
@@ -478,8 +771,8 @@ class _I2iTabState extends State<I2iTab>
   }
 
   void _onPanStart(DragStartDetails details) {
-    // 업스케일 모드는 마스킹 불필요 — 입력 무시
-    if (_i2iMode == 'upscale') {
+    // 업스케일/img2img 모드는 마스킹 불필요 — 입력 무시
+    if (_i2iMode == 'upscale' || _i2iMode == 'img2img') {
       return;
     }
     if (_currentTool != 'pencil' && _currentTool != 'eraser') {
@@ -505,8 +798,8 @@ class _I2iTabState extends State<I2iTab>
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
-    // 업스케일 모드는 마스킹 불필요 — 입력 무시
-    if (_i2iMode == 'upscale') {
+    // 업스케일/img2img 모드는 마스킹 불필요 — 입력 무시
+    if (_i2iMode == 'upscale' || _i2iMode == 'img2img') {
       return;
     }
     if (_currentTool != 'pencil' && _currentTool != 'eraser') {
@@ -633,7 +926,7 @@ class _I2iTabState extends State<I2iTab>
         _strokes.clear();
 
         // 모자이크 결과는 메인 히스토리 대신 i2i 스크래치 릴로
-        state.addI2iResult(pngBytes, null);
+        state.addI2iResult(pngBytes, null, source: 'mosaic');
 
         state.refreshUI();
       }
@@ -933,6 +1226,111 @@ class _I2iTabState extends State<I2iTab>
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  // img2img 파라미터 버튼 (강도/노이즈) — 인페인트 강도 버튼과 동일 규격
+  Widget _buildImg2ImgParamButton(AppState state, {required bool isNoise}) {
+    final double value = isNoise ? state.img2imgNoise : state.img2imgStrength;
+    final String label = isNoise ? "노이즈" : "강도";
+    return Tooltip(
+      message: isNoise ? "img2img 노이즈 (새 디테일 추가량)" : "img2img 강도 (원본 변형 정도)",
+      child: InkWell(
+        onTap: () => _showImg2ImgParamDialog(isNoise: isNoise),
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 44,
+          height: 40,
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            border: Border.all(color: Colors.white24, width: 1.5),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              Text(
+                value.toStringAsFixed(2),
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showImg2ImgParamDialog({required bool isNoise}) {
+    final state = context.read<AppState>();
+    double temp = isNoise ? state.img2imgNoise : state.img2imgStrength;
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1E1E1E),
+            title: Text(
+              isNoise ? "img2img 노이즈" : "img2img 강도",
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Slider(
+                  value: temp,
+                  min: 0.0,
+                  max: 1.0,
+                  divisions: 20,
+                  activeColor: const Color(0xFF3B82F6),
+                  onChanged: (val) {
+                    setModalState(() => temp = double.parse(val.toStringAsFixed(2)));
+                  },
+                ),
+                Text(temp.toStringAsFixed(2), style: const TextStyle(color: Colors.white)),
+                const SizedBox(height: 8),
+                Text(
+                  isNoise ? "낮음 = 원본 디테일 유지  /  높음 = 새 디테일 추가" : "낮음 = 원본에 충실  /  높음 = 창의적 재해석",
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("취소", style: TextStyle(color: Colors.grey)),
+              ),
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    if (isNoise) {
+                      state.img2imgNoise = temp;
+                    } else {
+                      state.img2imgStrength = temp;
+                    }
+                  });
+                  state.saveAllSettings();
+                  state.refreshUI();
+                  Navigator.pop(ctx);
+                },
+                child: const Text("적용", style: TextStyle(color: Color(0xFF3B82F6))),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1670,6 +2068,32 @@ class _I2iTabState extends State<I2iTab>
                                     ),
                                   ),
                                 ),
+                                // 생성 방식 배지 (i2i로 보낸 원본은 표시하지 않음)
+                                if (r.source != 'origin')
+                                  Positioned(
+                                    bottom: 0,
+                                    left: 0,
+                                    child: Container(
+                                      padding: const EdgeInsets.all(3),
+                                      decoration: BoxDecoration(
+                                        // 밝은 이미지 위에서도 확실히 보이도록 진한 배경 + 색 테두리
+                                        color: Colors.black.withValues(alpha: 0.75),
+                                        borderRadius: const BorderRadius.only(
+                                          bottomLeft: Radius.circular(7),
+                                          topRight: Radius.circular(7),
+                                        ),
+                                        border: Border.all(
+                                          color: _sourceColor(r.source).withValues(alpha: 0.9),
+                                          width: 1,
+                                        ),
+                                      ),
+                                      child: Icon(
+                                        _sourceIcon(r.source),
+                                        size: 13,
+                                        color: _sourceColor(r.source),
+                                      ),
+                                    ),
+                                  ),
                               ],
                             ),
                           );
@@ -1681,6 +2105,39 @@ class _I2iTabState extends State<I2iTab>
         ),
       ),
     );
+  }
+
+  // 릴 배지: 어떤 모드로 만들어진 결과인지 (모드 칩과 같은 색/아이콘)
+  IconData _sourceIcon(String source) {
+    switch (source) {
+      case 'mosaic':
+        return Icons.grid_on;
+      case 'upscale':
+        return Icons.high_quality;
+      case 'img2img':
+        return Icons.auto_fix_high;
+      case 'origin':
+        return Icons.image_outlined; // i2i로 보낸 원본
+      case 'inpaint':
+      default:
+        return Icons.format_paint;
+    }
+  }
+
+  Color _sourceColor(String source) {
+    switch (source) {
+      case 'mosaic':
+        return Colors.deepPurpleAccent;
+      case 'upscale':
+        return Colors.amber[700]!;
+      case 'img2img':
+        return const Color(0xFF3B82F6);
+      case 'origin':
+        return Colors.white60;
+      case 'inpaint':
+      default:
+        return const Color(0xFF00BFA5);
+    }
   }
 
   // i2i 결과 꾹 누르기 메뉴
@@ -1734,301 +2191,175 @@ class _I2iTabState extends State<I2iTab>
     // ※ 마스크 처리(_strokes 초기화 등)는 _handleI2iMaskChanges 리스너에서 담당한다.
     //   build에서 하면 탭 전환 등으로 인한 rebuild에 휩쓸려 엉뚱하게 마스크가 지워질 수 있음.
 
+    // 설정에서 현재 모드를 꺼버린 경우, 켜져 있는 첫 모드로 자동 전환
+    final enabledModes = state.enabledI2iModes;
+    if (enabledModes.isNotEmpty && !enabledModes.contains(_i2iMode)) {
+      _i2iMode = enabledModes.first;
+    }
+
     bool canDraw =
-        (_i2iMode != 'upscale') && (_currentTool == 'pencil' || _currentTool == 'eraser');
+        (_i2iMode != 'upscale' && _i2iMode != 'img2img') &&
+        (_currentTool == 'pencil' || _currentTool == 'eraser');
 
     if (_showCanvasView) {
       // ===== 캔버스 뷰 (풀 스크린, 스크롤 없음) =====
       return _withReelOverlay(
         state,
         LayoutBuilder(
-          builder: (context, constraints) {
+          builder: (context, _) {
             // 시스템 네비게이션 바 높이 캐싱 (최초 1회)
             _systemBottomPadding ??= MediaQuery.of(context).viewPadding.bottom;
             final bottomPad = _systemBottomPadding!;
 
-            final toolbarHeight = _i2iMode == 'upscale' ? 0.0 : 58.0; // 46(버튼) + 12(간격)
-            final canvasHeight =
-                constraints.maxHeight - 60 - 12 - toolbarHeight - 44 - bottomPad - 32;
-            // 60=모드+실행 / 12=간격 / toolbarHeight / 44=토글버튼 / bottomPad=네비바 / 32=패딩
+            // 캔버스는 Expanded로 남는 공간을 자동으로 차지하므로 높이 계산이 필요 없다.
+            // (모드 칩 줄 수가 바뀌어도 UI가 밀리지 않음)
 
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1E1E1E),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.white24),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _buildModeChip(
-                              'inpaint',
-                              '인페인트',
-                              Icons.format_paint,
-                              const Color(0xFF00BFA5),
-                            ),
-                            _buildModeChip(
-                              'mosaic',
-                              '모자이크',
-                              Icons.grid_on,
-                              Colors.deepPurpleAccent,
-                            ),
-                            _buildModeChip(
-                              'upscale',
-                              '업스케일',
-                              Icons.high_quality,
-                              Colors.amber[700]!,
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _getExecuteOnPressed(state, context),
-                          icon: _getExecuteIcon(state),
-                          label: Text(
-                            _getExecuteLabel(state),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                (state.isLoading ||
-                                    state.isInpaintLoading ||
-                                    state.isUpscaleLoading)
-                                ? Colors.grey[700]
-                                : _getExecuteColor(),
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  // 캔버스 (남은 공간 채우기)
-                  Container(
-                    height: canvasHeight.clamp(200, 800),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF121212),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: state.isInpaintLoading ? Colors.amber : Colors.white24,
-                        width: state.isInpaintLoading ? 2 : 1,
-                      ),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: state.targetI2iImage == null
-                          ? const Center(
-                              child: Text(
-                                "히스토리에서 이미지를 선택하세요.",
-                                style: TextStyle(color: Colors.white30),
-                              ),
-                            )
-                          : Center(
-                              child: InteractiveViewer(
-                                transformationController: _transformController,
-                                panEnabled:
-                                    _currentTool == 'pan' ||
-                                    _currentTool == 'zoom_in' ||
-                                    _currentTool == 'zoom_out',
-                                scaleEnabled: false,
-                                child: AspectRatio(
-                                  aspectRatio:
-                                      (state.targetI2iMetadata?.width ?? 832) /
-                                      (state.targetI2iMetadata?.height ?? 1216),
-                                  child: GestureDetector(
-                                    onPanStart: canDraw ? _onPanStart : null,
-                                    onPanUpdate: canDraw ? _onPanUpdate : null,
-                                    onPanEnd: canDraw ? _onPanEnd : null,
-                                    onTapDown:
-                                        (_currentTool == 'zoom_in' || _currentTool == 'zoom_out')
-                                        ? _onZoomTap
-                                        : null,
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        Image.memory(
-                                          _mosaicPreviewImage != null && _i2iMode == 'mosaic'
-                                              ? _mosaicPreviewImage!
-                                              : state.targetI2iImage!,
-                                          fit: BoxFit.fill,
-                                        ),
-                                        Positioned.fill(
-                                          child: CustomPaint(
-                                            key: _canvasKey,
-                                            painter: MaskPainter(
-                                              strokes:
-                                                  (_i2iMode == 'upscale' ||
-                                                      !_maskVisible ||
-                                                      (_mosaicPreviewImage != null &&
-                                                          _i2iMode == 'mosaic'))
-                                                  ? []
-                                                  : _strokes,
-                                              maskColor: _maskColor,
-                                            ),
-                                            size: Size.infinite,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // 도구 버튼 (업스케일 모드에서는 숨김) — 고정 높이
-                  if (_i2iMode != 'upscale') ...[
+                  if (!state.i2iAltLayout)
+                    // ── 기본 배치: [모드 칩 2×2 | 실행 버튼] 고정 높이 56 ──
+                    // (칩이 1줄이든 2줄이든 캔버스 시작 위치가 같도록 높이 고정)
                     SizedBox(
-                      height: 46,
-                      child: Center(
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
-                              const SizedBox(width: 6),
-                              _buildToolIcon(
-                                'eraser',
-                                Icons.cleaning_services,
-                                "지우개 (한 번 더 누르면 크기 변경)",
+                      height: 56,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: Center(
+                              child: Container(
+                                // 높이 예산: 테두리2 + 패딩4 + (칩22+마진3)×2줄 = 정확히 56
+                                padding: const EdgeInsets.all(2),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E1E1E),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: _buildModeChipRows(state),
+                                ),
                               ),
-                              const SizedBox(width: 6),
-                              _buildToolIcon('zoom', Icons.zoom_in, "돋보기"),
-                              const SizedBox(width: 6),
-                              _buildToolIcon('pan', Icons.pan_tool, "손 (화면 이동)"),
-                              if (_i2iMode == 'inpaint') ...[
-                                const SizedBox(width: 6),
-                                _buildStrengthButton(state),
-                                const SizedBox(width: 6),
-                                // 직전에 본 이미지로 전환 (탭=뒤로, 꾹=앞으로)
-                                _buildToolIcon(
-                                  'view_back',
-                                  Icons.undo,
-                                  "탭: 직전 이미지 · 꾹: 앞으로",
-                                  selectedOverride: false,
-                                  onTapOverride: () {
-                                    _appStateRef?.i2iGoBackView();
-                                  },
-                                  onLongPressOverride: () {
-                                    _appStateRef?.i2iGoForwardView();
-                                  },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          _buildExecuteButton(state, width: 140, height: 56),
+                        ],
+                      ),
+                    )
+                  else
+                    // ── 대체 배치: 모드 칩 가로 1줄 (실행 버튼은 하단 우측으로 이동) ──
+                    Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF1E1E1E),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: _buildModeChipRows(state, singleRow: true),
+                      ),
+                    ),
+                  const SizedBox(height: 12),
+                  // 캔버스: 남는 공간을 그대로 차지 (모드 칩이 1줄이든 2줄이든 자동으로 맞음)
+                  // → 높이를 직접 계산하면 실제 위젯 높이와 어긋나 UI가 밀리는 문제가 생김
+                  Expanded(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF121212),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: state.isInpaintLoading ? Colors.amber : Colors.white24,
+                          // 두께는 항상 동일: 로딩 때 1→2로 바뀌면 캔버스 내부가 2px 줄어
+                          // 이미지가 재배치되며 마스크가 어긋나 보인다 (색만 바꾼다)
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: state.targetI2iImage == null
+                            ? const Center(
+                                child: Text(
+                                  "히스토리에서 이미지를 선택하세요.",
+                                  style: TextStyle(color: Colors.white30),
                                 ),
-                                const SizedBox(width: 6),
-                                // 마스킹 표시 ON/OFF — 옆 툴 버튼과 완전히 동일한 위젯 사용
-                                _buildToolIcon(
-                                  'mask_visible',
-                                  _maskVisible ? Icons.visibility : Icons.visibility_off,
-                                  "마스킹 표시 켜기/끄기",
-                                  selectedOverride: _maskVisible,
-                                  onTapOverride: () {
-                                    setState(() => _maskVisible = !_maskVisible);
-                                  },
-                                ),
-                              ],
-                              if (_i2iMode == 'mosaic') ...[
-                                const SizedBox(width: 6),
-                                _buildMosaicStrengthButton(),
-                                const SizedBox(width: 6),
-                                GestureDetector(
-                                  onTap: () => setState(() {
-                                    if (_mosaicType == 'pixel') {
-                                      _mosaicType = 'blur';
-                                    } else if (_mosaicType == 'blur') {
-                                      _mosaicType = 'line';
-                                    } else {
-                                      _mosaicType = 'pixel';
-                                    }
-                                  }),
-                                  child: Container(
-                                    width: 44,
-                                    height: 40,
-                                    decoration: BoxDecoration(
-                                      color: _getMosaicTypeColor().withValues(alpha: 0.2),
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(color: _getMosaicTypeColor(), width: 1.5),
-                                    ),
-                                    child: Center(
-                                      child: Text(
-                                        _getMosaicTypeLabel(),
-                                        style: TextStyle(
-                                          color: _getMosaicTypeColor(),
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Tooltip(
-                                  message: "모자이크 미리보기",
-                                  child: InkWell(
-                                    onTap: _isPreviewLoading
-                                        ? null
-                                        : () {
-                                            if (_mosaicPreviewImage != null) {
-                                              setState(() => _mosaicPreviewImage = null);
-                                            } else {
-                                              _generateMosaicPreview(state);
-                                            }
-                                          },
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Container(
-                                      width: 44,
-                                      height: 40,
-                                      decoration: BoxDecoration(
-                                        color: _mosaicPreviewImage != null
-                                            ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
-                                            : Colors.transparent,
-                                        border: Border.all(
-                                          color: _mosaicPreviewImage != null
-                                              ? Colors.deepPurpleAccent
-                                              : Colors.white24,
-                                          width: 1.5,
-                                        ),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: _isPreviewLoading
-                                          ? const Padding(
-                                              padding: EdgeInsets.all(10),
-                                              child: CircularProgressIndicator(
-                                                color: Colors.deepPurpleAccent,
-                                                strokeWidth: 2,
+                              )
+                            : Center(
+                                child: InteractiveViewer(
+                                  transformationController: _transformController,
+                                  panEnabled:
+                                      _currentTool == 'pan' ||
+                                      _currentTool == 'zoom_in' ||
+                                      _currentTool == 'zoom_out',
+                                  scaleEnabled: false,
+                                  child: AspectRatio(
+                                    aspectRatio:
+                                        (state.targetI2iMetadata?.width ?? 832) /
+                                        (state.targetI2iMetadata?.height ?? 1216),
+                                    child: GestureDetector(
+                                      onPanStart: canDraw ? _onPanStart : null,
+                                      onPanUpdate: canDraw ? _onPanUpdate : null,
+                                      onPanEnd: canDraw ? _onPanEnd : null,
+                                      onTapDown:
+                                          (_currentTool == 'zoom_in' || _currentTool == 'zoom_out')
+                                          ? _onZoomTap
+                                          : null,
+                                      child: Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          Image.memory(
+                                            _mosaicPreviewImage != null && _i2iMode == 'mosaic'
+                                                ? _mosaicPreviewImage!
+                                                : state.targetI2iImage!,
+                                            fit: BoxFit.fill,
+                                          ),
+                                          Positioned.fill(
+                                            child: CustomPaint(
+                                              key: _canvasKey,
+                                              painter: MaskPainter(
+                                                strokes:
+                                                    (_i2iMode == 'upscale' ||
+                                                        _i2iMode == 'img2img' ||
+                                                        !_maskVisible ||
+                                                        (_mosaicPreviewImage != null &&
+                                                            _i2iMode == 'mosaic'))
+                                                    ? []
+                                                    : _strokes,
+                                                maskColor: _maskColor,
                                               ),
-                                            )
-                                          : Icon(
-                                              _mosaicPreviewImage != null
-                                                  ? Icons.visibility
-                                                  : Icons.visibility_outlined,
-                                              color: _mosaicPreviewImage != null
-                                                  ? Colors.deepPurpleAccent
-                                                  : Colors.white54,
-                                              size: 18,
+                                              size: Size.infinite,
                                             ),
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ],
-                            ],
+                              ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (!state.i2iAltLayout) ...[
+                    // ── 기본 배치: 툴바 한 줄 (업스케일 모드에서는 숨김) ──
+                    if (_i2iMode != 'upscale') ...[
+                      SizedBox(
+                        height: 46,
+                        child: Center(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(children: _classicToolbarChildren(state)),
                           ),
                         ),
-                      ), // Center
-                    ), // SizedBox
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                  ] else ...[
+                    // ── 대체 배치: 툴 2줄(좌) + 실행 버튼(우하단) ──
+                    _buildAltBottomBar(state),
                     const SizedBox(height: 12),
                   ],
                   // 프롬프트 보기 토글 (전 모드)

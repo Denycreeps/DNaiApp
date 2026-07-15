@@ -42,6 +42,9 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
       _appState.settingsTabReset = null;
     }
     _tabController.dispose();
+    for (final c in _tabScrolls) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -182,28 +185,77 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
     );
   }
 
-  Widget _tabChip(String label, bool value, ValueChanged<bool> onChanged) {
+  // 칩들을 2열 균등 그리드로 배치 (Wrap이 3+1로 깨지는 문제 해결)
+  Widget _chipGrid(List<Widget> chips) {
+    final rows = <Widget>[];
+    for (int i = 0; i < chips.length; i += 2) {
+      final left = chips[i];
+      final right = (i + 1 < chips.length) ? chips[i + 1] : null;
+      rows.add(
+        Padding(
+          padding: EdgeInsets.only(bottom: i + 2 < chips.length ? 6 : 0),
+          child: Row(
+            children: [
+              Expanded(child: left),
+              const SizedBox(width: 6),
+              // 홀수 개면 마지막 칸은 빈 자리로 (좌측 정렬 유지)
+              Expanded(child: right ?? const SizedBox()),
+            ],
+          ),
+        ),
+      );
+    }
+    return Column(children: rows);
+  }
+
+  // 켜고 끄는 칩 (탭 표시 / i2i 모드 표시 등에 공용으로 사용)
+  // 컴팩트하게 유지하면서 아이콘 + 체크 표시로 상태를 명확히 보여준다.
+  Widget _tabChip(
+    String label,
+    bool value,
+    ValueChanged<bool> onChanged, {
+    IconData? icon,
+    Color? activeColor,
+  }) {
+    final Color accent = activeColor ?? Colors.deepPurpleAccent;
     return GestureDetector(
       onTap: () => onChanged(!value),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
         decoration: BoxDecoration(
-          color: value
-              ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
-              : Colors.white.withValues(alpha: 0.05),
-          borderRadius: BorderRadius.circular(20),
+          color: value ? accent.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
           border: Border.all(
-            color: value ? Colors.deepPurpleAccent : Colors.white24,
+            color: value ? accent.withValues(alpha: 0.8) : Colors.white24,
             width: value ? 1.5 : 1,
           ),
         ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: value ? Colors.deepPurpleAccent : Colors.white38,
-            fontSize: 13,
-            fontWeight: FontWeight.bold,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.max,
+          children: [
+            Icon(
+              value ? Icons.check_circle : Icons.circle_outlined,
+              size: 14,
+              color: value ? accent : Colors.white30,
+            ),
+            const SizedBox(width: 5),
+            if (icon != null) ...[
+              Icon(icon, size: 13, color: value ? accent : Colors.white38),
+              const SizedBox(width: 3),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: value ? accent : Colors.white38,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -424,10 +476,10 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
           child: TabBarView(
             controller: _tabController,
             children: [
-              _tabScroll(_generalSection(context, state)),
-              _tabScroll(_storageSection(context, state)),
-              _tabScroll(_apiSection(context, state)),
-              _tabScroll(_miscSection(context, state)),
+              _tabScroll(_generalSection(context, state), _tabScrolls[0]),
+              _tabScroll(_storageSection(context, state), _tabScrolls[1]),
+              _tabScroll(_apiSection(context, state), _tabScrolls[2]),
+              _tabScroll(_miscSection(context, state), _tabScrolls[3]),
             ],
           ),
         ),
@@ -435,10 +487,130 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
     );
   }
 
-  Widget _tabScroll(List<Widget> children) {
+  // 하위탭별 스크롤 컨트롤러 — 설정을 토글해도 스크롤 위치가 맨 위로 튀지 않게 유지.
+  // 탭 표시를 바꾸면 PageView가 재생성되어 이 컨트롤러도 새로 만들어지므로,
+  // 실제 위치는 AppState에 보관하고 여기서 복원한다.
+  late final List<ScrollController> _tabScrolls = List.generate(4, (i) {
+    final c = ScrollController(initialScrollOffset: _appState.settingsScrollOffsets[i] ?? 0);
+    // 스크롤할 때마다 위치를 AppState에 기록
+    c.addListener(() {
+      if (c.hasClients) {
+        _appState.settingsScrollOffsets[i] = c.offset;
+      }
+    });
+    return c;
+  });
+
+  // 검색 페이지 수 슬라이더 타일 (본인 API 키가 있어야 조절 가능)
+  Widget _searchPagesTile(AppState state) {
+    final bool hasKey = state.gelbooruApiKey.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.search,
+                color: hasKey ? Colors.deepPurpleAccent : Colors.white24,
+                size: 20,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  "검색 페이지 수",
+                  style: TextStyle(color: hasKey ? Colors.white : Colors.white38, fontSize: 15),
+                ),
+              ),
+              Text(
+                hasKey ? "${state.gelbooruSearchPages}" : "40",
+                style: TextStyle(
+                  color: hasKey ? Colors.deepPurpleAccent : Colors.white38,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
+              ),
+            ],
+          ),
+          Text(
+            hasKey ? "많을수록 더 많은 결과를 찾지만 검색이 느려져요 (40~120)" : "본인 API 키를 등록하면 조절할 수 있어요",
+            style: const TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+          Slider(
+            value: state.gelbooruSearchPages.toDouble().clamp(40, 120),
+            min: 40,
+            max: 120,
+            divisions: 16, // 40,45,...,120
+            activeColor: Colors.deepPurpleAccent,
+            label: "${state.gelbooruSearchPages}",
+            onChanged: hasKey
+                ? (v) {
+                    state.gelbooruSearchPages = v.round();
+                    state.refreshUI();
+                  }
+                : null,
+            onChangeEnd: hasKey
+                ? (v) {
+                    state.gelbooruSearchPages = v.round();
+                    state.saveAllSettings();
+                    state.refreshUI();
+                  }
+                : null,
+          ),
+          const SizedBox(height: 4),
+          // [실험] 정렬 축 다양화 토글
+          Row(
+            children: [
+              Icon(
+                Icons.shuffle,
+                color: hasKey ? const Color(0xFF3B82F6) : Colors.white24,
+                size: 18,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "정렬 다양화 (실험)",
+                      style: TextStyle(color: hasKey ? Colors.white : Colors.white38, fontSize: 14),
+                    ),
+                    Text(
+                      "여러 정렬을 섞어 더 다양한 결과를 찾아요",
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              Switch(
+                value: state.diversifySearchSort,
+                activeThumbColor: const Color(0xFF3B82F6),
+                onChanged: hasKey
+                    ? (v) {
+                        state.diversifySearchSort = v;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }
+                    : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabScroll(List<Widget> children, ScrollController controller) {
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: SingleChildScrollView(
+        controller: controller,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [...children, const SizedBox(height: 80)],
@@ -660,8 +832,22 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
           state.saveAllSettings();
           state.refreshUI();
         },
+      ),
+      // 10. i2i탭 UI 배치 변경 (ON: 모드 가로 1줄 + 실행 버튼 우하단)
+      _toggleTile(
+        icon: Icons.view_quilt,
+        title: "i2i탭 UI 배치 변경",
+        value: state.i2iAltLayout,
+        onChanged: (val) {
+          state.i2iAltLayout = val;
+          state.saveAllSettings();
+          state.refreshUI();
+        },
         radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
       ),
+      const SizedBox(height: 16),
+      // 검색 페이지 수 (API 키 있을 때만 조절 가능) — 독립 카드
+      _searchPagesTile(state),
       const SizedBox(height: 16),
 
       // ── ON/OFF 옵션과 폴더/파일 설정 구분선 ──
@@ -669,9 +855,9 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
         padding: EdgeInsets.only(bottom: 16),
         child: Divider(color: Colors.white24, thickness: 1, height: 1),
       ),
-      // 탭 표시 설정
+      // 표시 설정 (탭 / i2i 모드) — 한 카드로 통합
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E1E),
           borderRadius: BorderRadius.circular(16),
@@ -680,37 +866,84 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              "탭 표시 설정",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
+            Row(
               children: [
-                _tabChip("히스토리", state.historyTabEnabled, (v) {
-                  state.historyTabEnabled = v;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                }),
-                _tabChip("i2i", state.i2iTabEnabled, (v) {
-                  state.i2iTabEnabled = v;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                }),
-                _tabChip("캐릭터", state.characterTabEnabled, (v) {
-                  state.characterTabEnabled = v;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                }),
-                _tabChip("와일드카드", state.wildcardTabEnabled, (v) {
-                  state.wildcardTabEnabled = v;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                }),
+                const Icon(Icons.tab, color: Colors.deepPurpleAccent, size: 15),
+                const SizedBox(width: 6),
+                const Text(
+                  "탭 표시 설정",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
               ],
             ),
+            const SizedBox(height: 10),
+            // 2×2 균등 그리드 (Wrap이 3+1로 깨지는 것을 방지)
+            _chipGrid([
+              _tabChip("히스토리", state.historyTabEnabled, (v) {
+                state.historyTabEnabled = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }, icon: Icons.history),
+              _tabChip("i2i", state.i2iTabEnabled, (v) {
+                state.setI2iTabEnabled(v);
+              }, icon: Icons.image),
+              _tabChip("캐릭터", state.characterTabEnabled, (v) {
+                state.characterTabEnabled = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }, icon: Icons.people),
+              _tabChip("와일드카드", state.wildcardTabEnabled, (v) {
+                state.wildcardTabEnabled = v;
+                state.saveAllSettings();
+                state.refreshUI();
+              }, icon: Icons.casino),
+            ]),
+
+            const SizedBox(height: 16),
+            Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+            const SizedBox(height: 14),
+
+            Row(
+              children: [
+                const Icon(Icons.dashboard_customize, color: Color(0xFF00BFA5), size: 15),
+                const SizedBox(width: 6),
+                const Text(
+                  "i2i 모드 표시 설정",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            _chipGrid([
+              _tabChip(
+                "인페인트",
+                state.i2iModeInpaintEnabled,
+                (v) => state.setI2iModeEnabled('inpaint', v),
+                icon: Icons.format_paint,
+                activeColor: const Color(0xFF00BFA5),
+              ),
+              _tabChip(
+                "모자이크",
+                state.i2iModeMosaicEnabled,
+                (v) => state.setI2iModeEnabled('mosaic', v),
+                icon: Icons.grid_on,
+                activeColor: Colors.deepPurpleAccent,
+              ),
+              _tabChip(
+                "img2img",
+                state.i2iModeImg2imgEnabled,
+                (v) => state.setI2iModeEnabled('img2img', v),
+                icon: Icons.auto_fix_high,
+                activeColor: const Color(0xFF3B82F6),
+              ),
+              _tabChip(
+                "업스케일",
+                state.i2iModeUpscaleEnabled,
+                (v) => state.setI2iModeEnabled('upscale', v),
+                icon: Icons.high_quality,
+                activeColor: const Color(0xFFFFA000),
+              ),
+            ]),
           ],
         ),
       ),

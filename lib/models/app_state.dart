@@ -583,12 +583,16 @@ class I2iResult {
   Uint8List bytes;
   NaiMetadata? metadata;
   bool favorite;
-  I2iResult({required this.bytes, this.metadata, this.favorite = false});
+  // 어떤 모드로 만들어졌는지 ('inpaint' | 'mosaic' | 'upscale' | 'img2img')
+  // 릴 썸네일 구석에 작은 배지로 표시. 기존 저장분엔 없으므로 기본값은 인페인트.
+  String source;
+  I2iResult({required this.bytes, this.metadata, this.favorite = false, this.source = 'inpaint'});
 
   Map<String, dynamic> toJson() => {
     'img': base64Encode(bytes),
     'meta': metadata?.toJson(),
     'fav': favorite,
+    'src': source,
   };
   factory I2iResult.fromJson(Map<String, dynamic> json) => I2iResult(
     bytes: base64Decode(json['img'] as String),
@@ -596,6 +600,7 @@ class I2iResult {
         ? NaiMetadata.fromJson(Map<String, dynamic>.from(json['meta']))
         : null,
     favorite: json['fav'] == true,
+    source: (json['src'] as String?) ?? 'inpaint',
   );
 }
 
@@ -1314,8 +1319,17 @@ class AppState extends ChangeNotifier {
   bool isFurryMode = false;
   bool isSeedLocked = false;
   double infillStrength = 0.7;
+  // img2img: 원본 변형 강도(낮을수록 원본 충실) / 노이즈(새 디테일 추가량)
+  double img2imgStrength = 0.5;
+  double img2imgNoise = 0.1;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
+  // i2i탭 UI 배치 변경: ON이면 모드 칩 가로 1줄 + 실행 버튼 우하단 배치
+  bool i2iAltLayout = false;
+  // 검색 페이지 수 (API 키 있을 때만 유효). 기본 40, 상한 120.
+  int gelbooruSearchPages = 40;
+  // [실험] 정렬 축 다양화 (random+score+id 섞기) — 중복 줄이고 표본 확대
+  bool diversifySearchSort = false;
   bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
   bool randomPromptAlphabetical = false; // 랜덤 프롬프트 나머지 태그 알파벳 순서
   bool ignoreRecommendedOrder = false; // NovelAI 권장 순서(인원/solo/시점 등) 무시
@@ -1329,10 +1343,78 @@ class AppState extends ChangeNotifier {
   bool isBatchMode = false;
   double batchDelay = 0.5; // 연속 생성 딜레이 (초)
   bool autoNextPromptInBatch = false; // 자동생성 중 이미지 1장마다 다음 프롬프트 자동 전환
+  // 같은 프롬프트로 N번 반복 후 다음 프롬프트로 (자동 전환이 ON일 때만 의미 있음)
+  bool repeatSamePromptEnabled = false;
+  int repeatSamePromptCount = 2;
+  // 현재 반복 진행 상황 (UI 표시용) — 반복 미사용 시 0
+  int currentRepeatIndex = 0; // 현재 몇 번째 반복인지 (1부터)
+  int currentRepeatTotal = 0; // 이번 회차의 총 반복 횟수
 
   // 탭 활성화 상태 (프롬프트/설정은 항상 켜짐)
   bool historyTabEnabled = true;
+  // 설정 하위탭별 스크롤 위치. 탭 표시를 토글하면 PageView가 재생성되어
+  // 위젯 로컬 ScrollController가 초기화되므로, 위치를 여기 보관해 복원한다.
+  final Map<int, double> settingsScrollOffsets = {};
+
   bool i2iTabEnabled = true;
+  // i2i 탭 안에서 각 모드를 보일지 (4개 모두 끄면 i2i 탭 자체가 꺼짐)
+  bool i2iModeInpaintEnabled = true;
+  bool i2iModeMosaicEnabled = true;
+  bool i2iModeImg2imgEnabled = true;
+  bool i2iModeUpscaleEnabled = true;
+
+  // 현재 켜져 있는 i2i 모드 목록 (표시 순서 유지)
+  List<String> get enabledI2iModes => [
+    if (i2iModeInpaintEnabled) 'inpaint',
+    if (i2iModeMosaicEnabled) 'mosaic',
+    if (i2iModeImg2imgEnabled) 'img2img',
+    if (i2iModeUpscaleEnabled) 'upscale',
+  ];
+
+  // i2i 모드 하나를 켜고 끈다. 모드가 모두 꺼지면 i2i 탭 자체도 함께 꺼진다.
+  // i2i 모드 하나를 켜고 끈다.
+  // 모드가 모두 꺼지면 i2i 탭도 함께 꺼지고, 빈 상태에서 모드를 켜면 탭도 되살아난다.
+  // 그 외의 경우엔 사용자가 정한 탭 ON/OFF 상태를 건드리지 않는다.
+  void setI2iModeEnabled(String mode, bool enabled) {
+    final bool wasEmpty = enabledI2iModes.isEmpty;
+    switch (mode) {
+      case 'inpaint':
+        i2iModeInpaintEnabled = enabled;
+        break;
+      case 'mosaic':
+        i2iModeMosaicEnabled = enabled;
+        break;
+      case 'img2img':
+        i2iModeImg2imgEnabled = enabled;
+        break;
+      case 'upscale':
+        i2iModeUpscaleEnabled = enabled;
+        break;
+    }
+    if (enabledI2iModes.isEmpty) {
+      i2iTabEnabled = false; // 모드가 하나도 없으면 탭도 끔
+    } else if (wasEmpty && enabled) {
+      i2iTabEnabled = true; // 전부 꺼졌던 상태에서 모드를 켬 → 탭 부활
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
+  // 탭 표시 설정에서 i2i 탭을 켜고 끈다.
+  // 모드가 전부 꺼진 상태에서 탭을 다시 켜면, 모드도 함께 되살린다.
+  void setI2iTabEnabled(bool enabled) {
+    i2iTabEnabled = enabled;
+    if (enabled && enabledI2iModes.isEmpty) {
+      // 켤 모드가 없으면 전부 복구 (그래야 탭이 의미가 있음)
+      i2iModeInpaintEnabled = true;
+      i2iModeMosaicEnabled = true;
+      i2iModeImg2imgEnabled = true;
+      i2iModeUpscaleEnabled = true;
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
   bool characterTabEnabled = true;
   bool wildcardTabEnabled = true;
   bool useGelbooruApiKey = true;
@@ -1932,7 +2014,27 @@ class AppState extends ChangeNotifier {
 
   List<NaiCharacter> characters = [NaiCharacter()];
   int selectedCharIndex = 0;
-  bool useCharacterPosition = true; // 캐릭터 배치 적용 ON/OFF
+  bool useCharacterPosition = true; // 캐릭터 배치 적용 ON/OFF (그리드 좌표 반영)
+  bool randomCharacterOrder = false; // 캐릭터 순서 랜덤 (배치 적용과 상호 배타)
+
+  // 배치 적용 ↔ 랜덤 배치는 동시에 켤 수 없다 (둘 다 끄는 건 가능)
+  void setUseCharacterPosition(bool v) {
+    useCharacterPosition = v;
+    if (v) {
+      randomCharacterOrder = false;
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
+  void setRandomCharacterOrder(bool v) {
+    randomCharacterOrder = v;
+    if (v) {
+      useCharacterPosition = false;
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
 
   // Vibe Transfer
   List<Map<String, dynamic>> vibeTransfers =
@@ -1954,6 +2056,11 @@ class AppState extends ChangeNotifier {
   int gelbooruRemaining = 0;
   bool isGelbooruExpanded = false;
   bool isGelbooruLoading = false;
+  // 검색 진행 상황 (실시간 표시용)
+  int gelbooruSearchDone = 0;
+  int gelbooruSearchTotal = 0;
+  // 검색 후 단계 메시지 (분류/필터/캐시 — 페이지 수신 완료 후 표시)
+  String gelbooruSearchStage = "";
 
   final NovelAiService _service = NovelAiService();
   Uint8List? currentImageBytes;
@@ -1976,8 +2083,8 @@ class AppState extends ChangeNotifier {
 
   // i2i 스크래치 릴 (인페인트 등 반복 결과 임시 보관, 즐겨찾기만 영속)
   List<I2iResult> i2iResults = [];
-  static const int i2iResultsCap = 20; // 비즐겨찾기 보관 상한
-  static const int i2iFavoriteCap = 10; // 즐겨찾기 최대 개수
+  static const int i2iResultsCap = 30; // 릴 전체 보관 상한 (즐겨찾기 포함)
+  static const int i2iFavoriteCap = 5; // 즐겨찾기 최대 개수
   double i2iHandleBottom = -1; // i2i 릴 핸들 세로 위치 (-1이면 기본값 사용)
   bool i2iHistoryDisabled = false; // ON이면 릴 끄고 i2i 결과를 메인 히스토리에 저장
   // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
@@ -2063,6 +2170,13 @@ class AppState extends ChangeNotifier {
 
   // 앱 초기 로딩 완료 여부 (false 동안 로딩 화면으로 조작 차단 → 프리징/크래시 방지)
   bool isAppReady = false;
+  // 로딩창에 표시할 현재 단계 (1줄)
+  String loadingStatusMessage = "준비 중...";
+  void _setLoadingStatus(String msg) {
+    loadingStatusMessage = msg;
+    notifyListeners();
+  }
+
   void markAppReady() {
     if (isAppReady) {
       return;
@@ -2080,7 +2194,16 @@ class AppState extends ChangeNotifier {
 
     // 권한: 파일 접근은 앱 전용 디렉토리 사용 (권한 불필요)
     // 커스텀 경로 저장 시 실패하면 앱 전용 폴더로 자동 대체
+    _setLoadingStatus("자동완성 태그 불러오는 중...");
     await _loadTagsFromJson();
+
+    // 이름 필터 사전(에셋)을 로딩창 단계에서 미리 로드
+    // → 첫 검색 때 느려지는 대신 앱 시작 시 한 번에 처리.
+    // 백업 복구 경로가 아래에서 조기 return할 수 있으므로 반드시 그보다 먼저 수행.
+    _setLoadingStatus("이름 필터 사전 불러오는 중...");
+    await TagFilters.ensureNamesLoaded();
+
+    _setLoadingStatus("설정 불러오는 중...");
     final prefs = await SharedPreferences.getInstance();
 
     // SharedPreferences가 비어있으면 백업에서 복구 시도
@@ -2090,6 +2213,7 @@ class AppState extends ChangeNotifier {
       if (recovered) {
         debugPrint("백업에서 설정 복구 완료");
         // 복구 성공해도 히스토리/레퍼런스는 별도 저장소에서 로드해야 함
+        _setLoadingStatus("히스토리 불러오는 중...");
         await _loadHistoryFromLocal();
         await loadReferencesFromLocal();
         notifyListeners();
@@ -2102,6 +2226,7 @@ class AppState extends ChangeNotifier {
     // 토큰이 있으면 실제 서버에 검증 (Anlas 조회)
     if (apiToken.isNotEmpty) {
       try {
+        _setLoadingStatus("API 연결 확인 중...");
         await fetchAnlas();
         isApiConnected = currentAnlas >= 0;
       } catch (_) {
@@ -2150,8 +2275,13 @@ class AppState extends ChangeNotifier {
     isFurryMode = prefs.getBool('furry') ?? false;
     isSeedLocked = prefs.getBool('seedLocked') ?? false;
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
+    img2imgStrength = prefs.getDouble('img2imgStrength') ?? 0.5;
+    img2imgNoise = prefs.getDouble('img2imgNoise') ?? 0.1;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
+    i2iAltLayout = prefs.getBool('i2iAltLayout') ?? false;
+    gelbooruSearchPages = (prefs.getInt('gelbooruSearchPages') ?? 40).clamp(40, 120);
+    diversifySearchSort = prefs.getBool('diversifySearchSort') ?? false;
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
     randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
@@ -2172,11 +2302,25 @@ class AppState extends ChangeNotifier {
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = prefs.getDouble('batchDelay') ?? 0.5;
     autoNextPromptInBatch = prefs.getBool('autoNextPromptInBatch') ?? false;
+    repeatSamePromptEnabled = prefs.getBool('repeatSamePromptEnabled') ?? false;
+    repeatSamePromptCount = prefs.getInt('repeatSamePromptCount') ?? 2;
     autoCheckUpdate = prefs.getBool('autoCheckUpdate') ?? true;
     historyTabEnabled = prefs.getBool('historyTabEnabled') ?? true;
     i2iTabEnabled = prefs.getBool('i2iTabEnabled') ?? true;
+    i2iModeInpaintEnabled = prefs.getBool('i2iModeInpaintEnabled') ?? true;
+    i2iModeMosaicEnabled = prefs.getBool('i2iModeMosaicEnabled') ?? true;
+    i2iModeImg2imgEnabled = prefs.getBool('i2iModeImg2imgEnabled') ?? true;
+    i2iModeUpscaleEnabled = prefs.getBool('i2iModeUpscaleEnabled') ?? true;
+    // 일관성 보정: 모드가 전부 꺼져 있으면 탭도 꺼져 있어야 함 (모순 조합 정리)
+    if (enabledI2iModes.isEmpty) {
+      i2iTabEnabled = false;
+    }
     characterTabEnabled = prefs.getBool('characterTabEnabled') ?? true;
     useCharacterPosition = prefs.getBool('useCharacterPosition') ?? true;
+    randomCharacterOrder = prefs.getBool('randomCharacterOrder') ?? false;
+    if (useCharacterPosition && randomCharacterOrder) {
+      randomCharacterOrder = false; // 상호 배타 보정
+    }
     wildcardTabEnabled = prefs.getBool('wildcardTabEnabled') ?? true;
     useGelbooruApiKey = prefs.getBool('useGelbooruApiKey') ?? true;
     resolutionMode = prefs.getString('resolutionMode') ?? "수동";
@@ -2233,6 +2377,7 @@ class AppState extends ChangeNotifier {
     }
 
     await fetchAnlas();
+    _setLoadingStatus("히스토리 불러오는 중...");
     await _loadHistoryFromLocal();
     await loadReferencesFromLocal();
     await loadI2iFavorites();
@@ -2349,8 +2494,13 @@ class AppState extends ChangeNotifier {
       'furry': isFurryMode,
       'seedLocked': isSeedLocked,
       'infillStrength': infillStrength,
+      'img2imgStrength': img2imgStrength,
+      'img2imgNoise': img2imgNoise,
       'variancePlus': isVariancePlus,
       'horizontalSwipeEnabled': horizontalSwipeEnabled,
+      'i2iAltLayout': i2iAltLayout,
+      'gelbooruSearchPages': gelbooruSearchPages,
+      'diversifySearchSort': diversifySearchSort,
       'historySlideEnabled': historySlideEnabled,
       'randomPromptAlphabetical': randomPromptAlphabetical,
       'ignoreRecommendedOrder': ignoreRecommendedOrder,
@@ -2369,10 +2519,17 @@ class AppState extends ChangeNotifier {
       'gallerySortMode': gallerySortMode,
       'batchDelay': batchDelay,
       'autoNextPromptInBatch': autoNextPromptInBatch,
+      'repeatSamePromptEnabled': repeatSamePromptEnabled,
+      'repeatSamePromptCount': repeatSamePromptCount,
       'historyTabEnabled': historyTabEnabled,
       'i2iTabEnabled': i2iTabEnabled,
+      'i2iModeInpaintEnabled': i2iModeInpaintEnabled,
+      'i2iModeMosaicEnabled': i2iModeMosaicEnabled,
+      'i2iModeImg2imgEnabled': i2iModeImg2imgEnabled,
+      'i2iModeUpscaleEnabled': i2iModeUpscaleEnabled,
       'characterTabEnabled': characterTabEnabled,
       'useCharacterPosition': useCharacterPosition,
+      'randomCharacterOrder': randomCharacterOrder,
       'wildcardTabEnabled': wildcardTabEnabled,
       'useGelbooruApiKey': useGelbooruApiKey,
       'gelbooru_api_input': gelbooruApiController.text,
@@ -2474,8 +2631,13 @@ class AppState extends ChangeNotifier {
     isFurryMode = data['furry'] ?? false;
     isSeedLocked = data['seedLocked'] ?? false;
     infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
+    img2imgStrength = (data['img2imgStrength'] ?? 0.5).toDouble();
+    img2imgNoise = (data['img2imgNoise'] ?? 0.1).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
+    i2iAltLayout = data['i2iAltLayout'] ?? false;
+    gelbooruSearchPages = ((data['gelbooruSearchPages'] ?? 40) as int).clamp(40, 120);
+    diversifySearchSort = data['diversifySearchSort'] ?? false;
     historySlideEnabled = data['historySlideEnabled'] ?? false;
     randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
@@ -2496,10 +2658,23 @@ class AppState extends ChangeNotifier {
     WeightHighlightController.highlightEnabled = weightHighlight;
     batchDelay = (data['batchDelay'] ?? 0.5).toDouble();
     autoNextPromptInBatch = data['autoNextPromptInBatch'] ?? false;
+    repeatSamePromptEnabled = data['repeatSamePromptEnabled'] ?? false;
+    repeatSamePromptCount = data['repeatSamePromptCount'] ?? 2;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
+    i2iModeInpaintEnabled = data['i2iModeInpaintEnabled'] ?? true;
+    i2iModeMosaicEnabled = data['i2iModeMosaicEnabled'] ?? true;
+    i2iModeImg2imgEnabled = data['i2iModeImg2imgEnabled'] ?? true;
+    i2iModeUpscaleEnabled = data['i2iModeUpscaleEnabled'] ?? true;
+    if (enabledI2iModes.isEmpty) {
+      i2iTabEnabled = false; // 모순 조합 정리
+    }
     characterTabEnabled = data['characterTabEnabled'] ?? true;
     useCharacterPosition = data['useCharacterPosition'] ?? true;
+    randomCharacterOrder = data['randomCharacterOrder'] ?? false;
+    if (useCharacterPosition && randomCharacterOrder) {
+      randomCharacterOrder = false; // 상호 배타 보정
+    }
     // 구버전 백업 호환: vibe/precise가 설정 파일에 있으면 불러옴 (현재는 references.json에 별도 저장)
     bool hadRefs = false;
     if (data['vibeTransfers'] != null) {
@@ -2537,6 +2712,13 @@ class AppState extends ChangeNotifier {
     wildcardTabEnabled = data['wildcardTabEnabled'] ?? true;
     historyTabEnabled = data['historyTabEnabled'] ?? true;
     i2iTabEnabled = data['i2iTabEnabled'] ?? true;
+    i2iModeInpaintEnabled = data['i2iModeInpaintEnabled'] ?? true;
+    i2iModeMosaicEnabled = data['i2iModeMosaicEnabled'] ?? true;
+    i2iModeImg2imgEnabled = data['i2iModeImg2imgEnabled'] ?? true;
+    i2iModeUpscaleEnabled = data['i2iModeUpscaleEnabled'] ?? true;
+    if (enabledI2iModes.isEmpty) {
+      i2iTabEnabled = false; // 모순 조합 정리
+    }
     useGelbooruApiKey = data['useGelbooruApiKey'] ?? true;
     if (data['gelbooru_api_input'] != null) {
       gelbooruApiController.text = data['gelbooru_api_input'];
@@ -2646,8 +2828,13 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('furry', isFurryMode);
       await prefs.setBool('seedLocked', isSeedLocked);
       await prefs.setDouble('infillStrength', infillStrength);
+      await prefs.setDouble('img2imgStrength', img2imgStrength);
+      await prefs.setDouble('img2imgNoise', img2imgNoise);
       await prefs.setBool('variancePlus', isVariancePlus);
       await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
+      await prefs.setBool('i2iAltLayout', i2iAltLayout);
+      await prefs.setInt('gelbooruSearchPages', gelbooruSearchPages);
+      await prefs.setBool('diversifySearchSort', diversifySearchSort);
       await prefs.setBool('historySlideEnabled', historySlideEnabled);
       await prefs.setBool('randomPromptAlphabetical', randomPromptAlphabetical);
       await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
@@ -2668,11 +2855,18 @@ class AppState extends ChangeNotifier {
       await prefs.setString('gallerySortMode', gallerySortMode);
       await prefs.setDouble('batchDelay', batchDelay);
       await prefs.setBool('autoNextPromptInBatch', autoNextPromptInBatch);
+      await prefs.setBool('repeatSamePromptEnabled', repeatSamePromptEnabled);
+      await prefs.setInt('repeatSamePromptCount', repeatSamePromptCount);
       await prefs.setBool('autoCheckUpdate', autoCheckUpdate);
       await prefs.setBool('historyTabEnabled', historyTabEnabled);
       await prefs.setBool('i2iTabEnabled', i2iTabEnabled);
+      await prefs.setBool('i2iModeInpaintEnabled', i2iModeInpaintEnabled);
+      await prefs.setBool('i2iModeMosaicEnabled', i2iModeMosaicEnabled);
+      await prefs.setBool('i2iModeImg2imgEnabled', i2iModeImg2imgEnabled);
+      await prefs.setBool('i2iModeUpscaleEnabled', i2iModeUpscaleEnabled);
       await prefs.setBool('characterTabEnabled', characterTabEnabled);
       await prefs.setBool('useCharacterPosition', useCharacterPosition);
+      await prefs.setBool('randomCharacterOrder', randomCharacterOrder);
       await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
       await prefs.setStringList('promptSectionOrder', promptSectionOrder);
       await prefs.setStringList('collapsedSections', collapsedSections.toList());
@@ -2797,15 +2991,15 @@ class AppState extends ChangeNotifier {
     targetI2iImage = imageBytes;
     targetI2iMetadata = metadata;
     recordI2iView(imageBytes, metadata, reset: true); // 본 이미지 기록 새로 시작
-    // i2i 탭이 꺼져 있으면 자동으로 켜기
+    // i2i 탭이 꺼져 있으면 자동으로 켜기.
+    // setI2iTabEnabled를 거쳐야 "모드가 전부 꺼져 있던 경우 모드 복구"까지 함께 처리된다.
     if (!i2iTabEnabled) {
-      i2iTabEnabled = true;
-      saveAllSettings();
+      setI2iTabEnabled(true);
     }
     // 릴이 켜져 있으면 보낸 원본도 릴에 추가 (작업 후 원본으로 복귀 가능하게).
     // 릴이 꺼져 있으면(=히스토리 모드) 보낸 이미지는 추가하지 않음 (히스토리에 따로 있음).
     if (!i2iHistoryDisabled) {
-      addI2iResult(imageBytes, metadata);
+      addI2iResult(imageBytes, metadata, source: 'origin');
     }
     notifyListeners();
   }
@@ -2881,6 +3075,9 @@ class AppState extends ChangeNotifier {
     gelbooruTotal = 0;
     gelbooruRemaining = 0;
     currentPromptIndex = 0;
+    gelbooruSearchDone = 0;
+    gelbooruSearchTotal = 0;
+    gelbooruSearchStage = "";
     notifyListeners();
 
     parseGelbooruApi();
@@ -2906,8 +3103,27 @@ class AppState extends ChangeNotifier {
         removeClothes: false,
         gelbooruUserId: gelbooruUserId,
         gelbooruApiKey: gelbooruApiKey,
+        // API 키가 있을 때만 사용자 지정 페이지 수 적용 (없으면 서비스 기본값 사용)
+        maxPagesToFetch: gelbooruApiKey.isNotEmpty ? gelbooruSearchPages : 20,
+        diversifySort: diversifySearchSort,
+        onProgress: (done, total, found) {
+          gelbooruSearchDone = done;
+          gelbooruSearchTotal = total;
+          // '검색 : N' / '남음 : N'이 검색 중에도 점점 차오르도록 실시간 반영
+          // (최종 정확한 값은 검색 완료 시 결과 개수로 다시 확정됨)
+          gelbooruTotal = found;
+          gelbooruRemaining = found;
+          notifyListeners();
+        },
+        onStage: (stage) {
+          gelbooruSearchStage = stage;
+          notifyListeners();
+        },
       );
       isGelbooruLoading = false;
+      gelbooruSearchDone = 0;
+      gelbooruSearchTotal = 0;
+      gelbooruSearchStage = "";
 
       if (!context.mounted) {
         return;
@@ -2932,6 +3148,12 @@ class AppState extends ChangeNotifier {
       }
     } catch (e) {
       isGelbooruLoading = false;
+      gelbooruSearchDone = 0;
+      gelbooruSearchTotal = 0;
+      gelbooruSearchStage = "";
+      // 실시간으로 차오르던 카운트도 리셋 (실패 시 실제 프롬프트는 없음)
+      gelbooruTotal = 0;
+      gelbooruRemaining = 0;
       if (!context.mounted) {
         return;
       }
@@ -3165,10 +3387,9 @@ class AppState extends ChangeNotifier {
       }
       // 작가/캐릭터/작품 '이름' 백스톱: 검색 단계에서 카테고리 조회가 실패했거나(429/오프라인)
       // 과거에 저장된 프롬프트에 이름이 남아있는 경우를 여기서 최종 차단
+      // (정적 사전 + 에셋 사전 + 패턴 안전장치를 isNameTag 하나로 통일)
       final String underscored = cleanTag.replaceAll(' ', '_');
-      if (TagFilters.artistNames.contains(underscored) ||
-          TagFilters.characterNames.contains(underscored) ||
-          TagFilters.copyrightNames.contains(underscored)) {
+      if (TagFilters.isNameTag(underscored)) {
         continue;
       }
       if (TagFilters.commonGarbage.contains(t) || TagFilters.commonGarbage.contains(cleanTag)) {
@@ -3986,6 +4207,7 @@ class AppState extends ChangeNotifier {
         characters: processedCharacters,
         variancePlus: isVariancePlus,
         useCharacterPosition: useCharacterPosition,
+        randomCharacterOrder: randomCharacterOrder,
         vibeTransfers:
             (vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).isNotEmpty &&
                 preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).isEmpty)
@@ -4039,6 +4261,8 @@ class AppState extends ChangeNotifier {
   void cancelBatch() {
     batchRemaining = 0;
     isBatchMode = false;
+    currentRepeatIndex = 0;
+    currentRepeatTotal = 0;
     notifyListeners();
   }
 
@@ -4066,13 +4290,46 @@ class AppState extends ChangeNotifier {
         break;
       } // API 끊기면 중지
 
-      // context가 죽어도 handleGenerate 내부에서 (context.mounted ? context : null)로
-      // 안전 처리되므로, 여기서는 의도적으로 mounted 가드 없이 넘긴다.
-      // ignore: use_build_context_synchronously
-      await handleGenerate(context, onScrollToHistoryEnd);
+      // 같은 프롬프트 반복 생성 횟수 (자동 전환 ON + 반복 ON일 때만 2회 이상)
+      final int repeats = (autoNextPromptInBatch && repeatSamePromptEnabled)
+          ? repeatSamePromptCount.clamp(1, 99)
+          : 1;
+      // UI 표시용 (반복이 1회뿐이면 표시하지 않도록 0으로)
+      currentRepeatTotal = repeats > 1 ? repeats : 0;
 
-      // 생성 중 취소 확인
-      if (!isBatchMode && batchCount != 0) {
+      bool aborted = false;
+      for (int r = 0; r < repeats; r++) {
+        if (!isApiConnected) {
+          aborted = true;
+          break;
+        }
+        currentRepeatIndex = repeats > 1 ? r + 1 : 0;
+        notifyListeners();
+
+        // context가 죽어도 handleGenerate 내부에서 (context.mounted ? context : null)로
+        // 안전 처리되므로, 여기서는 의도적으로 mounted 가드 없이 넘긴다.
+        // ignore: use_build_context_synchronously
+        await handleGenerate(context, onScrollToHistoryEnd);
+
+        // 사용자 정지 감지: cancelBatch()가 batchRemaining=0, isBatchMode=false로 만든다.
+        // batchRemaining을 보면 유한/무한(batchCount==0) 모두 정확히 잡힌다.
+        // (isBatchMode만 보면 무한 생성 시 정지가 감지되지 않아 반복이 계속 돌아버림)
+        if (batchRemaining <= 0 || !isBatchMode) {
+          aborted = true;
+          break;
+        }
+        // 반복 사이에도 딜레이 (마지막 반복 뒤엔 아래 공통 딜레이가 처리)
+        if (r < repeats - 1) {
+          notifyListeners();
+          await Future.delayed(Duration(milliseconds: (batchDelay * 1000).round()));
+          // 딜레이 중에 정지를 눌렀을 수도 있으니 한 번 더 확인
+          if (batchRemaining <= 0 || !isBatchMode) {
+            aborted = true;
+            break;
+          }
+        }
+      }
+      if (aborted) {
         break;
       }
 
@@ -4096,6 +4353,8 @@ class AppState extends ChangeNotifier {
 
     batchRemaining = 0;
     isBatchMode = false;
+    currentRepeatIndex = 0;
+    currentRepeatTotal = 0;
     notifyListeners();
   }
 
@@ -4252,7 +4511,7 @@ class AppState extends ChangeNotifier {
         // (자동 전환 OFF + 자동 해제 OFF → 아무것도 안 함, 마스크 유지)
 
         // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로 (여기서 notifyListeners 발생)
-        addI2iResult(result.image!, parsedMeta);
+        addI2iResult(result.image!, parsedMeta, source: 'inpaint');
       }
 
       await fetchAnlas();
@@ -4260,6 +4519,185 @@ class AppState extends ChangeNotifier {
       debugPrint('인페인트 파이프라인 에러: $e'); //
     } finally {
       // 성공/실패 여부와 관계없이 반드시 락 해제
+      _isInpaintProcessing = false;
+      isInpaintLoading = false;
+      inpaintStatusMessage = "";
+      notifyListeners();
+    }
+  }
+
+  Future<void> handleImg2ImgGenerate(BuildContext context) async {
+    // 인페인트와 뮤텍스/로딩 상태를 공유 (i2i 탭에서 동시에 실행될 수 없음)
+    if (_isInpaintProcessing) {
+      debugPrint('이미 처리 중입니다. 중복 요청을 무시합니다.');
+      return;
+    }
+
+    if (!isApiConnected) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
+          ),
+        );
+      }
+      return;
+    }
+    if (targetI2iImage == null || targetI2iMetadata == null) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            duration: const Duration(milliseconds: 2400),
+            content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
+          ),
+        );
+      }
+      return;
+    }
+
+    _isInpaintProcessing = true;
+    isInpaintLoading = true;
+    inpaintStatusMessage = "연결 중...";
+    lastErrorMessage = null;
+    notifyListeners();
+
+    bool bgInitialized = false;
+    try {
+      if (!isSeedLocked || seedController.text.isEmpty) {
+        seedController.text = Random().nextInt(4294967296).toString();
+      }
+
+      await saveAllSettings();
+
+      int width = targetI2iMetadata!.width;
+      int height = targetI2iMetadata!.height;
+
+      // i2i 탭의 프롬프트 입력란을 그대로 사용 (인페인트와 공유)
+      String combined =
+          "${inpaintPrefixController.text},${inpaintPositiveController.text},${inpaintSuffixController.text}";
+      String finalPrompt = _service.sanitizePrompt(_processWildcards(combined));
+      String finalNegative = _service.sanitizePrompt(
+        _processWildcards(inpaintNegativeController.text),
+      );
+
+      if (Platform.isAndroid) {
+        try {
+          bgInitialized = await FlutterBackground.initialize(
+            androidConfig: const FlutterBackgroundAndroidConfig(
+              notificationTitle: "NovelAI img2img 진행 중",
+              notificationText: "백그라운드에서 안전하게 통신 중입니다...",
+              notificationImportance: AndroidNotificationImportance.normal,
+              notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+            ),
+          );
+          if (bgInitialized) {
+            await FlutterBackground.enableBackgroundExecution();
+          }
+        } catch (e) {
+          debugPrint("백그라운드 오류: $e");
+        }
+      }
+
+      // 실행 시점의 활성 캐릭터를 그대로 전송 (프롬프트 탭 생성과 동일 처리)
+      List<Map<String, dynamic>> processedCharacters = characters
+          .where((char) => char.isActive)
+          .map((char) {
+            Map<String, dynamic> charJson = char.toJson();
+            if (charJson.containsKey('positive')) {
+              charJson['positive'] = _processWildcards(charJson['positive'].toString());
+            }
+            if (charJson.containsKey('negative')) {
+              charJson['negative'] = _processWildcards(charJson['negative'].toString());
+            }
+            return charJson;
+          })
+          .toList();
+
+      final result = await _service.generateImage(
+        positive: finalPrompt,
+        negative: finalNegative,
+        token: apiToken,
+        model: selectedModel,
+        steps: int.tryParse(stepsController.text) ?? 28,
+        sampler: selectedSampler,
+        scheduler: selectedScheduler,
+        isFurry: isFurryMode,
+        width: width,
+        height: height,
+        cfgScale: double.tryParse(cfgScaleController.text) ?? 6.0,
+        cfgRescale: double.tryParse(cfgRescaleController.text) ?? 0.0,
+        seed: int.tryParse(seedController.text) ?? 0,
+        characters: processedCharacters,
+        image: targetI2iImage,
+        action: "img2img",
+        img2imgStrength: img2imgStrength,
+        img2imgNoise: img2imgNoise,
+        variancePlus: isVariancePlus,
+        useCharacterPosition: useCharacterPosition,
+        randomCharacterOrder: randomCharacterOrder,
+        onStatus: (msg) {
+          inpaintStatusMessage = msg;
+          notifyListeners();
+        },
+      );
+
+      lastErrorMessage = result.error;
+
+      if (result.error != null) {
+        if (context.mounted) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1E1E1E),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: const Row(
+                children: [
+                  Icon(Icons.error_outline, color: Colors.redAccent),
+                  SizedBox(width: 8),
+                  Text(
+                    "img2img 생성 오류",
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              content: Text(result.error!, style: const TextStyle(color: Colors.white70)),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
+                ),
+              ],
+            ),
+          );
+        }
+      } else if (result.image != null) {
+        NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
+
+        // 인페인트와 동일: 자동 전환 설정을 따르고, 결과는 릴에 추가
+        if (inpaintAutoSwitchResult) {
+          i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
+          targetI2iImage = result.image!;
+          targetI2iMetadata = parsedMeta;
+          recordI2iView(result.image!, parsedMeta);
+        } else if (inpaintAutoClearMask) {
+          i2iMaskClearRevision++;
+        }
+
+        addI2iResult(result.image!, parsedMeta, source: 'img2img');
+      }
+
+      await fetchAnlas();
+    } catch (e) {
+      debugPrint('img2img 파이프라인 에러: $e');
+    } finally {
+      if (bgInitialized) {
+        try {
+          await FlutterBackground.disableBackgroundExecution();
+        } catch (e) {
+          debugPrint("백그라운드 해제 오류: $e");
+        }
+      }
       _isInpaintProcessing = false;
       isInpaintLoading = false;
       inpaintStatusMessage = "";
@@ -4449,7 +4887,7 @@ class AppState extends ChangeNotifier {
         }
 
         // 업스케일 결과도 i2i 스크래치 릴로
-        addI2iResult(result.image!, parsedMeta);
+        addI2iResult(result.image!, parsedMeta, source: 'upscale');
       }
 
       await fetchAnlas();
@@ -4640,29 +5078,31 @@ class AppState extends ChangeNotifier {
   // ===== i2i 스크래치 릴 =====
   // 결과를 릴에 추가 (디스크 저장 안 함 — 스크래치)
   // i2iHistoryDisabled가 켜져 있으면 릴 대신 메인 히스토리에 저장 (기존 동작)
-  void addI2iResult(Uint8List bytes, NaiMetadata? metadata) {
+  void addI2iResult(Uint8List bytes, NaiMetadata? metadata, {String source = 'inpaint'}) {
     if (i2iHistoryDisabled) {
       addImageToHistory(image: bytes, metadata: metadata, forceSave: true);
       return;
     }
-    i2iResults.add(I2iResult(bytes: bytes, metadata: metadata));
+    i2iResults.add(I2iResult(bytes: bytes, metadata: metadata, source: source));
     _trimI2iResults();
     notifyListeners();
   }
 
   // 비즐겨찾기 결과가 상한을 넘으면 오래된 것부터 제거 (즐겨찾기는 유지)
   void _trimI2iResults() {
-    while (i2iResults.where((r) => !r.favorite).length > i2iResultsCap) {
+    // 전체(즐겨찾기 포함)가 상한을 넘으면 가장 오래된 '비즐겨찾기'부터 제거.
+    // 예: 즐겨찾기 4개면 일반 이미지는 26개까지 = 총 30개.
+    while (i2iResults.length > i2iResultsCap) {
       final idx = i2iResults.indexWhere((r) => !r.favorite);
       if (idx < 0) {
-        break;
+        break; // 전부 즐겨찾기 (즐겨찾기 상한 5라 실제로는 도달하지 않음)
       }
       i2iResults.removeAt(idx);
     }
   }
 
   // 즐겨찾기 토글 (영속 저장)
-  // 반환: true=토글됨, false=즐겨찾기 한도(4) 초과로 막힘
+  // 반환: true=토글됨, false=즐겨찾기 한도(i2iFavoriteCap) 초과로 막힘
   bool toggleI2iFavorite(int index) {
     if (index < 0 || index >= i2iResults.length) {
       return true;

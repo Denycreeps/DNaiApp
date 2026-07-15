@@ -253,13 +253,13 @@ class _NovelAiAppState extends State<NovelAiApp>
 
     // 초기 로딩 중에는 로딩 화면으로 조작 차단 (프리징/크래시 방지)
     if (!state.isAppReady) {
-      return const Scaffold(
-        backgroundColor: Color(0xFF121212),
+      return Scaffold(
+        backgroundColor: const Color(0xFF121212),
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
+              const SizedBox(
                 width: 44,
                 height: 44,
                 child: CircularProgressIndicator(
@@ -267,8 +267,12 @@ class _NovelAiAppState extends State<NovelAiApp>
                   valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8B5CF6)),
                 ),
               ),
-              SizedBox(height: 20),
-              Text("불러오는 중...", style: TextStyle(color: Colors.white54, fontSize: 14)),
+              const SizedBox(height: 20),
+              // 현재 로딩 단계 표시 (AppState가 단계마다 갱신)
+              Text(
+                state.loadingStatusMessage,
+                style: const TextStyle(color: Colors.white54, fontSize: 14),
+              ),
             ],
           ),
         ),
@@ -470,6 +474,10 @@ class _NovelAiAppState extends State<NovelAiApp>
           body: Stack(
             children: [
               PageView.builder(
+                // 탭 구성(보이는 탭 목록)이 바뀌면 PageView 자체를 새로 만든다.
+                // key가 없으면 Flutter가 같은 위젯으로 보고 "옛 탭 개수로 그려둔 페이지"를
+                // 그대로 재사용해, 상단 탭 표시와 실제 화면이 어긋나는 문제가 생긴다.
+                key: ValueKey('pv_${_visibleTabIndices.join("_")}'),
                 controller: _pageController,
                 // i2i 탭이거나 좌우 스와이프 비활성화 시 차단
                 physics: (currentOrigIdx == 2 || !state.horizontalSwipeEnabled)

@@ -113,7 +113,7 @@ class _CharacterTabState extends State<CharacterTab> {
             }
 
             return Dialog(
-              insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              insetPadding: PromptUtils.promptEditorDialogInsets,
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               child: Padding(
@@ -155,11 +155,7 @@ class _CharacterTabState extends State<CharacterTab> {
                         },
                         maxLines: null,
                         expands: true,
-                        style: TextStyle(
-                          color: Colors.white,
-                          height: 1.5,
-                          fontSize: state.promptEditorFontSize,
-                        ),
+                        style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
                         decoration: const InputDecoration(
                           border: InputBorder.none,
                           contentPadding: EdgeInsets.all(16),
@@ -342,6 +338,23 @@ class _CharacterTabState extends State<CharacterTab> {
     );
   }
 
+  // 선택된 캐릭터를 위(-1)/아래(+1)로 한 칸 이동.
+  // 캐릭터 순서 = 생성 시 배치 순서라, 프롬프트를 안 바꾸고도 좌우 배치를 조정할 수 있다.
+  void _moveCharacter(AppState state, int direction) {
+    final from = state.selectedCharIndex;
+    final to = from + direction;
+    if (to < 0 || to >= state.characters.length) {
+      return;
+    }
+    setState(() {
+      final moved = state.characters.removeAt(from);
+      state.characters.insert(to, moved);
+      state.selectedCharIndex = to; // 선택이 옮긴 캐릭터를 계속 따라가게
+      state.saveAllSettings();
+      state.refreshUI();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -442,132 +455,191 @@ class _CharacterTabState extends State<CharacterTab> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Row(
-                                  children: [
-                                    GestureDetector(
-                                      onTap: () {
-                                        TextEditingController nameCtrl = TextEditingController(
-                                          text:
-                                              state.characters[state.selectedCharIndex].name.isEmpty
-                                              ? "캐릭터 #${state.selectedCharIndex + 1}"
-                                              : state.characters[state.selectedCharIndex].name,
-                                        );
-                                        showDialog(
-                                          context: context,
-                                          builder: (ctx) => AlertDialog(
-                                            backgroundColor: const Color(0xFF1E1E1E),
-                                            title: const Text(
-                                              "캐릭터 이름 수정",
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 16,
-                                              ),
-                                            ),
-                                            content: TextField(
-                                              controller: nameCtrl,
-                                              maxLength: 10,
-                                              style: const TextStyle(color: Colors.white),
-                                              decoration: const InputDecoration(
-                                                counterText: "",
-                                                hintText: "새 이름 입력",
-                                                hintStyle: TextStyle(color: Colors.white30),
-                                                enabledBorder: UnderlineInputBorder(
-                                                  borderSide: BorderSide(
-                                                    color: Colors.deepPurpleAccent,
-                                                  ),
-                                                ),
-                                                focusedBorder: UnderlineInputBorder(
-                                                  borderSide: BorderSide(
-                                                    color: Colors.deepPurpleAccent,
-                                                    width: 2,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                            actions: [
-                                              TextButton(
-                                                onPressed: () => Navigator.pop(ctx),
-                                                child: const Text(
-                                                  "취소",
-                                                  style: TextStyle(color: Colors.grey),
-                                                ),
-                                              ),
-                                              ElevatedButton(
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor: Colors.deepPurpleAccent,
-                                                ),
-                                                onPressed: () {
-                                                  state.characters[state.selectedCharIndex].name =
-                                                      nameCtrl.text.trim();
-                                                  state.saveAllSettings();
-                                                  state.refreshUI();
-                                                  Navigator.pop(ctx);
-                                                },
-                                                child: const Text(
-                                                  "저장",
-                                                  style: TextStyle(color: Colors.white),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                      },
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                          vertical: 8,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Colors.deepPurple.withValues(alpha: 0.2),
-                                          borderRadius: BorderRadius.circular(20),
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            const Icon(
-                                              Icons.person,
-                                              color: Colors.deepPurpleAccent,
-                                              size: 16,
-                                            ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              state.characters[state.selectedCharIndex].name.isEmpty
+                                Expanded(
+                                  child: Row(
+                                    children: [
+                                      Flexible(
+                                        child: GestureDetector(
+                                          onTap: () {
+                                            TextEditingController nameCtrl = TextEditingController(
+                                              text:
+                                                  state
+                                                      .characters[state.selectedCharIndex]
+                                                      .name
+                                                      .isEmpty
                                                   ? "캐릭터 #${state.selectedCharIndex + 1}"
                                                   : state.characters[state.selectedCharIndex].name,
-                                              style: const TextStyle(
-                                                color: Colors.deepPurpleAccent,
-                                                fontWeight: FontWeight.bold,
+                                            );
+                                            showDialog(
+                                              context: context,
+                                              builder: (ctx) => AlertDialog(
+                                                backgroundColor: const Color(0xFF1E1E1E),
+                                                title: const Text(
+                                                  "캐릭터 이름 수정",
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 16,
+                                                  ),
+                                                ),
+                                                content: TextField(
+                                                  controller: nameCtrl,
+                                                  maxLength: 10,
+                                                  style: const TextStyle(color: Colors.white),
+                                                  decoration: const InputDecoration(
+                                                    counterText: "",
+                                                    hintText: "새 이름 입력",
+                                                    hintStyle: TextStyle(color: Colors.white30),
+                                                    enabledBorder: UnderlineInputBorder(
+                                                      borderSide: BorderSide(
+                                                        color: Colors.deepPurpleAccent,
+                                                      ),
+                                                    ),
+                                                    focusedBorder: UnderlineInputBorder(
+                                                      borderSide: BorderSide(
+                                                        color: Colors.deepPurpleAccent,
+                                                        width: 2,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                actions: [
+                                                  TextButton(
+                                                    onPressed: () => Navigator.pop(ctx),
+                                                    child: const Text(
+                                                      "취소",
+                                                      style: TextStyle(color: Colors.grey),
+                                                    ),
+                                                  ),
+                                                  ElevatedButton(
+                                                    style: ElevatedButton.styleFrom(
+                                                      backgroundColor: Colors.deepPurpleAccent,
+                                                    ),
+                                                    onPressed: () {
+                                                      state
+                                                          .characters[state.selectedCharIndex]
+                                                          .name = nameCtrl.text
+                                                          .trim();
+                                                      state.saveAllSettings();
+                                                      state.refreshUI();
+                                                      Navigator.pop(ctx);
+                                                    },
+                                                    child: const Text(
+                                                      "저장",
+                                                      style: TextStyle(color: Colors.white),
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
+                                            );
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                              vertical: 8,
                                             ),
-                                          ],
+                                            decoration: BoxDecoration(
+                                              color: Colors.deepPurple.withValues(alpha: 0.2),
+                                              borderRadius: BorderRadius.circular(20),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                const Icon(
+                                                  Icons.person,
+                                                  color: Colors.deepPurpleAccent,
+                                                  size: 16,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Flexible(
+                                                  child: Text(
+                                                    state
+                                                            .characters[state.selectedCharIndex]
+                                                            .name
+                                                            .isEmpty
+                                                        ? "캐릭터 #${state.selectedCharIndex + 1}"
+                                                        : state
+                                                              .characters[state.selectedCharIndex]
+                                                              .name,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      color: Colors.deepPurpleAccent,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    Builder(
-                                      builder: (context) {
-                                        bool isCurrentActive =
-                                            state.characters[state.selectedCharIndex].isActive;
-                                        return IconButton(
-                                          icon: Icon(
-                                            isCurrentActive
-                                                ? Icons.visibility
-                                                : Icons.visibility_off,
-                                            color: isCurrentActive
-                                                ? Colors.deepPurpleAccent
-                                                : Colors.grey,
-                                          ),
-                                          tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
-                                          onPressed: () {
-                                            state.characters[state.selectedCharIndex].isActive =
-                                                !isCurrentActive;
-                                            state.saveAllSettings();
-                                            state.refreshUI();
-                                          },
-                                        );
-                                      },
-                                    ),
-                                  ],
+                                      const SizedBox(width: 4),
+                                      Builder(
+                                        builder: (context) {
+                                          bool isCurrentActive =
+                                              state.characters[state.selectedCharIndex].isActive;
+                                          return IconButton(
+                                            icon: Icon(
+                                              isCurrentActive
+                                                  ? Icons.visibility
+                                                  : Icons.visibility_off,
+                                              color: isCurrentActive
+                                                  ? Colors.deepPurpleAccent
+                                                  : Colors.grey,
+                                              size: 20,
+                                            ),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(
+                                              minWidth: 34,
+                                              minHeight: 34,
+                                            ),
+                                            visualDensity: VisualDensity.compact,
+                                            tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
+                                            onPressed: () {
+                                              state.characters[state.selectedCharIndex].isActive =
+                                                  !isCurrentActive;
+                                              state.saveAllSettings();
+                                              state.refreshUI();
+                                            },
+                                          );
+                                        },
+                                      ),
+                                      // 순서 위로 (왼쪽으로 배치) — 첫 번째면 비활성
+                                      IconButton(
+                                        icon: const Icon(Icons.keyboard_arrow_up, size: 22),
+                                        color: state.selectedCharIndex > 0
+                                            ? Colors.white70
+                                            : Colors.white24,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 30,
+                                          minHeight: 34,
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        tooltip: "순서 위로",
+                                        onPressed: state.selectedCharIndex > 0
+                                            ? () => _moveCharacter(state, -1)
+                                            : null,
+                                      ),
+                                      // 순서 아래로 (오른쪽으로 배치) — 마지막이면 비활성
+                                      IconButton(
+                                        icon: const Icon(Icons.keyboard_arrow_down, size: 22),
+                                        color: state.selectedCharIndex < state.characters.length - 1
+                                            ? Colors.white70
+                                            : Colors.white24,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 30,
+                                          minHeight: 34,
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        tooltip: "순서 아래로",
+                                        onPressed:
+                                            state.selectedCharIndex < state.characters.length - 1
+                                            ? () => _moveCharacter(state, 1)
+                                            : null,
+                                      ),
+                                    ],
+                                  ),
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.delete, color: Colors.redAccent),
@@ -694,12 +766,41 @@ class _CharacterTabState extends State<CharacterTab> {
                       ),
                     ),
                     const Spacer(),
+                    // 랜덤 배치 ON/OFF (배치 적용과 상호 배타 — 켜면 상대가 꺼짐)
+                    GestureDetector(
+                      onTap: () {
+                        state.setRandomCharacterOrder(!state.randomCharacterOrder);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(6),
+                          color: state.randomCharacterOrder
+                              ? const Color(0xFF3B82F6).withValues(alpha: 0.15)
+                              : Colors.transparent,
+                          border: Border.all(
+                            color: state.randomCharacterOrder
+                                ? const Color(0xFF3B82F6)
+                                : Colors.white24,
+                          ),
+                        ),
+                        child: Text(
+                          "랜덤 배치",
+                          style: TextStyle(
+                            color: state.randomCharacterOrder
+                                ? const Color(0xFF3B82F6)
+                                : Colors.white54,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
                     // 배치 적용 ON/OFF
                     GestureDetector(
                       onTap: () {
-                        state.useCharacterPosition = !state.useCharacterPosition;
-                        state.saveAllSettings();
-                        state.refreshUI();
+                        state.setUseCharacterPosition(!state.useCharacterPosition);
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),

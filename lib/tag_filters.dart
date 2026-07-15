@@ -1,6 +1,59 @@
 // lib/tag_filters.dart
 
+import 'package:flutter/services.dart' show rootBundle;
+
 class TagFilters {
+  // ── 자동 수집 이름 사전 (assets/filter_names.txt) ──
+  // collect_filter_names.py 로 Danbooru에서 수집한 작가/작품/캐릭터/메타 이름 목록.
+  // 아래 정적 사전 3종(artistNames 등)보다 훨씬 넓게 커버한다.
+  // 파일이 없거나 비어 있어도 앱은 정상 동작(기존 사전 + API 분류만 사용).
+  static Set<String> assetNames = {};
+  static bool _assetNamesLoaded = false;
+
+  static Future<void> ensureNamesLoaded() async {
+    if (_assetNamesLoaded) {
+      return;
+    }
+    _assetNamesLoaded = true;
+    try {
+      final raw = await rootBundle.loadString('assets/filter_names.txt');
+      assetNames = raw
+          .split('\n')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty && !e.startsWith('#'))
+          .toSet();
+    } catch (_) {
+      assetNames = {}; // 에셋이 없으면 빈 세트로 동작
+    }
+  }
+
+  // 이름 태그 판정 (언더스코어 포맷 기준).
+  // 정적 사전 3종 + 에셋 사전 + 패턴 안전장치 — 이름 필터링은 전부 이 함수 하나로 통일한다.
+  static bool isNameTag(String t) {
+    if (artistNames.contains(t) ||
+        characterNames.contains(t) ||
+        copyrightNames.contains(t) ||
+        assetNames.contains(t)) {
+      return true;
+    }
+    // [안전장치 1] ..._(artist) 접미사는 분류 API가 실패해도 무조건 작가명
+    if (t.endsWith('_(artist)')) {
+      return true;
+    }
+    // [안전장치 2] 이름_(작품명) 형태 — 괄호 안이 알려진 작품/이름이면 캐릭터 구분 태그
+    // 예: ganyu_(genshin_impact). API 분류가 실패한 회차에도 이름 누출을 막는다.
+    final m = RegExp(r'_\(([^)]+)\)$').firstMatch(t);
+    if (m != null) {
+      final inner = m.group(1)!;
+      if (copyrightNames.contains(inner) ||
+          copyrightTags.contains(inner.replaceAll('_', ' ')) ||
+          assetNames.contains(inner)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // 1. 메타데이터, 품질, 기타 제거해야 할 태그
   static const Set<String> commonGarbage = {
     "absurdres",

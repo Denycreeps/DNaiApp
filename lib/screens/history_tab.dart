@@ -147,25 +147,29 @@ class _HistoryTabState extends State<HistoryTab> {
             _selectedPromptTab = index;
           });
         },
-        child: Container(
-          height: 48,
-          decoration: BoxDecoration(
-            color: isActive ? color.withValues(alpha: 0.15) : Colors.transparent,
-            border: Border(
-              top: BorderSide(color: isActive ? color : color.withValues(alpha: 0.6), width: 2),
-              left: BorderSide(color: isActive ? color : color.withValues(alpha: 0.3), width: 2),
-              right: BorderSide(color: isActive ? color : color.withValues(alpha: 0.3), width: 2),
-              bottom: BorderSide(color: isActive ? Colors.transparent : activeBoxColor, width: 2),
+        // borderRadius는 네 변 색이 다른 Border와 함께 쓸 수 없음(렌더링 예외 발생)
+        // → 둥근 모서리는 ClipRRect로 처리하고 decoration에서는 radius 제거
+        child: ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+          child: Container(
+            height: 48,
+            decoration: BoxDecoration(
+              color: isActive ? color.withValues(alpha: 0.15) : Colors.transparent,
+              border: Border(
+                top: BorderSide(color: isActive ? color : color.withValues(alpha: 0.6), width: 2),
+                left: BorderSide(color: isActive ? color : color.withValues(alpha: 0.3), width: 2),
+                right: BorderSide(color: isActive ? color : color.withValues(alpha: 0.3), width: 2),
+                bottom: BorderSide(color: isActive ? Colors.transparent : activeBoxColor, width: 2),
+              ),
             ),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
-          ),
-          child: Center(
-            child: Text(
-              title,
-              style: TextStyle(
-                color: isActive ? color : Colors.white70,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
+            child: Center(
+              child: Text(
+                title,
+                style: TextStyle(
+                  color: isActive ? color : Colors.white70,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                ),
               ),
             ),
           ),
