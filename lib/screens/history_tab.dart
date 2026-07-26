@@ -50,6 +50,17 @@ class _HistoryTabState extends State<HistoryTab> {
     _thumbnailScrollController.addListener(() {
       _appState.historyThumbnailScrollOffset = _thumbnailScrollController.offset;
     });
+
+    // 앱을 완전히 껐다 켜면 저장된 썸네일 스크롤 위치가 없어(0) 맨 왼쪽에 머무는데,
+    // 선택된 이미지는 최신(맨 오른쪽)이라 서로 어긋난다.
+    // → 저장된 위치가 없을 때만 첫 프레임 뒤 선택 항목으로 즉시 맞춰준다.
+    if (_appState.historyThumbnailScrollOffset == 0 && _currentIndex > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _scrollToThumbnail(_currentIndex, animate: false);
+        }
+      });
+    }
   }
 
   @override
@@ -59,7 +70,7 @@ class _HistoryTabState extends State<HistoryTab> {
     super.dispose();
   }
 
-  void _scrollToThumbnail(int index) {
+  void _scrollToThumbnail(int index, {bool animate = true}) {
     if (_thumbnailScrollController.hasClients) {
       double itemWidth = 64.0 + 8.0;
       double screenWidth = MediaQuery.of(context).size.width - 32;
@@ -81,6 +92,11 @@ class _HistoryTabState extends State<HistoryTab> {
       }
       if (targetPos > _thumbnailScrollController.position.maxScrollExtent) {
         targetPos = _thumbnailScrollController.position.maxScrollExtent;
+      }
+
+      if (!animate) {
+        _thumbnailScrollController.jumpTo(targetPos); // 앱 시작 직후엔 즉시 위치
+        return;
       }
 
       _thumbnailScrollController.animateTo(

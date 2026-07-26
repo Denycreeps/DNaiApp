@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/app_state.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -836,10 +837,21 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
       // 10. i2i탭 UI 배치 변경 (ON: 모드 가로 1줄 + 실행 버튼 우하단)
       _toggleTile(
         icon: Icons.view_quilt,
-        title: "i2i탭 UI 배치 변경",
+        title: "i2i탭 다른 UI로 변경",
         value: state.i2iAltLayout,
         onChanged: (val) {
           state.i2iAltLayout = val;
+          state.saveAllSettings();
+          state.refreshUI();
+        },
+      ),
+      // 11. 프롬프트 탭 캐릭터 편집 서랍
+      _toggleTile(
+        icon: Icons.people_alt,
+        title: "프롬프트 탭 캐릭터 편집",
+        value: state.promptCharDrawerEnabled,
+        onChanged: (val) {
+          state.promptCharDrawerEnabled = val;
           state.saveAllSettings();
           state.refreshUI();
         },
@@ -944,11 +956,95 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
                 activeColor: const Color(0xFFFFA000),
               ),
             ]),
+
+            const SizedBox(height: 16),
+            Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+            const SizedBox(height: 14),
+
+            Row(
+              children: [
+                const Icon(Icons.view_agenda, color: Color(0xFF8B5CF6), size: 15),
+                const SizedBox(width: 6),
+                const Text(
+                  "프롬프트 창 표시 설정",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              "전부 꺼도 프롬프트 탭은 그대로 유지돼요",
+              style: TextStyle(color: Colors.white38, fontSize: 11),
+            ),
+            const SizedBox(height: 10),
+            _chipGrid([
+              _promptSectionChip(
+                state,
+                'positive',
+                "긍정적",
+                Icons.add_circle_outline,
+                const Color(0xFF00BFA5),
+              ),
+              _promptSectionChip(
+                state,
+                'prefix',
+                "선행",
+                Icons.arrow_right_alt,
+                const Color(0xFF29B6F6),
+              ),
+              _promptSectionChip(
+                state,
+                'suffix',
+                "후행",
+                Icons.keyboard_double_arrow_right,
+                const Color(0xFFFFA000),
+              ),
+              _promptSectionChip(
+                state,
+                'negative',
+                "부정적",
+                Icons.remove_circle_outline,
+                const Color(0xFFFF5252),
+              ),
+              _promptSectionChip(
+                state,
+                'removeChips',
+                "태그 제거",
+                Icons.auto_fix_high,
+                const Color(0xFF8B5CF6),
+              ),
+              _promptSectionChip(
+                state,
+                'customRemove',
+                "개별 제거",
+                Icons.delete_outline,
+                const Color(0xFF9E9E9E),
+              ),
+              _promptSectionChip(state, 'conditional', "조건부", Icons.bolt, const Color(0xFFEC4899)),
+              _promptSectionChip(state, 'weightRules', "가중치", Icons.tune, const Color(0xFF84CC16)),
+            ]),
           ],
         ),
       ),
       const SizedBox(height: 16),
     ];
+  }
+
+  // 프롬프트 섹션 표시 칩 (숨김 목록에 없으면 ON)
+  Widget _promptSectionChip(
+    AppState state,
+    String sectionId,
+    String label,
+    IconData icon,
+    Color color,
+  ) {
+    return _tabChip(
+      label,
+      !state.hiddenPromptSections.contains(sectionId),
+      (v) => state.setPromptSectionVisible(sectionId, v),
+      icon: icon,
+      activeColor: color,
+    );
   }
 
   List<Widget> _storageSection(BuildContext context, AppState state) {
@@ -1570,26 +1666,47 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
     ];
   }
 
+  // GitHub 저장소 열기 (주소는 AppState.githubRepo 하나에서만 관리)
+  Future<void> _openGithubRepo(BuildContext context) async {
+    final uri = Uri.parse('https://github.com/${AppState.githubRepo}');
+    bool ok = false;
+    try {
+      ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("브라우저를 열 수 없어요: $uri")));
+    }
+  }
+
   List<Widget> _miscSection(BuildContext context, AppState state) {
     return [
-      // 앱 버전 정보
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white12),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.info_outline, color: Colors.white38, size: 16),
-            const SizedBox(width: 6),
-            Text(
-              "DNaiApp v${AppState.currentVersion}",
-              style: const TextStyle(color: Colors.white38, fontSize: 13),
-            ),
-          ],
+      // 앱 버전 정보 (탭하면 GitHub 저장소 열기)
+      InkWell(
+        onTap: () => _openGithubRepo(context),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1E1E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.info_outline, color: Colors.white38, size: 16),
+              const SizedBox(width: 6),
+              Text(
+                "DNaiApp v${AppState.currentVersion}",
+                style: const TextStyle(color: Colors.white38, fontSize: 13),
+              ),
+              const SizedBox(width: 8),
+              // 탭 가능하다는 힌트
+              const Icon(Icons.open_in_new, color: Colors.white24, size: 14),
+            ],
+          ),
         ),
       ),
       // 업데이트 설정

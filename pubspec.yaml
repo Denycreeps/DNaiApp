@@ -4,7 +4,7 @@ description: "My NovelAi image generate third-party app."
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 
-version: 2.11.0
+version: 2.13.0
 
 environment:
   sdk: ^3.11.0
@@ -30,6 +30,9 @@ dependencies:
   package_info_plus: ^8.3.0
 
   open_filex: ^4.5.0
+
+  # 외부 링크(GitHub 저장소 등) 열기
+  url_launcher: ^6.3.1
 
   # SAF (Storage Access Framework) — 임의 폴더/SD카드 저장·읽기
   saf_util: ^2.2.0

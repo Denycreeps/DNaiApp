@@ -242,3 +242,17 @@ ModelCaps modelCapsFor(String model) {
   // 3) 폴백
   return _fallbackCaps(model);
 }
+
+// NAI 표준 해상도 목록 — 랜덤 해상도(app_state)와 상세 환경 드롭다운(detail_settings_modal)이 공유.
+// 한쪽만 고쳐서 두 목록이 어긋나는 사고를 막기 위해 이곳 한 곳에서만 관리한다.
+const List<String> kNaiResolutions = [
+  "768 x 1344",
+  "832 x 1216",
+  "896 x 1152",
+  "960 x 1088",
+  "1024 x 1024",
+  "1088 x 960",
+  "1152 x 896",
+  "1216 x 832",
+  "1344 x 768",
+];

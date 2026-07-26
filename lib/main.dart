@@ -533,6 +533,10 @@ class _NovelAiAppState extends State<NovelAiApp>
                 },
               ),
 
+              // 캐릭터 편집 손잡이: 스크롤 영역 밖(화면 기준)에 두어야
+              // 드래그 좌표가 마우스와 정확히 일치하고 창도 화면 기준으로 뜬다
+              if (isPromptTab && !isKeyboardOpen) const Positioned.fill(child: CharDrawerHandle()),
+
               if (isPromptTab && !isKeyboardOpen)
                 Positioned(
                   bottom: 16 + bottomNavBarHeight,

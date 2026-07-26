@@ -353,19 +353,55 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
         break;
       }
 
-      int length = ByteData.view(imageBytes.buffer).getUint32(offset);
+      int length = ByteData.sublistView(imageBytes).getUint32(offset);
       String type = String.fromCharCodes(imageBytes.sublist(offset + 4, offset + 8));
 
       if (type == 'IHDR' && length >= 8) {
-        imageWidth = ByteData.view(imageBytes.buffer).getUint32(offset + 8);
-        imageHeight = ByteData.view(imageBytes.buffer).getUint32(offset + 12);
-      } else if (type == 'tEXt') {
+        imageWidth = ByteData.sublistView(imageBytes).getUint32(offset + 8);
+        imageHeight = ByteData.sublistView(imageBytes).getUint32(offset + 12);
+      } else if (type == 'tEXt' || type == 'zTXt' || type == 'iTXt') {
+        // PNG 텍스트 청크는 3종류. tEXt만 읽으면 다른 툴/최신 NAI가 쓴
+        // zTXt(압축)·iTXt(UTF-8, 압축 가능) 메타데이터를 통째로 놓친다.
         List<int> chunkData = imageBytes.sublist(offset + 8, offset + 8 + length);
         int nullIdx = chunkData.indexOf(0);
         if (nullIdx != -1) {
           String key = String.fromCharCodes(chunkData.sublist(0, nullIdx));
-          String value = utf8.decode(chunkData.sublist(nullIdx + 1), allowMalformed: true);
-          textChunks[key] = value;
+          List<int> raw = chunkData.sublist(nullIdx + 1);
+          String? value;
+
+          if (type == 'tEXt') {
+            value = utf8.decode(raw, allowMalformed: true);
+          } else if (type == 'zTXt') {
+            // [압축방식 1바이트][zlib 압축 데이터]
+            if (raw.length > 1) {
+              try {
+                value = utf8.decode(zlib.decode(raw.sublist(1)), allowMalformed: true);
+              } catch (_) {}
+            }
+          } else {
+            // iTXt: [압축플래그][압축방식][언어태그\0][번역키워드\0][본문]
+            if (raw.length >= 2) {
+              final int compFlag = raw[0];
+              final int langEnd = raw.indexOf(0, 2);
+              if (langEnd != -1) {
+                final int transEnd = raw.indexOf(0, langEnd + 1);
+                if (transEnd != -1) {
+                  final List<int> body = raw.sublist(transEnd + 1);
+                  if (compFlag == 1) {
+                    try {
+                      value = utf8.decode(zlib.decode(body), allowMalformed: true);
+                    } catch (_) {}
+                  } else {
+                    value = utf8.decode(body, allowMalformed: true);
+                  }
+                }
+              }
+            }
+          }
+
+          if (value != null && value.isNotEmpty) {
+            textChunks[key] = value;
+          }
         }
       }
       offset += 12 + length;
@@ -375,13 +411,23 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
     String source = textChunks['Source'] ?? '';
     String commentString = textChunks['Comment'] ?? '{}';
 
+    // 'Comment' 이외의 키에 들어있는 경우도 구제 (툴마다 키 이름이 다름)
+    if (commentString == '{}' || commentString.isEmpty) {
+      for (final entry in textChunks.entries) {
+        final v = entry.value.trim();
+        if (v.startsWith('{') && (v.contains('"prompt"') || v.contains('"v4_prompt"'))) {
+          commentString = v;
+          break;
+        }
+      }
+    }
+
     if (commentString == '{}' || commentString.isEmpty) {
       try {
         String rawString = utf8.decode(imageBytes, allowMalformed: true);
-        int startIndex = rawString.indexOf('{"prompt":');
-        if (startIndex == -1) {
-          startIndex = rawString.indexOf('{"v4_prompt":');
-        }
+        // 콜론 뒤 공백이 있어도 찾도록 정규식 사용
+        final m = RegExp(r'\{\s*"(?:prompt|v4_prompt)"\s*:').firstMatch(rawString);
+        int startIndex = m?.start ?? -1;
         if (startIndex != -1) {
           int braceIndex = rawString.lastIndexOf('{', startIndex);
           if (braceIndex != -1) {
@@ -921,7 +967,9 @@ class SyntaxHighlightController extends TextEditingController {
               TextSpan(
                 text: line.substring(indent, colonIdx + 1), // '(...):'
                 style: style?.copyWith(
-                  backgroundColor: const Color(0xFF29B6F6).withValues(alpha: 0.30),
+                  backgroundColor: const Color(
+                    0xFFEC4899,
+                  ).withValues(alpha: 0.30), // 조건부 섹션 색(핑크)과 통일
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -944,6 +992,64 @@ class SyntaxHighlightController extends TextEditingController {
 }
 
 // NovelAI 가중치 문법(숫자::프롬프트 ::) 색상 하이라이트 컨트롤러
+// 가중치 규칙 입력창 전용 강조
+//  - 규칙이 꺼져 있으면 전체를 흐리게 (꺼진 상태가 한눈에 보이도록)
+//  - '#'부터 콤마/줄바꿈 전까지는 주석이므로 회색 처리
+class WeightRulesController extends TextEditingController {
+  WeightRulesController({super.text});
+
+  // AppState의 weightRulesEnabled와 동기화되는 현재 상태
+  static bool rulesEnabled = false;
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
+    return buildRulesSpan(text, style, rulesEnabled);
+  }
+
+  // 카드 미리보기에서도 같은 음영을 쓰기 위한 static 헬퍼
+  static TextSpan buildRulesSpan(String text, TextStyle? style, bool enabled) {
+    if (!enabled) {
+      // 꺼짐: 전체를 흐린 회색으로
+      return TextSpan(
+        text: text,
+        style: style?.copyWith(color: Colors.white30),
+      );
+    }
+    final List<TextSpan> spans = [];
+    int i = 0;
+    while (i < text.length) {
+      final hash = text.indexOf('#', i);
+      if (hash == -1) {
+        spans.add(TextSpan(text: text.substring(i), style: style));
+        break;
+      }
+      if (hash > i) {
+        spans.add(TextSpan(text: text.substring(i, hash), style: style));
+      }
+      // '#'부터 콤마/줄바꿈 직전까지가 주석 범위
+      int end = text.length;
+      for (int j = hash; j < text.length; j++) {
+        if (text[j] == ',' || text[j] == '\n') {
+          end = j;
+          break;
+        }
+      }
+      spans.add(
+        TextSpan(
+          text: text.substring(hash, end),
+          style: style?.copyWith(color: Colors.grey, fontStyle: FontStyle.italic),
+        ),
+      );
+      i = end;
+    }
+    return TextSpan(style: style, children: spans);
+  }
+}
+
 class WeightHighlightController extends TextEditingController {
   WeightHighlightController({super.text});
 
@@ -1330,6 +1436,17 @@ class AppState extends ChangeNotifier {
   int gelbooruSearchPages = 40;
   // [실험] 정렬 축 다양화 (random+score+id 섞기) — 중복 줄이고 표본 확대
   bool diversifySearchSort = false;
+  // 프롬프트 탭 캐릭터 편집 서랍 표시 (기본 OFF)
+  bool promptCharDrawerEnabled = false;
+  // 가중치 규칙: "태그=숫자" 형식으로 프롬프트의 특정 태그에 NovelAI 가중치를 자동 적용
+  bool _weightRulesEnabled = false;
+  bool get weightRulesEnabled => _weightRulesEnabled;
+  set weightRulesEnabled(bool v) {
+    _weightRulesEnabled = v;
+    WeightRulesController.rulesEnabled = v; // 입력창 강조와 동기화
+  }
+
+  final WeightRulesController weightRulesController = WeightRulesController();
   bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
   bool randomPromptAlphabetical = false; // 랜덤 프롬프트 나머지 태그 알파벳 순서
   bool ignoreRecommendedOrder = false; // NovelAI 권장 순서(인원/solo/시점 등) 무시
@@ -1428,10 +1545,61 @@ class AppState extends ChangeNotifier {
     'removeChips',
     'customRemove',
     'conditional',
+    'weightRules',
   ];
+
+  // 앱에서 지원하는 전체 섹션 (저장된 순서와 대조해 누락/불명 항목 정리)
+  static const List<String> _allSections = [
+    'positive',
+    'prefix',
+    'suffix',
+    'negative',
+    'removeChips',
+    'customRemove',
+    'conditional',
+    'weightRules',
+  ];
+
+  List<String> _mergeSectionOrder(List<String> saved) {
+    final merged = saved.where(_allSections.contains).toList();
+    for (final sec in _allSections) {
+      if (!merged.contains(sec)) {
+        merged.add(sec); // 새로 추가된 섹션은 뒤에
+      }
+    }
+    return merged;
+  }
 
   // 프롬프트 섹션 접기 상태
   Set<String> collapsedSections = {};
+
+  // 프롬프트 탭에서 숨길 섹션들 (설정 > 프롬프트 창 표시)
+  // 전부 숨겨도 프롬프트 탭 자체는 유지된다.
+  Set<String> hiddenPromptSections = {};
+
+  // i2i 탭 프롬프트 카드 접기 상태 (positive/prefix/suffix/negative)
+  // 부정적처럼 한 번 넣고 신경 끄는 항목을 접어둘 수 있게 저장까지 유지한다.
+  Set<String> collapsedI2iPrompts = {};
+
+  void toggleI2iPromptCollapsed(String cardId) {
+    if (collapsedI2iPrompts.contains(cardId)) {
+      collapsedI2iPrompts.remove(cardId);
+    } else {
+      collapsedI2iPrompts.add(cardId);
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
+  void setPromptSectionVisible(String sectionId, bool visible) {
+    if (visible) {
+      hiddenPromptSections.remove(sectionId);
+    } else {
+      hiddenPromptSections.add(sectionId);
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
 
   String resolutionMode = "수동";
   int currentImageWidth = 0;
@@ -2010,6 +2178,13 @@ class AppState extends ChangeNotifier {
   String selectedScheduler = "karras";
   String selectedResolution = "832 x 1216";
   double resolutionScale = 1.0; // 1.0, 1.5, 2.0
+
+  // 픽셀/개수 한계 상수 (매직넘버 방지)
+  //  - kMegapixelCap: 1024×1024. 자동 모드 상한이자 Opus 무료 생성 기준
+  //  - kNaiPixelHardCap: NAI가 허용하는 절대 픽셀 상한
+  static const int kMegapixelCap = 1048576;
+  static const int kNaiPixelHardCap = 3145728;
+  static const int kHistoryCap = 100; // 히스토리 최대 보관 장수
   List<String> customResolutions = []; // 사용자 추가 해상도
 
   List<NaiCharacter> characters = [NaiCharacter()];
@@ -2086,6 +2261,7 @@ class AppState extends ChangeNotifier {
   static const int i2iResultsCap = 30; // 릴 전체 보관 상한 (즐겨찾기 포함)
   static const int i2iFavoriteCap = 5; // 즐겨찾기 최대 개수
   double i2iHandleBottom = -1; // i2i 릴 핸들 세로 위치 (-1이면 기본값 사용)
+  double promptCharHandleTop = -1; // 프롬프트 탭 캐릭터 편집 손잡이 세로 위치 (-1이면 기본값)
   bool i2iHistoryDisabled = false; // ON이면 릴 끄고 i2i 결과를 메인 히스토리에 저장
   // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
   bool inpaintAutoSwitchResult = true; // 인페인트 결과를 작업 이미지로 자동 전환 (기본 ON)
@@ -2282,6 +2458,9 @@ class AppState extends ChangeNotifier {
     i2iAltLayout = prefs.getBool('i2iAltLayout') ?? false;
     gelbooruSearchPages = (prefs.getInt('gelbooruSearchPages') ?? 40).clamp(40, 120);
     diversifySearchSort = prefs.getBool('diversifySearchSort') ?? false;
+    promptCharDrawerEnabled = prefs.getBool('promptCharDrawerEnabled') ?? false;
+    weightRulesEnabled = prefs.getBool('weightRulesEnabled') ?? false;
+    weightRulesController.text = prefs.getString('weightRules') ?? "";
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
     randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
@@ -2325,9 +2504,13 @@ class AppState extends ChangeNotifier {
     useGelbooruApiKey = prefs.getBool('useGelbooruApiKey') ?? true;
     resolutionMode = prefs.getString('resolutionMode') ?? "수동";
     final sectionOrderJson = prefs.getStringList('promptSectionOrder');
-    if (sectionOrderJson != null && sectionOrderJson.length == 7) {
-      promptSectionOrder = sectionOrderJson;
+    if (sectionOrderJson != null && sectionOrderJson.isNotEmpty) {
+      // 저장된 순서를 쓰되, 새로 생긴 섹션은 뒤에 붙이고 없어진 섹션은 버린다.
+      // (길이를 고정하면 섹션이 추가될 때 저장된 순서가 통째로 무시됨)
+      promptSectionOrder = _mergeSectionOrder(sectionOrderJson);
     }
+    hiddenPromptSections = (prefs.getStringList('hiddenPromptSections') ?? []).toSet();
+    collapsedI2iPrompts = (prefs.getStringList('collapsedI2iPrompts') ?? []).toSet();
     final collapsedJson = prefs.getStringList('collapsedSections');
     if (collapsedJson != null) {
       collapsedSections = collapsedJson.toSet();
@@ -2501,6 +2684,9 @@ class AppState extends ChangeNotifier {
       'i2iAltLayout': i2iAltLayout,
       'gelbooruSearchPages': gelbooruSearchPages,
       'diversifySearchSort': diversifySearchSort,
+      'promptCharDrawerEnabled': promptCharDrawerEnabled,
+      'weightRulesEnabled': weightRulesEnabled,
+      'weightRules': weightRulesController.text,
       'historySlideEnabled': historySlideEnabled,
       'randomPromptAlphabetical': randomPromptAlphabetical,
       'ignoreRecommendedOrder': ignoreRecommendedOrder,
@@ -2538,6 +2724,8 @@ class AppState extends ChangeNotifier {
       'customResolutions': customResolutions,
       'autoCheckUpdate': autoCheckUpdate,
       'collapsedSections': collapsedSections.toList(),
+      'hiddenPromptSections': hiddenPromptSections.toList(),
+      'collapsedI2iPrompts': collapsedI2iPrompts.toList(),
       'characters': characters.map((c) => c.toJson()).toList(),
       'wildcards': wildcards.map((w) => w.toJson()).toList(),
       'presets': presets.map((p) => p.toJson()).toList(),
@@ -2617,7 +2805,7 @@ class AppState extends ChangeNotifier {
     selectedScheduler = data['scheduler'] ?? 'karras';
     resolutionMode = data['resolutionMode'] ?? '수동';
     if (data['promptSectionOrder'] != null) {
-      promptSectionOrder = List<String>.from(data['promptSectionOrder']);
+      promptSectionOrder = _mergeSectionOrder(List<String>.from(data['promptSectionOrder']));
     }
     ratingE = data['rating_e'] ?? false;
     ratingQ = data['rating_q'] ?? false;
@@ -2638,6 +2826,9 @@ class AppState extends ChangeNotifier {
     i2iAltLayout = data['i2iAltLayout'] ?? false;
     gelbooruSearchPages = ((data['gelbooruSearchPages'] ?? 40) as int).clamp(40, 120);
     diversifySearchSort = data['diversifySearchSort'] ?? false;
+    promptCharDrawerEnabled = data['promptCharDrawerEnabled'] ?? false;
+    weightRulesEnabled = data['weightRulesEnabled'] ?? false;
+    weightRulesController.text = data['weightRules'] ?? "";
     historySlideEnabled = data['historySlideEnabled'] ?? false;
     randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
@@ -2737,6 +2928,12 @@ class AppState extends ChangeNotifier {
     if (data['autoCheckUpdate'] != null) {
       autoCheckUpdate = data['autoCheckUpdate'];
     }
+    if (data['hiddenPromptSections'] != null) {
+      hiddenPromptSections = Set<String>.from(data['hiddenPromptSections']);
+    }
+    if (data['collapsedI2iPrompts'] != null) {
+      collapsedI2iPrompts = Set<String>.from(data['collapsedI2iPrompts']);
+    }
     if (data['collapsedSections'] != null) {
       collapsedSections = Set<String>.from(data['collapsedSections']);
     }
@@ -2835,6 +3032,9 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('i2iAltLayout', i2iAltLayout);
       await prefs.setInt('gelbooruSearchPages', gelbooruSearchPages);
       await prefs.setBool('diversifySearchSort', diversifySearchSort);
+      await prefs.setBool('promptCharDrawerEnabled', promptCharDrawerEnabled);
+      await prefs.setBool('weightRulesEnabled', weightRulesEnabled);
+      await prefs.setString('weightRules', weightRulesController.text);
       await prefs.setBool('historySlideEnabled', historySlideEnabled);
       await prefs.setBool('randomPromptAlphabetical', randomPromptAlphabetical);
       await prefs.setBool('ignoreRecommendedOrder', ignoreRecommendedOrder);
@@ -2870,6 +3070,8 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
       await prefs.setStringList('promptSectionOrder', promptSectionOrder);
       await prefs.setStringList('collapsedSections', collapsedSections.toList());
+      await prefs.setStringList('hiddenPromptSections', hiddenPromptSections.toList());
+      await prefs.setStringList('collapsedI2iPrompts', collapsedI2iPrompts.toList());
       await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
       await prefs.setString('resolutionMode', resolutionMode);
       await prefs.setString('model', selectedModel);
@@ -3807,22 +4009,21 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  String _applyConditionalRules(String prompt, String rating) {
-    if (conditionalRuleController.text.trim().isEmpty) {
-      return prompt;
-    }
-    List<String> tags = prompt.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-    List<String> rules = conditionalRuleController.text
+  // 조건부 트리거 규칙 텍스트 → (조건, 액션) 쌍 목록. 두 적용 함수가 공유하는 파서.
+  // ⚠️ 적용 함수 2개는 '의도적으로' 별도 구현이다 (병합 금지):
+  //  - _applyConditionalRules (random 모드): 단일 프롬프트에 적용, 마지막에 toSet() 중복 제거
+  //  - _applyConditionalRulesSectioned (generate 모드): 선행/긍정/후행 경계 보존, 중복 제거 없음
+  List<({String cond, String action})> _parseConditionalRules() {
+    final List<({String cond, String action})> parsed = [];
+    final rules = conditionalRuleController.text
         .split('\n')
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty && !e.startsWith('#'))
         .toList();
-
-    for (String ruleStr in rules) {
+    for (final ruleStr in rules) {
       if (!ruleStr.startsWith('(')) {
         continue;
       }
-
       // 매칭되는 닫는 괄호 찾기 (중첩 괄호 지원)
       int depth = 0;
       int sepIdx = -1;
@@ -3832,7 +4033,6 @@ class AppState extends ChangeNotifier {
         } else if (ruleStr[i] == ')') {
           depth--;
           if (depth == 0) {
-            // '):' 패턴 확인
             if (i + 1 < ruleStr.length && ruleStr[i + 1] == ':') {
               sepIdx = i;
             }
@@ -3843,9 +4043,19 @@ class AppState extends ChangeNotifier {
       if (sepIdx == -1) {
         continue;
       }
+      parsed.add((cond: ruleStr.substring(1, sepIdx), action: ruleStr.substring(sepIdx + 2)));
+    }
+    return parsed;
+  }
 
-      String condStr = ruleStr.substring(1, sepIdx);
-      String actionStr = ruleStr.substring(sepIdx + 2);
+  String _applyConditionalRules(String prompt, String rating) {
+    if (conditionalRuleController.text.trim().isEmpty) {
+      return prompt;
+    }
+    List<String> tags = prompt.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    for (final rule in _parseConditionalRules()) {
+      String condStr = rule.cond;
+      String actionStr = rule.action;
 
       // 재귀 하강 파서로 조건 평가
       bool conditionMet = _evaluateCondition(condStr, tags, rating);
@@ -3928,38 +4138,9 @@ class AppState extends ChangeNotifier {
     List<String> positiveFront = [];
     List<String> positiveBack = [];
 
-    List<String> rules = conditionalRuleController.text
-        .split('\n')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty && !e.startsWith('#'))
-        .toList();
-
-    for (String ruleStr in rules) {
-      if (!ruleStr.startsWith('(')) {
-        continue;
-      }
-
-      int depth = 0;
-      int sepIdx = -1;
-      for (int i = 0; i < ruleStr.length; i++) {
-        if (ruleStr[i] == '(') {
-          depth++;
-        } else if (ruleStr[i] == ')') {
-          depth--;
-          if (depth == 0) {
-            if (i + 1 < ruleStr.length && ruleStr[i + 1] == ':') {
-              sepIdx = i;
-            }
-            break;
-          }
-        }
-      }
-      if (sepIdx == -1) {
-        continue;
-      }
-
-      String condStr = ruleStr.substring(1, sepIdx);
-      String actionStr = ruleStr.substring(sepIdx + 2);
+    for (final rule in _parseConditionalRules()) {
+      String condStr = rule.cond;
+      String actionStr = rule.action;
 
       // 1. 조건 판정은 전체 합친 태그(선행+긍정+후행) 기준
       List<String> allTags = [
@@ -4023,6 +4204,85 @@ class AppState extends ChangeNotifier {
     );
   }
 
+  // 가중치 규칙 적용: 사용자가 "태그=숫자"로 정의한 규칙에 따라
+  // 프롬프트 안의 해당 태그를 NovelAI 가중치 문법(숫자::태그 ::)으로 감싼다.
+  //  예) 규칙 "sleeping=0.5" → 프롬프트의 sleeping 을 "0.5::sleeping ::" 으로 치환
+  //  - 한 줄에 규칙 하나, 줄 맨 앞에 # 이 있으면 그 줄은 건너뜀
+  //  - 숫자는 음수/소수/1 이상 모두 허용 (NovelAI V4 numeric emphasis)
+  String _applyWeightRules(String prompt) {
+    if (!weightRulesEnabled) {
+      return prompt;
+    }
+    // 규칙 구분자: 콤마 또는 줄바꿈 (앞뒤 공백은 자동으로 다듬음)
+    final rawRules = weightRulesController.text.split(RegExp(r'[,\n]'));
+    String result = prompt;
+    for (final rawLine in rawRules) {
+      // '#'이 나오면 그 항목의 끝(콤마/줄바꿈)까지는 주석으로 무시한다.
+      //  예) "sleeping=0.5 #메모" → "sleeping=0.5" 만 규칙으로 인식
+      final hash = rawLine.indexOf('#');
+      final line = (hash >= 0 ? rawLine.substring(0, hash) : rawLine).trim();
+      if (line.isEmpty) {
+        continue;
+      }
+      final eq = line.lastIndexOf('=');
+      if (eq <= 0 || eq == line.length - 1) {
+        continue; // '=' 가 없거나 좌/우가 비면 잘못된 규칙
+      }
+      final tag = line.substring(0, eq).trim();
+      final weightStr = line.substring(eq + 1).trim();
+      final weight = double.tryParse(weightStr);
+      if (tag.isEmpty || weight == null) {
+        continue; // 숫자가 아니면 건너뜀
+      }
+      // 대상 태그를 정확히(콤마/문자열 경계 기준) 찾아 치환.
+      final escaped = RegExp.escape(tag);
+      // 이미 가중치가 걸려 있으면(예: "1.1::sleeping ::", "1::tag::", "-1::hat ::")
+      // 사용자가 직접 지정한 값이므로 규칙을 적용하지 않고 그대로 둔다.
+      final alreadyWeighted = RegExp('-?[0-9.]+\\s*::\\s*$escaped\\s*::', caseSensitive: false);
+      if (alreadyWeighted.hasMatch(result)) {
+        continue;
+      }
+      // 콤마 또는 문자열 시작/끝으로 둘러싸인 태그를 매칭 (앞뒤 공백 허용)
+      final re = RegExp('(^|,)\\s*$escaped\\s*(?=,|\$)', caseSensitive: false);
+      result = result.replaceAllMapped(re, (m) {
+        final lead = m.group(1) ?? '';
+        // 앞이 콤마면 ", "로 정리해 태그 간 간격을 유지 (문자열 시작이면 공백 없음)
+        final prefix = lead == ',' ? ', ' : lead;
+        return '$prefix$weight::$tag ::';
+      });
+    }
+    return result;
+  }
+
+  // FlutterBackground는 최초 1회만 initialize.
+  // (매 생성마다 알림 채널을 다시 세팅하면 그만큼 생성 시작이 늦어짐)
+  // 이후 생성부터는 enable/disable만 토글한다.
+  bool _bgServiceReady = false;
+  Future<bool> _enableBackgroundExecution() async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    try {
+      if (!_bgServiceReady) {
+        _bgServiceReady = await FlutterBackground.initialize(
+          androidConfig: const FlutterBackgroundAndroidConfig(
+            notificationTitle: "NovelAI 생성 중",
+            notificationText: "백그라운드에서 안전하게 통신 중입니다...",
+            notificationImportance: AndroidNotificationImportance.normal,
+            notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+          ),
+        );
+      }
+      if (_bgServiceReady) {
+        await FlutterBackground.enableBackgroundExecution();
+        return true;
+      }
+    } catch (e) {
+      debugPrint("백그라운드 실행 권한이 없거나 오류 발생: $e");
+    }
+    return false;
+  }
+
   Future<void> handleGenerate(BuildContext context, VoidCallback onScrollToHistoryEnd) async {
     if (!isApiConnected) {
       return;
@@ -4033,34 +4293,25 @@ class AppState extends ChangeNotifier {
     isLoading = true;
     lastErrorMessage = null;
     notifyListeners();
-    await saveAllSettings();
+    // 설정 저장은 생성과 병렬로 (95개 키 기록을 생성 시작이 기다릴 필요 없음)
+    unawaited(saveAllSettings());
     int width = 832;
     int height = 1216;
 
     if (resolutionMode == "랜덤") {
-      List<String> randomList = [
-        "1344 x 768",
-        "1216 x 832",
-        "1152 x 896",
-        "1088 x 960",
-        "1024 x 1024",
-        "960 x 1088",
-        "896 x 1152",
-        "832 x 1216",
-        "768 x 1344",
-      ];
+      final List<String> randomList = kNaiResolutions;
       String rndRes = randomList[Random().nextInt(randomList.length)];
       List<String> resParts = rndRes.replaceAll(" ", "").split("x");
       width = int.parse(resParts[0]);
       height = int.parse(resParts[1]);
     } else if (resolutionMode == "자동" && currentImageWidth > 0 && currentImageHeight > 0) {
-      double maxPixels = 1048576.0;
+      double maxPixels = kMegapixelCap.toDouble();
       double ratio = currentImageWidth / currentImageHeight;
       double h = sqrt(maxPixels / ratio);
       double w = h * ratio;
       width = (w / 64).round() * 64;
       height = (h / 64).round() * 64;
-      while (width * height > 1048576) {
+      while (width * height > kMegapixelCap) {
         if (width > height) {
           width -= 64;
         } else {
@@ -4094,7 +4345,7 @@ class AppState extends ChangeNotifier {
     height = ((height / 64).round() * 64).clamp(64, 9999);
 
     // NovelAI 최대 픽셀 수 제한 (3,145,728px ≈ 1536×2048)
-    const int maxPixels = 3145728;
+    const int maxPixels = kNaiPixelHardCap;
     while (width * height > maxPixels) {
       if (width > height) {
         width -= 64;
@@ -4155,6 +4406,7 @@ class AppState extends ChangeNotifier {
     String combined = "$prefixText,$positiveText,$suffixText";
 
     String finalPrompt = _service.sanitizePrompt(combined);
+    finalPrompt = _applyWeightRules(finalPrompt);
     String finalNegative = _service.sanitizePrompt(_processWildcards(negativeController.text));
 
     List<Map<String, dynamic>> processedCharacters = characters.where((char) => char.isActive).map((
@@ -4170,26 +4422,16 @@ class AppState extends ChangeNotifier {
       return charJson;
     }).toList();
 
-    bool bgInitialized = false;
-    if (Platform.isAndroid) {
-      try {
-        bgInitialized = await FlutterBackground.initialize(
-          androidConfig: const FlutterBackgroundAndroidConfig(
-            notificationTitle: "NovelAI 이미지 생성 중",
-            notificationText: "백그라운드에서 안전하게 통신 중입니다...",
-            notificationImportance: AndroidNotificationImportance.normal,
-            notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
-          ),
-        );
-        if (bgInitialized) {
-          await FlutterBackground.enableBackgroundExecution();
-        }
-      } catch (e) {
-        debugPrint("백그라운드 실행 권한이 없거나 오류 발생: $e");
-      }
-    }
+    // vibe 인코딩 캐시 갱신 감지용 지문 (생성 후 비교)
+    final String vibeSigBefore = _vibeCacheSignature();
+
+    final bool bgInitialized = await _enableBackgroundExecution();
 
     try {
+      // 활성 vibe/정밀 참조 필터는 한 번만 (같은 where를 세 번 돌리지 않도록)
+      final activeVibes = vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList();
+      final activePrecise = preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList();
+
       final result = await _service.generateImage(
         positive: finalPrompt,
         negative: finalNegative,
@@ -4208,24 +4450,25 @@ class AppState extends ChangeNotifier {
         variancePlus: isVariancePlus,
         useCharacterPosition: useCharacterPosition,
         randomCharacterOrder: randomCharacterOrder,
-        vibeTransfers:
-            (vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).isNotEmpty &&
-                preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).isEmpty)
-            ? vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList()
-            : null,
-        preciseRefs: preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList().isNotEmpty
-            ? preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList()
-            : null,
+        // 정밀 참조가 있으면 vibe 대신 정밀 참조 우선 (기존 동작 그대로, 필터는 위에서 1회)
+        vibeTransfers: (activeVibes.isNotEmpty && activePrecise.isEmpty) ? activeVibes : null,
+        preciseRefs: activePrecise.isNotEmpty ? activePrecise : null,
       );
 
       isLoading = false;
       currentImageBytes = result.image ?? currentImageBytes;
       lastErrorMessage = result.error;
+      // 이미지가 도착한 즉시 화면에 표시.
+      // (이게 없으면 아래 fetchAnlas 네트워크 왕복이 끝나야 갱신돼 수백 ms를 그냥 기다림)
+      notifyListeners();
 
       if (result.image != null) {
         sessionGenerateCount++;
-        // 인코딩 캐시가 갱신됐을 수 있으니 저장
-        saveReferencesToLocal();
+        // 인코딩 캐시가 '실제로' 갱신된 경우에만 저장
+        // (매 생성마다 vibe base64 전체를 jsonEncode하면 메인 스레드가 수 MB를 인코딩하게 됨)
+        if (_vibeCacheSignature() != vibeSigBefore) {
+          saveReferencesToLocal();
+        }
 
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
         if (parsedMeta != null) {
@@ -4398,12 +4641,13 @@ class AppState extends ChangeNotifier {
     lastErrorMessage = null;
     notifyListeners();
 
+    bool bgInitialized = false;
     try {
       if (!isSeedLocked || seedController.text.isEmpty) {
         seedController.text = Random().nextInt(4294967296).toString();
       }
 
-      await saveAllSettings();
+      unawaited(saveAllSettings()); // 생성과 병렬 저장
 
       int width = targetI2iMetadata!.width;
       int height = targetI2iMetadata!.height;
@@ -4413,28 +4657,12 @@ class AppState extends ChangeNotifier {
       String step1 = _processWildcards(combined);
 
       String finalPrompt = _service.sanitizePrompt(step1);
+      finalPrompt = _applyWeightRules(finalPrompt);
       String finalNegative = _service.sanitizePrompt(
         _processWildcards(inpaintNegativeController.text),
       );
 
-      bool bgInitialized = false;
-      if (Platform.isAndroid) {
-        try {
-          bgInitialized = await FlutterBackground.initialize(
-            androidConfig: const FlutterBackgroundAndroidConfig(
-              notificationTitle: "NovelAI 인페인트 진행 중",
-              notificationText: "백그라운드에서 안전하게 통신 중입니다...",
-              notificationImportance: AndroidNotificationImportance.normal,
-              notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
-            ),
-          );
-          if (bgInitialized) {
-            await FlutterBackground.enableBackgroundExecution();
-          }
-        } catch (e) {
-          debugPrint("백그라운드 오류: $e");
-        }
-      }
+      bgInitialized = await _enableBackgroundExecution();
 
       // API 호출 (내부적으로 Isolate + 백오프가 작동함)
       final result = await _service.generateImage(
@@ -4518,6 +4746,12 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint('인페인트 파이프라인 에러: $e'); //
     } finally {
+      // 백그라운드 실행 해제 (켰으면 반드시 끔 — 알림이 남지 않도록)
+      if (bgInitialized) {
+        try {
+          await FlutterBackground.disableBackgroundExecution();
+        } catch (_) {}
+      }
       // 성공/실패 여부와 관계없이 반드시 락 해제
       _isInpaintProcessing = false;
       isInpaintLoading = false;
@@ -4568,7 +4802,7 @@ class AppState extends ChangeNotifier {
         seedController.text = Random().nextInt(4294967296).toString();
       }
 
-      await saveAllSettings();
+      unawaited(saveAllSettings()); // 생성과 병렬 저장
 
       int width = targetI2iMetadata!.width;
       int height = targetI2iMetadata!.height;
@@ -4577,27 +4811,12 @@ class AppState extends ChangeNotifier {
       String combined =
           "${inpaintPrefixController.text},${inpaintPositiveController.text},${inpaintSuffixController.text}";
       String finalPrompt = _service.sanitizePrompt(_processWildcards(combined));
+      finalPrompt = _applyWeightRules(finalPrompt);
       String finalNegative = _service.sanitizePrompt(
         _processWildcards(inpaintNegativeController.text),
       );
 
-      if (Platform.isAndroid) {
-        try {
-          bgInitialized = await FlutterBackground.initialize(
-            androidConfig: const FlutterBackgroundAndroidConfig(
-              notificationTitle: "NovelAI img2img 진행 중",
-              notificationText: "백그라운드에서 안전하게 통신 중입니다...",
-              notificationImportance: AndroidNotificationImportance.normal,
-              notificationIcon: AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
-            ),
-          );
-          if (bgInitialized) {
-            await FlutterBackground.enableBackgroundExecution();
-          }
-        } catch (e) {
-          debugPrint("백그라운드 오류: $e");
-        }
-      }
+      bgInitialized = await _enableBackgroundExecution();
 
       // 실행 시점의 활성 캐릭터를 그대로 전송 (프롬프트 탭 생성과 동일 처리)
       List<Map<String, dynamic>> processedCharacters = characters
@@ -4735,7 +4954,7 @@ class AppState extends ChangeNotifier {
     int height = targetI2iMetadata!.height;
 
     // [수정] PDF 가이드라인 적용: 1024x1024 픽셀 한계 검증 (면적 기준 계산)
-    if ((width * height) > 1048576) {
+    if ((width * height) > kMegapixelCap) {
       if (!context.mounted) {
         return;
       }
@@ -5052,7 +5271,7 @@ class AppState extends ChangeNotifier {
     String? presetFilePath, // 이미 디스크에 있는 파일(갤러리 등): 이 경로 사용
     bool skipAutoSave = false, // 불러오기/갤러리 추가: 자동저장 안 함
   }) async {
-    if (historyImages.length >= 100) {
+    if (historyImages.length >= kHistoryCap) {
       _removeOldestNonFavorite();
     }
     historyImages.add(image);
@@ -5260,6 +5479,7 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       i2iHandleBottom = prefs.getDouble('i2iHandleBottom') ?? -1;
+      promptCharHandleTop = prefs.getDouble('promptCharHandleTop') ?? -1;
       final s = prefs.getString('i2iFavorites');
       if (s == null || s.isEmpty) {
         return;
@@ -5269,6 +5489,14 @@ class AppState extends ChangeNotifier {
     } catch (e) {
       debugPrint("i2i 즐겨찾기 로드 실패: $e");
     }
+  }
+
+  Future<void> savePromptCharHandleTop(double value) async {
+    promptCharHandleTop = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('promptCharHandleTop', value);
+    } catch (_) {}
   }
 
   Future<void> saveI2iHandleBottom(double value) async {
@@ -5611,6 +5839,16 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }
     return added;
+  }
+
+  // vibe 인코딩 캐시의 가벼운 지문 (identityHashCode라 O(1), 큰 문자열 해시 안 함)
+  // 생성 전후로 비교해서 실제로 캐시가 갱신된 경우에만 디스크 저장을 트리거한다.
+  String _vibeCacheSignature() {
+    return vibeTransfers
+        .map(
+          (v) => '${identityHashCode(v['_encoded'])}:${v['_encodedInfoExt']}:${v['_encodedModel']}',
+        )
+        .join('|');
   }
 
   Future<void> saveReferencesToLocal() async {
@@ -6116,14 +6354,14 @@ class AppState extends ChangeNotifier {
       width = 1024;
       height = 1024;
     } else if (resolutionMode == "자동" && currentImageWidth > 0 && currentImageHeight > 0) {
-      double maxPixels = 1048576.0;
+      double maxPixels = kMegapixelCap.toDouble();
       double ratio = currentImageWidth / currentImageHeight;
       double h = sqrt(maxPixels / ratio);
       double w = h * ratio;
       width = (w / 64).round() * 64;
       height = (h / 64).round() * 64;
 
-      while ((width * height) > 1048576) {
+      while ((width * height) > kMegapixelCap) {
         if (width > height) {
           width -= 64;
         } else {
@@ -6157,7 +6395,7 @@ class AppState extends ChangeNotifier {
     height = ((height / 64).round() * 64).clamp(64, 9999);
 
     // NovelAI 최대 픽셀 수 제한
-    const int maxPixels = 3145728;
+    const int maxPixels = kNaiPixelHardCap;
     while (width * height > maxPixels) {
       if (width > height) {
         width -= 64;
@@ -6186,7 +6424,7 @@ class AppState extends ChangeNotifier {
       // 전부 인코딩됨 + 4개 이하 → 해상도/스텝 기준으로만 판단 (아래로 진행)
     }
 
-    if (isOpus && (width * height) <= 1048576 && steps <= 28) {
+    if (isOpus && (width * height) <= kMegapixelCap && steps <= 28) {
       return false;
     }
 

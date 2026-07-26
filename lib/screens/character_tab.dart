@@ -59,13 +59,9 @@ class _CharacterTabState extends State<CharacterTab> {
               int lastComma = beforeCursor.lastIndexOf(',');
               int lastColon = beforeCursor.lastIndexOf(':');
               int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = max(
-                beforeCursor.lastIndexOf(')'),
-                max(
-                  beforeCursor.lastIndexOf('('),
-                  max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
-                ),
-              );
+              // '(' ')'는 구분자에서 제외 — 태그 이름 자체에 괄호가 들어가기 때문
+              // (예: "zero (test)"). NovelAI 강조 문법은 {}/[]라 영향 없음.
+              int lastParen = max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|'));
               int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
 
               String currentWord = lastDelimiter == -1
@@ -273,7 +269,10 @@ class _CharacterTabState extends State<CharacterTab> {
           },
         );
       },
-    ).then((_) => focusNode.dispose());
+    ).then((_) {
+      focusNode.dispose();
+      tc.dispose(); // 다이얼로그 닫힐 때 컨트롤러도 정리 (미세 누수 방지)
+    });
     state.saveAllSettings();
   }
 
@@ -531,7 +530,7 @@ class _CharacterTabState extends State<CharacterTab> {
                                                   ),
                                                 ],
                                               ),
-                                            );
+                                            ).then((_) => nameCtrl.dispose());
                                           },
                                           child: Container(
                                             padding: const EdgeInsets.symmetric(

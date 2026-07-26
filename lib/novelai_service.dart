@@ -4,10 +4,22 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image/image.dart' as img;
 import 'tag_filters.dart';
 import 'models/model_caps.dart';
+
+// ZIP 응답에서 첫 파일을 꺼낸다 (compute isolate용 — 수 MB 해제를 메인에서 안 하도록)
+Uint8List? _unzipFirstEntry(Uint8List zipBytes) {
+  try {
+    final archive = ZipDecoder().decodeBytes(zipBytes);
+    if (archive.isNotEmpty) {
+      return archive.first.content as Uint8List;
+    }
+  } catch (_) {}
+  return null;
+}
 
 class NaiResponse {
   final Uint8List? image;
@@ -61,7 +73,7 @@ String _processMaskForInfill(Uint8List bytes) {
     return base64Encode(bytes);
   }
 
-  final header = ByteData.view(bytes.buffer);
+  final header = ByteData.sublistView(bytes);
   final int w = header.getUint32(0);
   final int h = header.getUint32(4);
   final int expectedSize = 8 + w * h;
@@ -304,8 +316,13 @@ class NovelAiService {
       // 6개씩 보내고 짧게 쉬어 첫 검색(미지 태그 대량)에도 안정적으로 동작.
       final List<http.Response?> results = [];
       const int batchSize = 6;
+      // 새로 확인할 태그 총량 (캐시에 없어서 서버에 물어봐야 하는 것들)
+      final int newTagCount = tagsToFetch.length;
       for (int start = 0; start < chunks.length; start += batchSize) {
         final end = (start + batchSize).clamp(0, chunks.length);
+        // 진행 상황을 사람이 이해할 수 있게: "새 태그 320개 중 120개 확인 중"
+        final int doneTags = (start * chunkSize).clamp(0, newTagCount);
+        onStage?.call("태그 확인 $doneTags/$newTagCount");
         final batch = await Future.wait(
           chunks.sublist(start, end).map((chunk) async {
             String names = Uri.encodeComponent(chunk.join(','));
@@ -421,7 +438,7 @@ class NovelAiService {
             persistentCache.remove(keys[i]);
           }
         }
-        onStage?.call("캐시 저장하는 중...");
+        onStage?.call("저장하는 중");
         await prefs.setString('tag_category_cache_v3', jsonEncode(persistentCache));
       }
     } catch (e) {
@@ -705,7 +722,7 @@ class NovelAiService {
     // 로컬 제외 필터링: 포스트의 태그에 제외 태그가 하나라도 포함되면 제거
     // (이 단계에서 유효 포스트 수가 줄어들 수 있음 — 실시간 카운트는 필터 전 값이므로)
     if (localExcludeSet.isNotEmpty) {
-      onStage?.call("제외 태그 거르는 중...");
+      onStage?.call("정보 받는 중");
       allValidPosts.removeWhere((post) {
         String tagString = (post['tags'] ?? "").toString().toLowerCase();
         List<String> postTags = tagString.split(' ');
@@ -735,14 +752,14 @@ class NovelAiService {
 
     // 태그 분류 (작가/캐릭터/작품 판별) — 페이지 수신 후 가장 오래 걸리는 구간.
     // 새 태그가 많으면 Danbooru/Gelbooru에 나눠 물어보느라 여기서 한참 멈춘 것처럼 보인다.
-    onStage?.call("태그 분류하는 중...");
+    onStage?.call("태그 확인 중");
     Map<String, int> tagCategories = await _getDanbooruTagCategories(
       filteredUniqueTags,
       effectiveUserId,
       effectiveApiKey,
       onStage: onStage,
     );
-    onStage?.call("프롬프트 정리하는 중...");
+    onStage?.call("정리하는 중");
     List<String> newPrompts = [];
 
     for (var post in allValidPosts) {
@@ -1143,9 +1160,10 @@ class NovelAiService {
 
           if (response.statusCode == 201 || response.statusCode == 200) {
             onStatus?.call("이미지 수신 완료!");
-            final archive = ZipDecoder().decodeBytes(response.bodyBytes);
-            if (archive.isNotEmpty) {
-              return NaiResponse(image: archive.first.content as Uint8List);
+            // ZIP 해제는 수 MB 작업이라 isolate에서 (메인 스레드 잰크 방지)
+            final imageBytes = await compute(_unzipFirstEntry, response.bodyBytes);
+            if (imageBytes != null) {
+              return NaiResponse(image: imageBytes);
             }
             throw Exception('서버가 빈 아카이브를 반환했습니다.');
           } else if (response.statusCode == 429) {
@@ -1251,13 +1269,11 @@ class NovelAiService {
           .timeout(const Duration(seconds: 120));
 
       if (response.statusCode == 201 || response.statusCode == 200) {
-        // 응답이 ZIP인 경우와 raw bytes인 경우 모두 처리
-        try {
-          final archive = ZipDecoder().decodeBytes(response.bodyBytes);
-          if (archive.isNotEmpty) {
-            return NaiResponse(image: archive.first.content as Uint8List);
-          }
-        } catch (_) {}
+        // 응답이 ZIP인 경우와 raw bytes인 경우 모두 처리 (해제는 isolate에서)
+        final unzipped = await compute(_unzipFirstEntry, response.bodyBytes);
+        if (unzipped != null) {
+          return NaiResponse(image: unzipped);
+        }
         return NaiResponse(image: response.bodyBytes);
       } else {
         String errorMsg = "서버 오류";

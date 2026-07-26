@@ -28,18 +28,8 @@ const Map<String, String> _samplerDisplayNames = {
   "ddim": "DDIM",
 };
 const List<String> _schedulers = ["native", "karras", "exponential", "polyexponential"];
-const List<String> _defaultResolutions = [
-  "768 x 1344",
-  "832 x 1216",
-  "896 x 1152",
-  "960 x 1088",
-  "1024 x 1024",
-  "1088 x 960",
-  "1152 x 896",
-  "1216 x 832",
-  "1344 x 768",
-  "직접 입력",
-];
+// 해상도 목록은 model_caps.kNaiResolutions 한 곳에서만 관리 (중복 하드코딩 제거)
+const List<String> _defaultResolutions = [...kNaiResolutions, "직접 입력"];
 
 void showDetailSettingsModal(BuildContext context) {
   FocusScope.of(context).unfocus();

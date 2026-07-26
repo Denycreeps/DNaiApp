@@ -1736,57 +1736,93 @@ class _I2iTabState extends State<I2iTab>
     required IconData icon,
     required Color color,
     required TextEditingController controller,
+    required String cardId, // 접기 상태 저장 키
     String hint = "",
   }) {
-    return GestureDetector(
-      onTap: () => _showPromptEditDialog(context, state, title, icon, color, controller),
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withValues(alpha: 0.3)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
+    // 접힘 여부는 AppState에 저장 → 앱을 껐다 켜도, 프롬값을 가져와도 그대로 유지
+    final bool isCollapsed = state.collapsedI2iPrompts.contains(cardId);
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 헤더: 탭하면 접기/펼치기 (오른쪽 연필 아이콘은 바로 편집)
+          GestureDetector(
+            onTap: () => state.toggleI2iPromptCollapsed(cardId),
+            child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
                 color: color.withValues(alpha: 0.15),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                borderRadius: isCollapsed
+                    ? BorderRadius.circular(12)
+                    : const BorderRadius.vertical(top: Radius.circular(12)),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Icon(icon, color: color, size: 20),
-                      const SizedBox(width: 8),
-                      Text(
-                        title,
-                        style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
-                      ),
-                    ],
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Icon(
+                          isCollapsed ? Icons.chevron_right : Icons.expand_more,
+                          color: color,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 4),
+                        Icon(icon, color: color, size: 20),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            title,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: color,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  Icon(Icons.edit, color: color, size: 16),
+                  // 접혀 있어도 바로 편집할 수 있게 연필은 항상 표시
+                  GestureDetector(
+                    onTap: () =>
+                        _showPromptEditDialog(context, state, title, icon, color, controller),
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Icon(Icons.edit, color: color, size: 16),
+                    ),
+                  ),
                 ],
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Text(
-                controller.text.isEmpty ? hint : controller.text,
-                style: TextStyle(
-                  color: controller.text.isEmpty ? Colors.white30 : Colors.white,
-                  height: 1.5,
-                  fontSize: 14,
+          ),
+          // 본문(미리보기): 접히면 감춤. 탭하면 편집 다이얼로그
+          if (!isCollapsed)
+            GestureDetector(
+              onTap: () => _showPromptEditDialog(context, state, title, icon, color, controller),
+              behavior: HitTestBehavior.opaque,
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Text(
+                  controller.text.isEmpty ? hint : controller.text,
+                  style: TextStyle(
+                    color: controller.text.isEmpty ? Colors.white30 : Colors.white,
+                    height: 1.5,
+                    fontSize: 14,
+                  ),
+                  maxLines: 4,
+                  overflow: TextOverflow.ellipsis,
                 ),
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -2436,40 +2472,44 @@ class _I2iTabState extends State<I2iTab>
             _buildPromptCard(
               context,
               state,
-              title: "긍정적 프롬프트 (Inpaint 전용)",
+              title: "긍정적 프롬프트",
               icon: Icons.add_circle_outline,
               color: const Color(0xFF00BFA5),
               controller: state.inpaintPositiveController,
+              cardId: 'positive',
               hint: "프롬프트를 입력하세요...",
             ),
             const SizedBox(height: 12),
             _buildPromptCard(
               context,
               state,
-              title: "선행 프롬프트 (Inpaint 전용)",
+              title: "선행 프롬프트",
               icon: Icons.arrow_right_alt,
               color: const Color(0xFF29B6F6),
               controller: state.inpaintPrefixController,
+              cardId: 'prefix',
               hint: "프롬프트를 입력하세요...",
             ),
             const SizedBox(height: 12),
             _buildPromptCard(
               context,
               state,
-              title: "후행 프롬프트 (Inpaint 전용)",
+              title: "후행 프롬프트",
               icon: Icons.keyboard_double_arrow_right,
               color: const Color(0xFFFFA000),
               controller: state.inpaintSuffixController,
+              cardId: 'suffix',
               hint: "프롬프트를 입력하세요...",
             ),
             const SizedBox(height: 16),
             _buildPromptCard(
               context,
               state,
-              title: "부정적 프롬프트 (Inpaint 전용)",
+              title: "부정적 프롬프트",
               icon: Icons.remove_circle_outline,
               color: const Color(0xFFFF5252),
               controller: state.inpaintNegativeController,
+              cardId: 'negative',
               hint: "프롬프트를 입력하세요...",
             ),
             const SizedBox(height: 16),
@@ -2573,7 +2613,7 @@ Uint8List _buildMaskRaw(_MaskBuildParams p) {
   }
 
   final raw = Uint8List(8 + maskW * maskH);
-  final header = ByteData.view(raw.buffer);
+  final header = ByteData.sublistView(raw);
   header.setUint32(0, maskW);
   header.setUint32(4, maskH);
   int idx = 8;
