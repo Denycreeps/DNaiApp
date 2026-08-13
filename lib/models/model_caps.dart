@@ -25,11 +25,10 @@ class NaiModels {
   static const String furryV3 = 'nai-diffusion-furry-3';
   static const String v2 = 'nai-diffusion-2'; // infill 접미사 예외 처리용 (레거시)
 
-  // ---- v5 (아직 정식 출시 전 · API 문자열 미공개) ----
-  // NovelAI가 6월에 "V5 학습 중"이라고만 언급. 정식 출시 시 실제 문자열로 교체할 것.
-  // 아래 값은 추정 placeholder이며, 출시 후 반드시 확인해서 수정해야 한다.
-  static const String v5CuratedPlaceholder = 'nai-diffusion-5-curated';
-  static const String v5FullPlaceholder = 'nai-diffusion-5-full';
+  // ---- v5 (정식 출시 전 · 임시 테스트용) ----
+  // ⚠️ 실제 API 문자열이 공개되지 않았다. 출시되면 이 값을 실제 문자열로 교체할 것.
+  //    지금은 UI에서 '선택만' 가능하게 두는 용도이며, 실제 생성은 보장되지 않는다.
+  static const String v5Test = 'nai-diffusion-5-test';
 }
 
 /// 한 모델이 지원하는 기능 / 제약을 나타낸다.
@@ -67,6 +66,10 @@ class ModelCaps {
   /// 업스케일 사용 가능
   final bool supportsUpscale;
 
+  /// Variety+ (skip_cfg_above_sigma) 사용 가능
+  /// V5에서 동작 여부가 확인되지 않아 기본적으로 막아둔다.
+  final bool supportsVarietyPlus;
+
   // ---- API 요청 구성 방식 ----
   /// v4_prompt / v4_negative_prompt 필드를 요청에 넣어야 하는 아키텍처인가.
   /// (V4 계열 아키텍처는 true. V3 등 구형은 false)
@@ -98,6 +101,7 @@ class ModelCaps {
     required this.supportsInpaint,
     required this.supportsImg2img,
     required this.supportsUpscale,
+    required this.supportsVarietyPlus,
     required this.usesV4Prompt,
     required this.usesEncodeVibe,
     required this.maxPromptTokens,
@@ -116,6 +120,7 @@ class ModelCaps {
     bool? supportsInpaint,
     bool? supportsImg2img,
     bool? supportsUpscale,
+    bool? supportsVarietyPlus,
     bool? usesV4Prompt,
     bool? usesEncodeVibe,
     int? maxPromptTokens,
@@ -131,6 +136,7 @@ class ModelCaps {
       supportsInpaint: supportsInpaint ?? this.supportsInpaint,
       supportsImg2img: supportsImg2img ?? this.supportsImg2img,
       supportsUpscale: supportsUpscale ?? this.supportsUpscale,
+      supportsVarietyPlus: supportsVarietyPlus ?? this.supportsVarietyPlus,
       usesV4Prompt: usesV4Prompt ?? this.usesV4Prompt,
       usesEncodeVibe: usesEncodeVibe ?? this.usesEncodeVibe,
       maxPromptTokens: maxPromptTokens ?? this.maxPromptTokens,
@@ -155,6 +161,7 @@ const ModelCaps _v45Full = ModelCaps(
   supportsInpaint: true,
   supportsImg2img: true,
   supportsUpscale: true,
+  supportsVarietyPlus: true,
   usesV4Prompt: true,
   usesEncodeVibe: true,
   maxPromptTokens: 512,
@@ -162,23 +169,27 @@ const ModelCaps _v45Full = ModelCaps(
   isPlaceholder: false,
 );
 
-// v5 뼈대. 값은 아직 미확정 — 출시 후 실제 스펙으로 채운다.
-// 현재는 "V4.5와 동일하되 Precise/Vibe는 미지원"이라는 가정만 주석으로 남기고,
-// 값 자체는 안전하게 placeholder로 표시해 둔다.
-const ModelCaps _v5CuratedSkeleton = ModelCaps(
-  id: NaiModels.v5CuratedPlaceholder,
-  displayName: 'NAI Diffusion V5 Curated (미출시)',
-  // 아래 bool 값들은 전부 "출시 후 확정" 대상. 일단 보수적으로 기본 기능만 true.
-  supportsVibe: false, // v5c에선 Vibe Transfer 미지원 예정(쭈인 정보) → 확정 시 반영
-  supportsPrecise: false, // v5c에선 Precise Reference 미지원 예정 → 확정 시 반영
-  supportsInpaint: true, // 지원 예상(확인 필요)
-  supportsImg2img: true, // 지원 예상(확인 필요)
-  supportsUpscale: true, // 지원 예상(확인 필요)
-  usesV4Prompt: true, // 요청 포맷 미확정 — 출시 후 확인
-  usesEncodeVibe: false, // Vibe 미지원이므로 무의미하지만 기본 false
-  maxPromptTokens: 0, // 미확인
+// V5 (임시 테스트). 출시 전이라 스펙 대부분이 미확정.
+// 확정된 것: Vibe / Precise Reference 는 초기 버전에서 사용 불가.
+// 그 외 요청 포맷·인페인트는 당분간 V4.5와 동일한 방식으로 처리한다.
+const ModelCaps _v5Test = ModelCaps(
+  id: NaiModels.v5Test,
+  // 실제 v5 API 문자열이 공개되지 않았으므로, 서버로는 V4.5 Full을 보낸다.
+  // (선택만 가능하게 하려는 목적 — 인페인트도 자동으로 V4.5와 동일 방식으로 진행됨)
+  // ⚠️ v5 정식 출시 후 이 override를 제거하고 실제 문자열로 교체할 것.
+  serverModelIdOverride: NaiModels.v45Full,
+  displayName: 'NovelAI v5 test',
+  supportsVibe: false, // V5 초기 버전 미지원 (확정)
+  supportsPrecise: false, // V5 초기 버전 미지원 (확정)
+  supportsInpaint: true, // V4.5와 동일 방식으로 진행
+  supportsImg2img: true,
+  supportsUpscale: true,
+  supportsVarietyPlus: false, // V5 동작 여부 미확인 → 막아둠 (확인되면 true로)
+  usesV4Prompt: true, // 당분간 V4.5와 동일 포맷
+  usesEncodeVibe: false, // Vibe 미지원
+  maxPromptTokens: 512, // V4.5 기준 (미확정)
   maxUpscalePixels: 0, // 미확인
-  isPlaceholder: true,
+  isPlaceholder: true, // 출시 후 실제 스펙으로 교체 필요
 );
 
 /// 모델 문자열 → ModelCaps 매핑 테이블.
@@ -200,12 +211,8 @@ final Map<String, ModelCaps> _capsTable = {
     displayName: 'NAI Diffusion V4 Curated',
   ),
 
-  // ---- V5 (뼈대만) ----
-  NaiModels.v5CuratedPlaceholder: _v5CuratedSkeleton,
-  NaiModels.v5FullPlaceholder: _v5CuratedSkeleton.copyWith(
-    id: NaiModels.v5FullPlaceholder,
-    displayName: 'NAI Diffusion V5 Full (미출시)',
-  ),
+  // ---- V5 (임시 테스트) ----
+  NaiModels.v5Test: _v5Test,
 };
 
 /// 알 수 없는 모델 문자열에 대한 안전 기본값.
@@ -225,12 +232,9 @@ ModelCaps modelCapsFor(String model) {
 
   // 2) 부분 매칭 (예: -inpainting 접미사가 붙은 경우 등)
   //    가장 구체적인 것부터 검사한다.
-  if (model.contains('5')) {
-    // v5 계열로 보이면 full/curated 구분
-    if (model.contains('full')) {
-      return _capsTable[NaiModels.v5FullPlaceholder]!.copyWith(id: model);
-    }
-    return _capsTable[NaiModels.v5CuratedPlaceholder]!.copyWith(id: model);
+  // v5 계열 (4-5 / 4.5 는 V4.5이므로 먼저 걸러야 한다)
+  if (!model.contains('4-5') && !model.contains('4.5') && model.contains('5')) {
+    return _v5Test.copyWith(id: model);
   }
   if (model.contains('4-5') || model.contains('4.5')) {
     return _v45Full.copyWith(id: model);

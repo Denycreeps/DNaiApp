@@ -620,248 +620,371 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
     );
   }
 
+  // 설정 그룹 (접기/펴기) — 항목이 많아져 성격별로 묶는다.
+  // 접힘 상태는 AppState에 저장되어 앱을 껐다 켜도 유지된다.
+  Widget _settingGroup(
+    AppState state, {
+    required String id,
+    required String title,
+    required IconData icon,
+    required List<Widget> children,
+  }) {
+    final collapsed = state.collapsedSettingGroups.contains(id);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF161616),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // 헤더 (탭하면 접기/펴기)
+          InkWell(
+            onTap: () => state.toggleSettingGroup(id),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(icon, color: Colors.deepPurpleAccent, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    collapsed ? Icons.expand_more : Icons.expand_less,
+                    color: Colors.white38,
+                    size: 20,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (!collapsed)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
+            ),
+        ],
+      ),
+    );
+  }
+
   List<Widget> _generalSection(BuildContext context, AppState state) {
     return [
-      // 1. 랜덤 프롬프트 알파벳 순서
-      _toggleTile(
-        icon: Icons.sort_by_alpha,
-        title: "랜덤 프롬프트 알파벳 순서",
-        value: state.randomPromptAlphabetical,
-        onChanged: (val) {
-          state.randomPromptAlphabetical = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-        radius: const BorderRadius.vertical(top: Radius.circular(16)),
+      // ── 프롬프트 ──
+      _settingGroup(
+        state,
+        id: 'prompt',
+        title: "프롬프트",
+        icon: Icons.edit_note,
+        children: [
+          // 1. 랜덤 프롬프트 알파벳 순서
+          _toggleTile(
+            icon: Icons.sort_by_alpha,
+            title: "랜덤 프롬프트 알파벳 순서",
+            value: state.randomPromptAlphabetical,
+            onChanged: (val) {
+              state.randomPromptAlphabetical = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+            radius: const BorderRadius.vertical(top: Radius.circular(16)),
+          ),
+          // 2. NovelAi 권장 순서 무시
+          _toggleTile(
+            icon: Icons.rule_folder_outlined,
+            title: "NovelAi 권장 순서 무시",
+            value: state.ignoreRecommendedOrder,
+            onChanged: (val) {
+              state.ignoreRecommendedOrder = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+          // 7. 가중치 색상 표시
+          _toggleTile(
+            icon: Icons.format_color_text,
+            title: "가중치 색상 표시",
+            value: state.weightHighlight,
+            onChanged: (val) {
+              state.weightHighlight = val;
+              WeightHighlightController.highlightEnabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+          // 8. e621 프롬프트 확장
+          _toggleTile(
+            icon: Icons.extension,
+            title: "e621 프롬프트 확장",
+            color: const Color(0xFF3B9EFF),
+            value: state.e621Enabled,
+            onChanged: (val) {
+              state.e621Enabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+          _toggleTile(
+            icon: Icons.dashboard_outlined,
+            title: "프롬프트탭 새로운 UI로 변경",
+            value: state.promptNewLayout,
+            onChanged: (val) {
+              state.promptNewLayout = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+          // ⚠️ [보류] 프롬프트탭 2번째 UI 토글 (promptAltLayout)
+          //  구현은 prompt_tab.dart의 _buildAltLayout 이하에 그대로 남아 있고,
+          //  AppState.promptAltLayout 을 true 로 만들면 다시 동작한다.
+          //  일반 사용자에게 노출하지 않기 위해 설정 항목만 제거한 상태.
+          //  다시 쓰려면 아래 블록의 주석을 해제하면 된다.
+          // _toggleTile(
+          //   icon: Icons.dashboard_customize,
+          //   title: "프롬프트탭 다른 UI로 변경",
+          //   value: state.promptAltLayout,
+          //   onChanged: (val) {
+          //     state.promptAltLayout = val;
+          //     state.saveAllSettings();
+          //     state.refreshUI();
+          //   },
+          // ),
+          // 11. 프롬프트 탭 캐릭터 편집 서랍
+          _toggleTile(
+            icon: Icons.people_alt,
+            title: "프롬프트 탭 캐릭터 편집",
+            value: state.promptCharDrawerEnabled,
+            onChanged: (val) {
+              state.promptCharDrawerEnabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+            radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+          ),
+        ],
       ),
-      // 2. NovelAi 권장 순서 무시
-      _toggleTile(
-        icon: Icons.rule_folder_outlined,
-        title: "NovelAi 권장 순서 무시",
-        value: state.ignoreRecommendedOrder,
-        onChanged: (val) {
-          state.ignoreRecommendedOrder = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-      ),
-      // 3. 연속 생성 딜레이 (슬라이더)
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent, size: 20),
-            const SizedBox(width: 8),
-            const Text(
-              "연속 생성 딜레이",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              "${state.batchDelay.toStringAsFixed(1)}초",
-              style: const TextStyle(
-                color: Colors.deepPurpleAccent,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            ),
-            Expanded(
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                  activeTrackColor: Colors.deepPurpleAccent,
-                  inactiveTrackColor: Colors.white12,
-                  thumbColor: Colors.deepPurpleAccent,
-                ),
-                child: Slider(
-                  value: state.batchDelay,
-                  min: 0.0,
-                  max: 5.0,
-                  divisions: 10,
-                  onChanged: (v) {
-                    state.batchDelay = v;
-                    state.refreshUI();
-                  },
-                  onChangeEnd: (_) => state.saveAllSettings(),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.format_size, color: Colors.deepPurpleAccent, size: 20),
-            const SizedBox(width: 8),
-            const Text(
-              "프롬프트 입력 폰트 크기",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              state.promptEditorFontSize.toStringAsFixed(0),
-              style: const TextStyle(
-                color: Colors.deepPurpleAccent,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
-            ),
-            Expanded(
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: 3,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                  activeTrackColor: Colors.deepPurpleAccent,
-                  inactiveTrackColor: Colors.white12,
-                  thumbColor: Colors.deepPurpleAccent,
-                ),
-                child: Slider(
-                  value: state.promptEditorFontSize,
-                  min: 10.0,
-                  max: 28.0,
-                  divisions: 36,
-                  onChanged: (v) {
-                    state.promptEditorFontSize = v;
-                    state.refreshUI();
-                  },
-                  onChangeEnd: (_) => state.saveAllSettings(),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-      // 4. 갤러리 모드 비활성화 (기본은 켜져 있음)
-      _toggleTile(
+
+      // ── 히스토리 · 갤러리 ──
+      _settingGroup(
+        state,
+        id: 'history',
+        title: "히스토리 · 갤러리",
         icon: Icons.photo_library_outlined,
-        title: "갤러리 모드 비활성화",
-        color: const Color(0xFFFFC107),
-        value: !state.galleryModeEnabled,
-        onChanged: (val) {
-          state.setGalleryModeEnabled(!val);
-        },
+        children: [
+          // 4. 갤러리 모드 비활성화 (기본은 켜져 있음)
+          _toggleTile(
+            icon: Icons.photo_library_outlined,
+            title: "갤러리 모드 비활성화",
+            color: const Color(0xFFFFC107),
+            value: !state.galleryModeEnabled,
+            onChanged: (val) {
+              state.setGalleryModeEnabled(!val);
+            },
+          ),
+          // 5. 히스토리 이미지 슬라이드
+          _toggleTile(
+            icon: Icons.view_carousel_outlined,
+            title: "히스토리 이미지 슬라이드",
+            value: state.historySlideEnabled,
+            onChanged: (val) {
+              state.historySlideEnabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+        ],
       ),
-      // 5. 히스토리 이미지 슬라이드
-      _toggleTile(
-        icon: Icons.view_carousel_outlined,
-        title: "히스토리 이미지 슬라이드",
-        value: state.historySlideEnabled,
-        onChanged: (val) {
-          state.historySlideEnabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
+
+      // ── i2i · 인페인트 ──
+      _settingGroup(
+        state,
+        id: 'i2i',
+        title: "i2i · 인페인트",
+        icon: Icons.brush_outlined,
+        children: [
+          // 6. i2i용 히스토리 비활성화
+          _toggleTile(
+            icon: Icons.history_toggle_off,
+            title: "i2i용 히스토리 비활성화",
+            color: const Color(0xFF8B5CF6),
+            value: state.i2iHistoryDisabled,
+            onChanged: (val) {
+              state.i2iHistoryDisabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+          // 6-1. i2i 히스토리 핸들이 켜져 있을 때만(=비활성화 OFF) 인페인트 세부 옵션 표시
+          if (!state.i2iHistoryDisabled) ...[
+            _subToggleTile(
+              title: "인페인트 후 전환 방지",
+              value: state.inpaintNoAutoSwitch,
+              onChanged: (val) {
+                state.inpaintNoAutoSwitch = val;
+                state.saveAllSettings();
+                state.refreshUI();
+              },
+            ),
+            _subToggleTile(
+              title: "인페인트 시 마스킹 자동 해제",
+              value: state.inpaintAutoClearMask,
+              onChanged: (val) {
+                state.inpaintAutoClearMask = val;
+                state.saveAllSettings();
+                state.refreshUI();
+              },
+            ),
+          ],
+          // 10. i2i탭 UI 배치 변경 (ON: 모드 가로 1줄 + 실행 버튼 우하단)
+          _toggleTile(
+            icon: Icons.view_quilt,
+            title: "i2i탭 다른 UI로 변경",
+            value: state.i2iAltLayout,
+            onChanged: (val) {
+              state.i2iAltLayout = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+        ],
       ),
-      // 6. i2i용 히스토리 비활성화
-      _toggleTile(
-        icon: Icons.history_toggle_off,
-        title: "i2i용 히스토리 비활성화",
-        color: const Color(0xFF8B5CF6),
-        value: state.i2iHistoryDisabled,
-        onChanged: (val) {
-          state.i2iHistoryDisabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
+
+      // ── 동작 · 기타 ──
+      _settingGroup(
+        state,
+        id: 'behavior',
+        title: "동작 · 기타",
+        icon: Icons.tune,
+        children: [
+          // 3. 연속 생성 딜레이 (슬라이더)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  "연속 생성 딜레이",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  "${state.batchDelay.toStringAsFixed(1)}초",
+                  style: const TextStyle(
+                    color: Colors.deepPurpleAccent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderThemeData(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                      activeTrackColor: Colors.deepPurpleAccent,
+                      inactiveTrackColor: Colors.white12,
+                      thumbColor: Colors.deepPurpleAccent,
+                    ),
+                    child: Slider(
+                      value: state.batchDelay,
+                      min: 0.0,
+                      max: 5.0,
+                      divisions: 10,
+                      onChanged: (v) {
+                        state.batchDelay = v;
+                        state.refreshUI();
+                      },
+                      onChangeEnd: (_) => state.saveAllSettings(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1E1E),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.format_size, color: Colors.deepPurpleAccent, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  "프롬프트 입력 폰트 크기",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  state.promptEditorFontSize.toStringAsFixed(0),
+                  style: const TextStyle(
+                    color: Colors.deepPurpleAccent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderThemeData(
+                      trackHeight: 3,
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                      activeTrackColor: Colors.deepPurpleAccent,
+                      inactiveTrackColor: Colors.white12,
+                      thumbColor: Colors.deepPurpleAccent,
+                    ),
+                    child: Slider(
+                      value: state.promptEditorFontSize,
+                      min: 10.0,
+                      max: 28.0,
+                      divisions: 36,
+                      onChanged: (v) {
+                        state.promptEditorFontSize = v;
+                        state.refreshUI();
+                      },
+                      onChangeEnd: (_) => state.saveAllSettings(),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // 9. 탭 좌우 스와이프
+          _toggleTile(
+            icon: Icons.swipe,
+            title: "탭 좌우 스와이프",
+            value: state.horizontalSwipeEnabled,
+            onChanged: (val) {
+              state.horizontalSwipeEnabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
+        ],
       ),
-      // 6-1. i2i 히스토리 핸들이 켜져 있을 때만(=비활성화 OFF) 인페인트 세부 옵션 표시
-      if (!state.i2iHistoryDisabled) ...[
-        _subToggleTile(
-          title: "인페인트 결과 자동 전환",
-          value: state.inpaintAutoSwitchResult,
-          onChanged: (val) {
-            state.inpaintAutoSwitchResult = val;
-            state.saveAllSettings();
-            state.refreshUI();
-          },
-        ),
-        _subToggleTile(
-          title: "인페인트 시 마스킹 자동 해제",
-          value: state.inpaintAutoClearMask,
-          onChanged: (val) {
-            state.inpaintAutoClearMask = val;
-            state.saveAllSettings();
-            state.refreshUI();
-          },
-        ),
-      ],
-      // 7. 가중치 색상 표시
-      _toggleTile(
-        icon: Icons.format_color_text,
-        title: "가중치 색상 표시",
-        value: state.weightHighlight,
-        onChanged: (val) {
-          state.weightHighlight = val;
-          WeightHighlightController.highlightEnabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-      ),
-      // 8. e621 프롬프트 확장
-      _toggleTile(
-        icon: Icons.extension,
-        title: "e621 프롬프트 확장",
-        color: const Color(0xFF3B9EFF),
-        value: state.e621Enabled,
-        onChanged: (val) {
-          state.e621Enabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-      ),
-      // 9. 탭 좌우 스와이프
-      _toggleTile(
-        icon: Icons.swipe,
-        title: "탭 좌우 스와이프",
-        value: state.horizontalSwipeEnabled,
-        onChanged: (val) {
-          state.horizontalSwipeEnabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-      ),
-      // 10. i2i탭 UI 배치 변경 (ON: 모드 가로 1줄 + 실행 버튼 우하단)
-      _toggleTile(
-        icon: Icons.view_quilt,
-        title: "i2i탭 다른 UI로 변경",
-        value: state.i2iAltLayout,
-        onChanged: (val) {
-          state.i2iAltLayout = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-      ),
-      // 11. 프롬프트 탭 캐릭터 편집 서랍
-      _toggleTile(
-        icon: Icons.people_alt,
-        title: "프롬프트 탭 캐릭터 편집",
-        value: state.promptCharDrawerEnabled,
-        onChanged: (val) {
-          state.promptCharDrawerEnabled = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
-        radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-      ),
+
       const SizedBox(height: 16),
       // 검색 페이지 수 (API 키 있을 때만 조절 가능) — 독립 카드
       _searchPagesTile(state),
       const SizedBox(height: 16),
-
       // ── ON/OFF 옵션과 폴더/파일 설정 구분선 ──
       const Padding(
         padding: EdgeInsets.only(bottom: 16),
@@ -1049,6 +1172,29 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
 
   List<Widget> _storageSection(BuildContext context, AppState state) {
     return [
+      // 이미지 저장 형식 (일반 탭에서 이동 — 저장 관련이므로 여기가 맞다)
+      _toggleTile(
+        icon: Icons.image_outlined,
+        title: "이미지를 Webp로 저장",
+        value: state.saveAsWebp,
+        onChanged: (val) {
+          state.saveAsWebp = val;
+          state.saveAllSettings();
+          state.refreshUI();
+        },
+      ),
+      // WebP 저장이 켜져 있을 때만 압축 방식 선택
+      if (state.saveAsWebp)
+        _subToggleTile(
+          title: "손실 압축 사용 (품질 95%)",
+          value: state.webpLossy,
+          onChanged: (val) {
+            state.webpLossy = val;
+            state.saveAllSettings();
+            state.refreshUI();
+          },
+        ),
+      const SizedBox(height: 16),
       // 저장 폴더 (SAF) — 임의 폴더/SD카드 지정
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

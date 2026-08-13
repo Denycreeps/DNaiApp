@@ -6,7 +6,11 @@ import '../models/app_state.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 
-const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full];
+const List<String> _models = [
+  NaiModels.v4Full,
+  NaiModels.v45Full,
+  NaiModels.v5Test, // 임시 테스트용 (실제 생성 보장 안 됨)
+];
 const List<String> _samplers = [
   "k_euler_ancestral",
   "k_euler",
@@ -108,67 +112,84 @@ void showDetailSettingsModal(BuildContext context) {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      // VAR+ 토글 버튼
+                      // VAR+ 토글 버튼 (모델이 미지원이면 잠금)
                       GestureDetector(
-                        onTap: () =>
-                            setModalState(() => state.isVariancePlus = !state.isVariancePlus),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                          decoration: BoxDecoration(
-                            color: state.isVariancePlus
-                                ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
-                                : const Color(0xFF2A2A2D),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: state.isVariancePlus
-                                  ? Colors.deepPurpleAccent
-                                  : Colors.white24,
-                              width: 1.5,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                "VAR+",
-                                style: TextStyle(
-                                  color: state.isVariancePlus
-                                      ? Colors.deepPurpleAccent
-                                      : Colors.white38,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  letterSpacing: 0.5,
+                        onTap: () {
+                          if (!modelCapsFor(state.selectedModel).supportsVarietyPlus) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
                                 ),
+                                duration: const Duration(seconds: 2),
                               ),
-                              const SizedBox(width: 6),
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 200),
-                                width: 28,
-                                height: 16,
-                                decoration: BoxDecoration(
-                                  color: state.isVariancePlus
-                                      ? Colors.deepPurpleAccent
-                                      : Colors.white24,
-                                  borderRadius: BorderRadius.circular(8),
+                            );
+                            return;
+                          }
+                          setModalState(() => state.isVariancePlus = !state.isVariancePlus);
+                        },
+                        child: Opacity(
+                          opacity: modelCapsFor(state.selectedModel).supportsVarietyPlus
+                              ? 1.0
+                              : 0.35,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: state.isVariancePlus
+                                  ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
+                                  : const Color(0xFF2A2A2D),
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: state.isVariancePlus
+                                    ? Colors.deepPurpleAccent
+                                    : Colors.white24,
+                                width: 1.5,
+                              ),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  "VAR+",
+                                  style: TextStyle(
+                                    color: state.isVariancePlus
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white38,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.5,
+                                  ),
                                 ),
-                                child: AnimatedAlign(
+                                const SizedBox(width: 6),
+                                AnimatedContainer(
                                   duration: const Duration(milliseconds: 200),
-                                  alignment: state.isVariancePlus
-                                      ? Alignment.centerRight
-                                      : Alignment.centerLeft,
-                                  child: Container(
-                                    width: 12,
-                                    height: 12,
-                                    margin: const EdgeInsets.symmetric(horizontal: 2),
-                                    decoration: const BoxDecoration(
-                                      color: Colors.white,
-                                      shape: BoxShape.circle,
+                                  width: 28,
+                                  height: 16,
+                                  decoration: BoxDecoration(
+                                    color: state.isVariancePlus
+                                        ? Colors.deepPurpleAccent
+                                        : Colors.white24,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: AnimatedAlign(
+                                    duration: const Duration(milliseconds: 200),
+                                    alignment: state.isVariancePlus
+                                        ? Alignment.centerRight
+                                        : Alignment.centerLeft,
+                                    child: Container(
+                                      width: 12,
+                                      height: 12,
+                                      margin: const EdgeInsets.symmetric(horizontal: 2),
+                                      decoration: const BoxDecoration(
+                                        color: Colors.white,
+                                        shape: BoxShape.circle,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -418,7 +439,18 @@ void showDetailSettingsModal(BuildContext context) {
                                   ),
                                   style: const TextStyle(color: Colors.white, fontSize: 13.5),
                                   items: _models
-                                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                                      .map(
+                                        (e) => DropdownMenuItem(
+                                          value: e,
+                                          // 테스트 모델은 API 문자열 대신 표시 이름으로 보여준다
+                                          child: Text(
+                                            modelCapsFor(e).isPlaceholder
+                                                ? modelCapsFor(e).displayName
+                                                : e,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                      )
                                       .toList(),
                                   onChanged: (val) {
                                     if (val != null) {

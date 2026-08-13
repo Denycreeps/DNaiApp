@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:math';
 import 'dart:convert';
+import 'dart:typed_data'; // BytesBuilder / Uint8List 직접 import (dart:io 간접 사용 경고 방지)
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -23,6 +24,7 @@ import '../tag_filters.dart';
 import '../app_theme.dart';
 import 'nai_character.dart';
 import 'model_caps.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 
 // i2i 작업 이미지가 바뀔 때 마스킹(_strokes)을 어떻게 처리할지.
 // 1회용 소비 신호 대신 이 값을 함께 세팅하여 build 타이밍 문제를 방지한다.
@@ -334,8 +336,346 @@ String buildExifSummary(NaiMetadata? meta) {
   return sb.toString();
 }
 
+// ── WebP(RIFF) 메타데이터 추출 ──
+// NovelAI는 WebP로 저장할 때 EXIF 청크에 파라미터를 넣는다.
+//   RIFF/WEBP → VP8X(플래그) → VP8L/VP8(픽셀) → EXIF(TIFF)
+//   TIFF IFD0의 0x8769(Exif SubIFD) → 0x9286(UserComment) 안에 JSON이 통째로 들어있다.
+//   UserComment는 앞 8바이트가 인코딩 표기("ASCII\0\0\0")이고 그 뒤가 본문.
+// 반환값은 PNG의 tEXt와 동일한 형태의 JSON 문자열(없으면 null).
+String? _extractWebpMetadataJson(Uint8List bytes) {
+  try {
+    if (bytes.length < 16) {
+      return null;
+    }
+    // RIFF....WEBP 확인
+    if (String.fromCharCodes(bytes.sublist(0, 4)) != 'RIFF' ||
+        String.fromCharCodes(bytes.sublist(8, 12)) != 'WEBP') {
+      return null;
+    }
+
+    final view = ByteData.sublistView(bytes);
+    int offset = 12;
+    Uint8List? exif;
+
+    // 청크 순회 (크기는 리틀엔디안, 홀수면 패딩 1바이트)
+    while (offset + 8 <= bytes.length) {
+      final fourcc = String.fromCharCodes(bytes.sublist(offset, offset + 4));
+      final len = view.getUint32(offset + 4, Endian.little);
+      final dataStart = offset + 8;
+      if (dataStart + len > bytes.length) {
+        break;
+      }
+      if (fourcc == 'EXIF') {
+        exif = Uint8List.sublistView(bytes, dataStart, dataStart + len);
+        break;
+      }
+      offset = dataStart + len + (len.isOdd ? 1 : 0);
+    }
+    if (exif == null || exif.length < 8) {
+      return null;
+    }
+
+    // TIFF 헤더: 'II'(리틀) 또는 'MM'(빅) — NAI는 MM(빅엔디안)을 쓴다
+    final ev = ByteData.sublistView(exif);
+    final bo = String.fromCharCodes(exif.sublist(0, 2));
+    final endian = bo == 'II' ? Endian.little : Endian.big;
+    if (bo != 'II' && bo != 'MM') {
+      return null;
+    }
+    if (ev.getUint16(2, endian) != 42) {
+      return null;
+    }
+
+    // IFD를 훑어 지정한 태그의 (타입, 개수, 값오프셋)을 찾는다
+    int? findTag(int ifdOffset, int wantTag) {
+      if (ifdOffset + 2 > exif!.length) {
+        return null;
+      }
+      final count = ev.getUint16(ifdOffset, endian);
+      for (int i = 0; i < count; i++) {
+        final e = ifdOffset + 2 + i * 12;
+        if (e + 12 > exif.length) {
+          break;
+        }
+        final tag = ev.getUint16(e, endian);
+        if (tag == wantTag) {
+          return e;
+        }
+      }
+      return null;
+    }
+
+    final ifd0 = ev.getUint32(4, endian);
+    // 0x8769 = Exif SubIFD 포인터
+    final subPtr = findTag(ifd0, 0x8769);
+    if (subPtr == null) {
+      return null;
+    }
+    final subIfd = ev.getUint32(subPtr + 8, endian);
+
+    // 0x9286 = UserComment (JSON 본문)
+    final ucEntry = findTag(subIfd, 0x9286);
+    if (ucEntry == null) {
+      return null;
+    }
+    final ucCount = ev.getUint32(ucEntry + 4, endian);
+    // 4바이트를 넘으면 값이 아니라 오프셋이 들어있다
+    final ucOffset = ucCount <= 4 ? (ucEntry + 8) : ev.getUint32(ucEntry + 8, endian);
+    if (ucOffset + ucCount > exif.length) {
+      return null;
+    }
+    var body = exif.sublist(ucOffset, ucOffset + ucCount);
+    // 인코딩 표기 8바이트 제거 (ASCII/UNICODE/JIS/Undefined)
+    if (body.length > 8) {
+      body = body.sublist(8);
+    }
+    var text = utf8.decode(body, allowMalformed: true).replaceAll('\u0000', '').trim();
+    if (text.isEmpty) {
+      return null;
+    }
+
+    // 바깥 JSON의 Comment 안에 실제 파라미터 JSON이 들어있다
+    try {
+      final outer = jsonDecode(text);
+      if (outer is Map && outer['Comment'] is String) {
+        return outer['Comment'] as String;
+      }
+    } catch (_) {}
+    // Comment 래핑이 없으면 본문 자체가 파라미터 JSON일 수 있다
+    return text.startsWith('{') ? text : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// PNG 텍스트 청크에서 파라미터 JSON 문자열을 그대로 꺼낸다.
+// (extractNovelAIMetadata는 파싱된 객체를 주지만, WebP로 이식할 땐 원문이 필요)
+String? _extractPngCommentJson(Uint8List bytes) {
+  try {
+    const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (int i = 0; i < sig.length; i++) {
+      if (bytes[i] != sig[i]) {
+        return null;
+      }
+    }
+    final view = ByteData.sublistView(bytes);
+    int offset = 8;
+    while (offset + 8 <= bytes.length) {
+      final length = view.getUint32(offset);
+      final type = String.fromCharCodes(bytes.sublist(offset + 4, offset + 8));
+      if (type == 'tEXt' || type == 'zTXt' || type == 'iTXt') {
+        final data = bytes.sublist(offset + 8, offset + 8 + length);
+        final nullIdx = data.indexOf(0);
+        if (nullIdx != -1) {
+          final raw = data.sublist(nullIdx + 1);
+          String? value;
+          if (type == 'tEXt') {
+            value = utf8.decode(raw, allowMalformed: true);
+          } else if (type == 'zTXt') {
+            if (raw.length > 1) {
+              try {
+                value = utf8.decode(zlib.decode(raw.sublist(1)), allowMalformed: true);
+              } catch (_) {}
+            }
+          } else {
+            if (raw.length >= 2) {
+              final compFlag = raw[0];
+              final langEnd = raw.indexOf(0, 2);
+              if (langEnd != -1) {
+                final transEnd = raw.indexOf(0, langEnd + 1);
+                if (transEnd != -1) {
+                  final body = raw.sublist(transEnd + 1);
+                  if (compFlag == 1) {
+                    try {
+                      value = utf8.decode(zlib.decode(body), allowMalformed: true);
+                    } catch (_) {}
+                  } else {
+                    value = utf8.decode(body, allowMalformed: true);
+                  }
+                }
+              }
+            }
+          }
+          final v = value?.trim();
+          if (v != null &&
+              v.startsWith('{') &&
+              (v.contains('"prompt"') || v.contains('"v4_prompt"'))) {
+            return v;
+          }
+        }
+      }
+      offset += 12 + length;
+    }
+  } catch (_) {}
+  return null;
+}
+
+// ── WebP 저장 (메타데이터 보존) ──
+// NovelAI 공식 WebP와 동일한 구조로 EXIF 청크를 만들어 붙인다.
+//   RIFF/WEBP → VP8X(EXIF 플래그) → VP8L/VP8(픽셀) → EXIF(TIFF)
+//   TIFF IFD0 → 0x8769(SubIFD) → 0x9286(UserComment) → {"Comment": "<파라미터 JSON>"}
+// 이렇게 하면 우리 앱은 물론 novelai.net/inspect 에서도 그대로 읽힌다.
+
+// UserComment에 넣을 JSON으로 TIFF/EXIF 블록 생성 (빅엔디안 MM)
+Uint8List _buildExifBlock(String metadataJson) {
+  // NAI와 동일하게 바깥을 {"Comment": "..."} 로 감싼다
+  final wrapped = jsonEncode({'Comment': metadataJson});
+  // UserComment는 앞 8바이트가 인코딩 표기
+  final body = <int>[...utf8.encode('ASCII'), 0, 0, 0, ...utf8.encode(wrapped)];
+
+  const ifd0Size = 2 + 12 + 4; // 엔트리1개 + 다음IFD포인터
+  const subOffset = 8 + ifd0Size;
+  const subIfdSize = 2 + 12 + 4;
+  const dataOffset = subOffset + subIfdSize;
+
+  final out = BytesBuilder();
+  // TIFF 헤더 (MM = 빅엔디안, 매직 42, IFD0 오프셋 8)
+  out.add([0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08]);
+
+  void u16(int v) => out.add([(v >> 8) & 0xFF, v & 0xFF]);
+  void u32(int v) => out.add([(v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF]);
+
+  // IFD0: 0x8769(Exif SubIFD 포인터) 하나만
+  u16(1);
+  u16(0x8769);
+  u16(4); // LONG
+  u32(1);
+  u32(subOffset);
+  u32(0); // 다음 IFD 없음
+
+  // SubIFD: 0x9286(UserComment)
+  u16(1);
+  u16(0x9286);
+  u16(7); // UNDEFINED
+  u32(body.length);
+  u32(dataOffset);
+  u32(0);
+
+  out.add(body);
+  return out.toBytes();
+}
+
+// WebP 바이트에 VP8X + EXIF 청크를 주입한다.
+// 이미 EXIF가 있으면 교체한다. 실패 시 null.
+Uint8List? _injectExifIntoWebp(Uint8List webp, Uint8List exifBlock) {
+  try {
+    if (webp.length < 16 ||
+        String.fromCharCodes(webp.sublist(0, 4)) != 'RIFF' ||
+        String.fromCharCodes(webp.sublist(8, 12)) != 'WEBP') {
+      return null;
+    }
+    final view = ByteData.sublistView(webp);
+
+    // 기존 청크 수집 (EXIF/VP8X는 새로 만들므로 제외)
+    final chunks = <MapEntry<String, Uint8List>>[];
+    int width = 0;
+    int height = 0;
+    int offset = 12;
+    while (offset + 8 <= webp.length) {
+      final fourcc = String.fromCharCodes(webp.sublist(offset, offset + 4));
+      final len = view.getUint32(offset + 4, Endian.little);
+      final start = offset + 8;
+      if (start + len > webp.length) {
+        break;
+      }
+      final data = Uint8List.sublistView(webp, start, start + len);
+
+      if (fourcc == 'VP8L' && len >= 5) {
+        // VP8L 헤더에서 크기 추출 (14비트씩, 실제값-1)
+        final bits = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24);
+        width = (bits & 0x3FFF) + 1;
+        height = ((bits >> 14) & 0x3FFF) + 1;
+      } else if (fourcc == 'VP8 ' && len >= 10) {
+        width = ((data[7] << 8) | data[6]) & 0x3FFF;
+        height = ((data[9] << 8) | data[8]) & 0x3FFF;
+      }
+
+      if (fourcc != 'EXIF' && fourcc != 'VP8X') {
+        chunks.add(MapEntry(fourcc, data));
+      }
+      offset = start + len + (len.isOdd ? 1 : 0);
+    }
+    if (chunks.isEmpty || width <= 0 || height <= 0) {
+      return null;
+    }
+
+    // 청크 하나를 바이트로 (홀수 길이면 패딩 1바이트)
+    List<int> makeChunk(String fourcc, List<int> data) {
+      final len = data.length;
+      return [
+        ...utf8.encode(fourcc),
+        len & 0xFF,
+        (len >> 8) & 0xFF,
+        (len >> 16) & 0xFF,
+        (len >> 24) & 0xFF,
+        ...data,
+        if (len.isOdd) 0,
+      ];
+    }
+
+    // VP8X: 플래그(EXIF=0x08) + 예약3 + 폭-1(3바이트) + 높이-1(3바이트)
+    final w1 = width - 1;
+    final h1 = height - 1;
+    final vp8x = <int>[
+      0x08,
+      0,
+      0,
+      0,
+      w1 & 0xFF,
+      (w1 >> 8) & 0xFF,
+      (w1 >> 16) & 0xFF,
+      h1 & 0xFF,
+      (h1 >> 8) & 0xFF,
+      (h1 >> 16) & 0xFF,
+    ];
+
+    final body = <int>[];
+    body.addAll(makeChunk('VP8X', vp8x));
+    for (final c in chunks) {
+      body.addAll(makeChunk(c.key, c.value));
+    }
+    body.addAll(makeChunk('EXIF', exifBlock));
+
+    final riffSize = 4 + body.length; // 'WEBP' + 본문
+    return Uint8List.fromList([
+      ...utf8.encode('RIFF'),
+      riffSize & 0xFF,
+      (riffSize >> 8) & 0xFF,
+      (riffSize >> 16) & 0xFF,
+      (riffSize >> 24) & 0xFF,
+      ...utf8.encode('WEBP'),
+      ...body,
+    ]);
+  } catch (e) {
+    debugPrint('WebP EXIF 주입 실패: $e');
+    return null;
+  }
+}
+
 NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
   try {
+    Map<String, String> textChunks = {};
+    int imageWidth = 0;
+    int imageHeight = 0;
+
+    // ── WebP 먼저 처리 (NAI 공식 WebP 저장 지원) ──
+    // EXIF 청크에서 JSON을 꺼내 PNG와 동일한 흐름으로 합류시킨다.
+    final webpJson = _extractWebpMetadataJson(imageBytes);
+    if (webpJson != null) {
+      textChunks['Comment'] = webpJson;
+      // 크기는 VP8X 청크에서 (24비트 리틀엔디안, 실제값-1로 저장됨)
+      try {
+        final v = ByteData.sublistView(imageBytes);
+        if (String.fromCharCodes(imageBytes.sublist(12, 16)) == 'VP8X') {
+          final w = v.getUint8(24) | (v.getUint8(25) << 8) | (v.getUint8(26) << 16);
+          final h = v.getUint8(27) | (v.getUint8(28) << 8) | (v.getUint8(29) << 16);
+          imageWidth = w + 1;
+          imageHeight = h + 1;
+        }
+      } catch (_) {}
+      return _buildMetadataFromChunks(textChunks, imageWidth, imageHeight, imageBytes);
+    }
+
     final pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
     for (int i = 0; i < pngSignature.length; i++) {
       if (imageBytes[i] != pngSignature[i]) {
@@ -344,9 +684,6 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
     }
 
     int offset = 8;
-    Map<String, String> textChunks = {};
-    int imageWidth = 0;
-    int imageHeight = 0;
 
     while (offset < imageBytes.length) {
       if (offset + 8 > imageBytes.length) {
@@ -407,6 +744,21 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
       offset += 12 + length;
     }
 
+    return _buildMetadataFromChunks(textChunks, imageWidth, imageHeight, imageBytes);
+  } catch (e) {
+    debugPrint("메타데이터 파싱 실패: $e");
+    return null;
+  }
+}
+
+// 텍스트 청크(Comment JSON) → NaiMetadata 변환. PNG·WebP 공용.
+NaiMetadata? _buildMetadataFromChunks(
+  Map<String, String> textChunks,
+  int imageWidth,
+  int imageHeight,
+  Uint8List imageBytes,
+) {
+  try {
     String prompt = textChunks['Description'] ?? '';
     String source = textChunks['Source'] ?? '';
     String commentString = textChunks['Comment'] ?? '{}';
@@ -560,7 +912,7 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
       extraParams: extras,
     );
   } catch (e) {
-    debugPrint("메타데이터 파싱 실패: $e");
+    debugPrint("메타데이터 변환 실패: $e");
     return null;
   }
 }
@@ -1054,7 +1406,13 @@ class WeightHighlightController extends TextEditingController {
   WeightHighlightController({super.text});
 
   // 전역 토글 (설정에서 제어)
-  static bool highlightEnabled = false;
+  static bool highlightEnabled = true; // AppState.weightHighlight와 동기화 (기본 ON)
+
+  // '::' 구분자 전용 색 (가중치/프롬프트 경계를 확실히 구분)
+  // 신택스 하이라이팅 배색 (Nord/Night Owl 계열 — 채도를 낮춰 눈에 편하게)
+  //  숫자는 전통적으로 파랑 계열, 구분자는 톤 다운해 덜 튀게
+  static const Color _separatorColor = Color(0xFFC3A6E0); // '::' 차분한 라벤더 (구분자, 은은하게)
+  static const Color _weightNumColor = Color(0xFF82AAFF); // 가중치 숫자 (Night Owl 파랑 — 표준 숫자색)
 
   // 가중치 → 색상 매핑
   // 1.0 = 중립(색 없음), >1.0 어두운 갈색→(10.0)완전 빨강, <1.0 파랑→검정파랑
@@ -1116,24 +1474,24 @@ class WeightHighlightController extends TextEditingController {
         final numStr = m.group(1)!; // 숫자 부분
         final fullMarker = m.group(0)!; // 숫자 + (공백) + ::
         final afterNum = fullMarker.substring(numStr.length); // "::" 또는 " ::"
-        // 숫자 (볼드)
+        // 숫자 (청록 글씨 + 볼드로 프롬프트 본문과 확실히 구분)
         spans.add(
           TextSpan(
             text: numStr,
             style: style?.copyWith(
-              color: Colors.white,
+              color: _weightNumColor,
               fontWeight: FontWeight.bold,
               backgroundColor: markerColor?.withValues(alpha: 0.4),
             ),
           ),
         );
-        // :: (볼드 없음)
+        // :: 구분자 (노란 글씨 + 볼드로 가중치와 프롬프트 사이를 뚜렷이 구분)
         spans.add(
           TextSpan(
             text: afterNum,
             style: style?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.normal,
+              color: _separatorColor,
+              fontWeight: FontWeight.bold,
               backgroundColor: markerColor?.withValues(alpha: 0.4),
             ),
           ),
@@ -1168,13 +1526,13 @@ class WeightHighlightController extends TextEditingController {
             ),
           );
         }
-        // 종료 마커 :: (흰색, 볼드 없음, 배경 음영 유지로 구간 끝까지 연결)
+        // 종료 마커 :: (노란 글씨 + 볼드, 배경 음영 유지로 구간 끝까지 연결)
         spans.add(
           TextSpan(
             text: m.group(0),
             style: style?.copyWith(
-              color: Colors.white,
-              fontWeight: FontWeight.normal,
+              color: _separatorColor,
+              fontWeight: FontWeight.bold,
               backgroundColor: color?.withValues(alpha: 0.32),
             ),
           ),
@@ -1419,8 +1777,14 @@ class AppState extends ChangeNotifier {
   bool ratingG = true;
   bool removeCharacteristics = false;
   bool removeClothes = false;
+  // 의상 상태/동작 태그 제거 (unworn, torn, grab 등)
+  bool removeClothingEvents = false;
   bool removeColors = false;
   bool isAutoSave = true;
+  // 이미지를 WebP(무손실)로 저장 — 용량 약 26% 절감, 메타데이터는 EXIF로 보존
+  bool saveAsWebp = false;
+  // WebP 저장 시 손실 압축(품질 95) 사용 — 화질 차이 거의 없이 용량이 크게 줄어든다
+  bool webpLossy = false;
   bool isRandomLocked = false;
   bool isFurryMode = false;
   bool isSeedLocked = false;
@@ -1432,6 +1796,14 @@ class AppState extends ChangeNotifier {
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
   // i2i탭 UI 배치 변경: ON이면 모드 칩 가로 1줄 + 실행 버튼 우하단 배치
   bool i2iAltLayout = false;
+  // 프롬프트 탭 2번째 UI (합본 미리보기 + 기능 묶음). 기본 OFF — 기존 UI 유지
+  // 프롬프트 탭을 개편된 새 레이아웃으로 표시 (기본 OFF = 기존 사용자에게 익숙한 예전 UI)
+  bool promptNewLayout = false;
+
+  // ⚠️ [보류] 프롬프트탭 2번째 UI. 설정 화면에서는 숨겨져 있다(settings_tab 참고).
+  //  구현은 prompt_tab.dart의 _buildAltLayout 이하에 그대로 살아 있으므로,
+  //  디버깅/참고용으로 이 값을 true 로 두면 다시 사용할 수 있다.
+  bool promptAltLayout = false;
   // 검색 페이지 수 (API 키 있을 때만 유효). 기본 40, 상한 120.
   int gelbooruSearchPages = 40;
   // [실험] 정렬 축 다양화 (random+score+id 섞기) — 중복 줄이고 표본 확대
@@ -1450,7 +1822,7 @@ class AppState extends ChangeNotifier {
   bool historySlideEnabled = false; // 히스토리 이미지 슬라이드 (화살표 + 애니메이션)
   bool randomPromptAlphabetical = false; // 랜덤 프롬프트 나머지 태그 알파벳 순서
   bool ignoreRecommendedOrder = false; // NovelAI 권장 순서(인원/solo/시점 등) 무시
-  bool weightHighlight = false; // 가중치 문법 색상 하이라이트
+  bool weightHighlight = true; // 가중치 문법 색상 하이라이트 (기본 ON)
 
   // 배치 생성
   int batchCount = 1; // 1, 2, 3, 4, 0(무한)
@@ -1577,9 +1949,39 @@ class AppState extends ChangeNotifier {
   // 전부 숨겨도 프롬프트 탭 자체는 유지된다.
   Set<String> hiddenPromptSections = {};
 
+  // 2번째 UI 전용: 묶음에서 꺼내 메인 화면에 고정할 창들
+  // (기존 UI의 hiddenPromptSections와는 별개 — 서로 간섭하지 않게 분리)
+  Set<String> pinnedPromptSections = {};
+
+  // 조건부 트리거 문법 가이드 접힘 상태
+  bool conditionalGuideCollapsed = false;
+
+  void togglePinnedSection(String sectionId) {
+    if (pinnedPromptSections.contains(sectionId)) {
+      pinnedPromptSections.remove(sectionId);
+    } else {
+      pinnedPromptSections.add(sectionId);
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
   // i2i 탭 프롬프트 카드 접기 상태 (positive/prefix/suffix/negative)
   // 부정적처럼 한 번 넣고 신경 끄는 항목을 접어둘 수 있게 저장까지 유지한다.
   Set<String> collapsedI2iPrompts = {};
+
+  // 설정 탭에서 접어둔 그룹들 (설정이 많아져 그룹별로 접을 수 있게 함)
+  Set<String> collapsedSettingGroups = {};
+
+  void toggleSettingGroup(String groupId) {
+    if (collapsedSettingGroups.contains(groupId)) {
+      collapsedSettingGroups.remove(groupId);
+    } else {
+      collapsedSettingGroups.add(groupId);
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
 
   void toggleI2iPromptCollapsed(String cardId) {
     if (collapsedI2iPrompts.contains(cardId)) {
@@ -1674,7 +2076,8 @@ class AppState extends ChangeNotifier {
       return null;
     }
     try {
-      final mime = ext == 'jpg' ? 'image/jpeg' : 'image/png';
+      // 확장자와 mime이 어긋나면 안드로이드가 확장자를 덧붙인다(예: name.webp.png)
+      final mime = ext == 'jpg' ? 'image/jpeg' : (ext == 'webp' ? 'image/webp' : 'image/png');
       final session = sessionFolderName ?? DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
       // 루트 폴더명이 이미 'DNaiApp'(대소문자 무시)이면 DNaiApp 중첩 생성 방지
       final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
@@ -2264,9 +2667,9 @@ class AppState extends ChangeNotifier {
   double promptCharHandleTop = -1; // 프롬프트 탭 캐릭터 편집 손잡이 세로 위치 (-1이면 기본값)
   bool i2iHistoryDisabled = false; // ON이면 릴 끄고 i2i 결과를 메인 히스토리에 저장
   // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
-  bool inpaintAutoSwitchResult = true; // 인페인트 결과를 작업 이미지로 자동 전환 (기본 ON)
+  bool inpaintNoAutoSwitch = false; // 인페인트 후 결과로 전환하지 않음 (기본 OFF = 전환함)
   bool inpaintAutoClearMask = false; // 인페인트 시 마스킹 자동 해제 (기본 OFF=유지)
-  bool galleryModeEnabled = false; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 OFF
+  bool galleryModeEnabled = true; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 ON
 
   // SAF (Storage Access Framework) — 사용자가 고른 저장 폴더의 트리 URI
   final SafUtil _safUtil = SafUtil();
@@ -2444,9 +2847,12 @@ class AppState extends ChangeNotifier {
     ratingG = prefs.getBool('rating_g') ?? true;
     removeCharacteristics = prefs.getBool('remove_char_traits') ?? false;
     removeClothes = prefs.getBool('remove_clothes') ?? false;
+    removeClothingEvents = prefs.getBool('remove_clothing_events') ?? false;
     removeColors = prefs.getBool('remove_colors') ?? false;
     customRemoveController.text = prefs.getString('custom_remove') ?? "";
     isAutoSave = prefs.getBool('auto_save') ?? true;
+    saveAsWebp = prefs.getBool('saveAsWebp') ?? false;
+    webpLossy = prefs.getBool('webpLossy') ?? false;
     isRandomLocked = prefs.getBool('random_lock') ?? false;
     isFurryMode = prefs.getBool('furry') ?? false;
     isSeedLocked = prefs.getBool('seedLocked') ?? false;
@@ -2456,6 +2862,8 @@ class AppState extends ChangeNotifier {
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
     i2iAltLayout = prefs.getBool('i2iAltLayout') ?? false;
+    promptAltLayout = prefs.getBool('promptAltLayout') ?? false;
+    promptNewLayout = prefs.getBool('promptNewLayout') ?? false;
     gelbooruSearchPages = (prefs.getInt('gelbooruSearchPages') ?? 40).clamp(40, 120);
     diversifySearchSort = prefs.getBool('diversifySearchSort') ?? false;
     promptCharDrawerEnabled = prefs.getBool('promptCharDrawerEnabled') ?? false;
@@ -2464,16 +2872,20 @@ class AppState extends ChangeNotifier {
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
     randomPromptAlphabetical = prefs.getBool('randomPromptAlphabetical') ?? false;
     ignoreRecommendedOrder = prefs.getBool('ignoreRecommendedOrder') ?? false;
-    weightHighlight = prefs.getBool('weightHighlight') ?? false;
+    weightHighlight = prefs.getBool('weightHighlight') ?? true;
     e621Enabled = prefs.getBool('e621Enabled') ?? false;
     safCardOpen = prefs.getBool('safCardOpen') ?? true;
     fileCardOpen = prefs.getBool('fileCardOpen') ?? true;
     themeAccent = prefs.getInt('themeAccent') ?? 0xFF7C4DFF;
     AppColors.accent = Color(themeAccent);
     i2iHistoryDisabled = prefs.getBool('i2iHistoryDisabled') ?? false;
-    inpaintAutoSwitchResult = prefs.getBool('inpaintAutoSwitchResult') ?? true;
+    // 옛 설정(inpaintAutoSwitchResult)은 의미가 반대였다. 남아 있으면 뒤집어서 이어받는다.
+    final legacyAutoSwitch = prefs.getBool('inpaintAutoSwitchResult');
+    inpaintNoAutoSwitch =
+        prefs.getBool('inpaintNoAutoSwitch') ??
+        (legacyAutoSwitch != null ? !legacyAutoSwitch : false);
     inpaintAutoClearMask = prefs.getBool('inpaintAutoClearMask') ?? false;
-    galleryModeEnabled = prefs.getBool('galleryModeEnabled') ?? false;
+    galleryModeEnabled = prefs.getBool('galleryModeEnabled') ?? true;
     galleryCurrentPath = prefs.getString('galleryCurrentPath');
     galleryColumns = prefs.getInt('galleryColumns') ?? 3;
     promptEditorFontSize = prefs.getDouble('promptEditorFontSize') ?? 16.0;
@@ -2510,7 +2922,10 @@ class AppState extends ChangeNotifier {
       promptSectionOrder = _mergeSectionOrder(sectionOrderJson);
     }
     hiddenPromptSections = (prefs.getStringList('hiddenPromptSections') ?? []).toSet();
+    pinnedPromptSections = (prefs.getStringList('pinnedPromptSections') ?? []).toSet();
+    conditionalGuideCollapsed = prefs.getBool('conditionalGuideCollapsed') ?? false;
     collapsedI2iPrompts = (prefs.getStringList('collapsedI2iPrompts') ?? []).toSet();
+    collapsedSettingGroups = (prefs.getStringList('collapsedSettingGroups') ?? []).toSet();
     final collapsedJson = prefs.getStringList('collapsedSections');
     if (collapsedJson != null) {
       collapsedSections = collapsedJson.toSet();
@@ -2671,8 +3086,11 @@ class AppState extends ChangeNotifier {
       'rating_g': ratingG,
       'remove_char_traits': removeCharacteristics,
       'remove_clothes': removeClothes,
+      'remove_clothing_events': removeClothingEvents,
       'remove_colors': removeColors,
       'auto_save': isAutoSave,
+      'saveAsWebp': saveAsWebp,
+      'webpLossy': webpLossy,
       'random_lock': isRandomLocked,
       'furry': isFurryMode,
       'seedLocked': isSeedLocked,
@@ -2682,6 +3100,8 @@ class AppState extends ChangeNotifier {
       'variancePlus': isVariancePlus,
       'horizontalSwipeEnabled': horizontalSwipeEnabled,
       'i2iAltLayout': i2iAltLayout,
+      'promptAltLayout': promptAltLayout,
+      'promptNewLayout': promptNewLayout,
       'gelbooruSearchPages': gelbooruSearchPages,
       'diversifySearchSort': diversifySearchSort,
       'promptCharDrawerEnabled': promptCharDrawerEnabled,
@@ -2696,7 +3116,7 @@ class AppState extends ChangeNotifier {
       'fileCardOpen': fileCardOpen,
       'themeAccent': themeAccent,
       'i2iHistoryDisabled': i2iHistoryDisabled,
-      'inpaintAutoSwitchResult': inpaintAutoSwitchResult,
+      'inpaintNoAutoSwitch': inpaintNoAutoSwitch,
       'inpaintAutoClearMask': inpaintAutoClearMask,
       'galleryModeEnabled': galleryModeEnabled,
       'galleryCurrentPath': galleryCurrentPath,
@@ -2725,7 +3145,10 @@ class AppState extends ChangeNotifier {
       'autoCheckUpdate': autoCheckUpdate,
       'collapsedSections': collapsedSections.toList(),
       'hiddenPromptSections': hiddenPromptSections.toList(),
+      'pinnedPromptSections': pinnedPromptSections.toList(),
+      'conditionalGuideCollapsed': conditionalGuideCollapsed,
       'collapsedI2iPrompts': collapsedI2iPrompts.toList(),
+      'collapsedSettingGroups': collapsedSettingGroups.toList(),
       'characters': characters.map((c) => c.toJson()).toList(),
       'wildcards': wildcards.map((w) => w.toJson()).toList(),
       'presets': presets.map((p) => p.toJson()).toList(),
@@ -2813,8 +3236,11 @@ class AppState extends ChangeNotifier {
     ratingG = data['rating_g'] ?? true;
     removeCharacteristics = data['remove_char_traits'] ?? false;
     removeClothes = data['remove_clothes'] ?? false;
+    removeClothingEvents = data['remove_clothing_events'] ?? false;
     removeColors = data['remove_colors'] ?? false;
     isAutoSave = data['auto_save'] ?? true;
+    saveAsWebp = data['saveAsWebp'] ?? false;
+    webpLossy = data['webpLossy'] ?? false;
     isRandomLocked = data['random_lock'] ?? false;
     isFurryMode = data['furry'] ?? false;
     isSeedLocked = data['seedLocked'] ?? false;
@@ -2824,6 +3250,8 @@ class AppState extends ChangeNotifier {
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
     i2iAltLayout = data['i2iAltLayout'] ?? false;
+    promptAltLayout = data['promptAltLayout'] ?? false;
+    promptNewLayout = data['promptNewLayout'] ?? false;
     gelbooruSearchPages = ((data['gelbooruSearchPages'] ?? 40) as int).clamp(40, 120);
     diversifySearchSort = data['diversifySearchSort'] ?? false;
     promptCharDrawerEnabled = data['promptCharDrawerEnabled'] ?? false;
@@ -2832,16 +3260,19 @@ class AppState extends ChangeNotifier {
     historySlideEnabled = data['historySlideEnabled'] ?? false;
     randomPromptAlphabetical = data['randomPromptAlphabetical'] ?? false;
     ignoreRecommendedOrder = data['ignoreRecommendedOrder'] ?? false;
-    weightHighlight = data['weightHighlight'] ?? false;
+    weightHighlight = data['weightHighlight'] ?? true;
     e621Enabled = data['e621Enabled'] ?? false;
     safCardOpen = data['safCardOpen'] ?? true;
     fileCardOpen = data['fileCardOpen'] ?? true;
     themeAccent = data['themeAccent'] ?? 0xFF7C4DFF;
     AppColors.accent = Color(themeAccent);
     i2iHistoryDisabled = data['i2iHistoryDisabled'] ?? false;
-    inpaintAutoSwitchResult = data['inpaintAutoSwitchResult'] ?? true;
+    // 옛 백업 호환: inpaintAutoSwitchResult(반대 의미)가 있으면 뒤집어서 적용
+    inpaintNoAutoSwitch =
+        data['inpaintNoAutoSwitch'] ??
+        (data['inpaintAutoSwitchResult'] != null ? !data['inpaintAutoSwitchResult'] : false);
     inpaintAutoClearMask = data['inpaintAutoClearMask'] ?? false;
-    galleryModeEnabled = data['galleryModeEnabled'] ?? false;
+    galleryModeEnabled = data['galleryModeEnabled'] ?? true;
     galleryCurrentPath = data['galleryCurrentPath'];
     galleryColumns = data['galleryColumns'] ?? 3;
     promptEditorFontSize = (data['promptEditorFontSize'] as num?)?.toDouble() ?? 16.0;
@@ -2931,8 +3362,15 @@ class AppState extends ChangeNotifier {
     if (data['hiddenPromptSections'] != null) {
       hiddenPromptSections = Set<String>.from(data['hiddenPromptSections']);
     }
+    if (data['pinnedPromptSections'] != null) {
+      pinnedPromptSections = Set<String>.from(data['pinnedPromptSections']);
+    }
+    conditionalGuideCollapsed = data['conditionalGuideCollapsed'] ?? false;
     if (data['collapsedI2iPrompts'] != null) {
       collapsedI2iPrompts = Set<String>.from(data['collapsedI2iPrompts']);
+    }
+    if (data['collapsedSettingGroups'] != null) {
+      collapsedSettingGroups = Set<String>.from(data['collapsedSettingGroups']);
     }
     if (data['collapsedSections'] != null) {
       collapsedSections = Set<String>.from(data['collapsedSections']);
@@ -3018,9 +3456,12 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('rating_g', ratingG);
       await prefs.setBool('remove_char_traits', removeCharacteristics);
       await prefs.setBool('remove_clothes', removeClothes);
+      await prefs.setBool('remove_clothing_events', removeClothingEvents);
       await prefs.setBool('remove_colors', removeColors);
       await prefs.setString('custom_remove', customRemoveController.text);
       await prefs.setBool('auto_save', isAutoSave);
+      await prefs.setBool('saveAsWebp', saveAsWebp);
+      await prefs.setBool('webpLossy', webpLossy);
       await prefs.setBool('random_lock', isRandomLocked);
       await prefs.setBool('furry', isFurryMode);
       await prefs.setBool('seedLocked', isSeedLocked);
@@ -3030,6 +3471,8 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('variancePlus', isVariancePlus);
       await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
       await prefs.setBool('i2iAltLayout', i2iAltLayout);
+      await prefs.setBool('promptAltLayout', promptAltLayout);
+      await prefs.setBool('promptNewLayout', promptNewLayout);
       await prefs.setInt('gelbooruSearchPages', gelbooruSearchPages);
       await prefs.setBool('diversifySearchSort', diversifySearchSort);
       await prefs.setBool('promptCharDrawerEnabled', promptCharDrawerEnabled);
@@ -3044,7 +3487,7 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('fileCardOpen', fileCardOpen);
       await prefs.setInt('themeAccent', themeAccent);
       await prefs.setBool('i2iHistoryDisabled', i2iHistoryDisabled);
-      await prefs.setBool('inpaintAutoSwitchResult', inpaintAutoSwitchResult);
+      await prefs.setBool('inpaintNoAutoSwitch', inpaintNoAutoSwitch);
       await prefs.setBool('inpaintAutoClearMask', inpaintAutoClearMask);
       await prefs.setBool('galleryModeEnabled', galleryModeEnabled);
       if (galleryCurrentPath != null) {
@@ -3071,7 +3514,10 @@ class AppState extends ChangeNotifier {
       await prefs.setStringList('promptSectionOrder', promptSectionOrder);
       await prefs.setStringList('collapsedSections', collapsedSections.toList());
       await prefs.setStringList('hiddenPromptSections', hiddenPromptSections.toList());
+      await prefs.setStringList('pinnedPromptSections', pinnedPromptSections.toList());
+      await prefs.setBool('conditionalGuideCollapsed', conditionalGuideCollapsed);
       await prefs.setStringList('collapsedI2iPrompts', collapsedI2iPrompts.toList());
+      await prefs.setStringList('collapsedSettingGroups', collapsedSettingGroups.toList());
       await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
       await prefs.setString('resolutionMode', resolutionMode);
       await prefs.setString('model', selectedModel);
@@ -3604,6 +4050,12 @@ class AppState extends ChangeNotifier {
       }
       if (removeClothes &&
           (TagFilters.clothesTags.contains(t) || TagFilters.clothesTags.contains(cleanTag))) {
+        continue;
+      }
+      // 의상 상태/동작 (unworn, torn, grab 등) — 의상 제거와 짝으로 쓰면 옷 관련이 깔끔히 정리된다
+      if (removeClothingEvents &&
+          (TagFilters.clothingEventTags.contains(t) ||
+              TagFilters.clothingEventTags.contains(cleanTag))) {
         continue;
       }
       if (removeColors) {
@@ -4209,6 +4661,55 @@ class AppState extends ChangeNotifier {
   //  예) 규칙 "sleeping=0.5" → 프롬프트의 sleeping 을 "0.5::sleeping ::" 으로 치환
   //  - 한 줄에 규칙 하나, 줄 맨 앞에 # 이 있으면 그 줄은 건너뜀
   //  - 숫자는 음수/소수/1 이상 모두 허용 (NovelAI V4 numeric emphasis)
+  // 프롬프트 내용에서 레이팅 글자 추출 (조건부 트리거 조건 판정용)
+  String _ratingLetterOf(String source) {
+    final lower = source.toLowerCase();
+    if (lower.contains("explicit")) {
+      return "e";
+    }
+    if (lower.contains("questionable")) {
+      return "q";
+    }
+    if (lower.contains("sensitive")) {
+      return "s";
+    }
+    return "g";
+  }
+
+  // 최종 프롬프트 미리보기 (2번째 UI 상단 표시용)
+  // 생성과 같은 순서로 합치되, 와일드카드는 생성 시마다 바뀌므로 원문(__foo__)을 그대로 남긴다.
+  String buildPreviewPrompt() {
+    String prefixText = prefixController.text;
+    String positiveText = positiveController.text;
+    String suffixText = suffixController.text;
+
+    // 조건부 트리거가 generate 모드면 영역별로 적용 (random 모드는 이미 반영돼 있음)
+    if (conditionalTriggerMode == "generate") {
+      final rating = _ratingLetterOf("$prefixText,$positiveText,$suffixText");
+      final sectioned = _applyConditionalRulesSectioned(
+        prefixText,
+        positiveText,
+        suffixText,
+        rating,
+      );
+      prefixText = sectioned.prefix;
+      positiveText = sectioned.positive;
+      suffixText = sectioned.suffix;
+    }
+
+    // 표시용 구분: 선행/긍정/후행 사이에 빈 줄을 넣어 영역을 눈으로 구분한다.
+    // (실제 전송은 handleGenerate가 따로 조립하므로 여기 줄바꿈은 화면에만 영향)
+    const sep = "\n\n";
+    final parts = [
+      _service.sanitizePrompt(prefixText),
+      _service.sanitizePrompt(positiveText),
+      _service.sanitizePrompt(suffixText),
+    ];
+    // 비어 있는 영역은 구분선도 만들지 않아 불필요한 여백/콤마가 남지 않게
+    final combined = parts.where((e) => e.trim().isNotEmpty).join(",$sep");
+    return _applyWeightRules(combined);
+  }
+
   String _applyWeightRules(String prompt) {
     if (!weightRulesEnabled) {
       return prompt;
@@ -4382,15 +4883,7 @@ class AppState extends ChangeNotifier {
 
     // 2. 조건부 트리거가 "generate" 모드면 와일드카드 개봉 후 적용
     if (conditionalTriggerMode == "generate") {
-      final ratingSource = "$prefixText,$positiveText,$suffixText".toLowerCase();
-      String rating = "g";
-      if (ratingSource.contains("explicit")) {
-        rating = "e";
-      } else if (ratingSource.contains("questionable")) {
-        rating = "q";
-      } else if (ratingSource.contains("sensitive")) {
-        rating = "s";
-      }
+      final rating = _ratingLetterOf("$prefixText,$positiveText,$suffixText");
       final sectioned = _applyConditionalRulesSectioned(
         prefixText,
         positiveText,
@@ -4429,8 +4922,14 @@ class AppState extends ChangeNotifier {
 
     try {
       // 활성 vibe/정밀 참조 필터는 한 번만 (같은 where를 세 번 돌리지 않도록)
-      final activeVibes = vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList();
-      final activePrecise = preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList();
+      // 모델이 지원하지 않으면(예: V5) 항목이 담겨 있어도 전송하지 않는다.
+      final caps = modelCapsFor(selectedModel);
+      final activeVibes = caps.supportsVibe
+          ? vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList()
+          : <Map<String, dynamic>>[];
+      final activePrecise = caps.supportsPrecise
+          ? preciseRefs.where((r) => (r['enabled'] as bool?) ?? true).toList()
+          : <Map<String, dynamic>>[];
 
       final result = await _service.generateImage(
         positive: finalPrompt,
@@ -4447,7 +4946,8 @@ class AppState extends ChangeNotifier {
         cfgRescale: double.tryParse(cfgRescaleController.text) ?? 0.0,
         seed: int.tryParse(seedController.text) ?? 0,
         characters: processedCharacters,
-        variancePlus: isVariancePlus,
+        // 모델이 미지원이면 VAR+는 전송하지 않는다
+        variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
         useCharacterPosition: useCharacterPosition,
         randomCharacterOrder: randomCharacterOrder,
         // 정밀 참조가 있으면 vibe 대신 정밀 참조 우선 (기존 동작 그대로, 필터는 위에서 1회)
@@ -4684,7 +5184,8 @@ class AppState extends ChangeNotifier {
         mask: maskBytes,
         action: "infill",
         infillStrength: infillStrength,
-        variancePlus: isVariancePlus,
+        // 모델이 미지원이면 VAR+는 전송하지 않는다
+        variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
         onStatus: (msg) {
           inpaintStatusMessage = msg;
           notifyListeners();
@@ -4726,7 +5227,7 @@ class AppState extends ChangeNotifier {
         // ⚠️ 순서 중요: 마스크 처리 방식/이미지 전환을 먼저 정한 뒤 addI2iResult를 호출한다.
         // addI2iResult가 notifyListeners()를 부르므로, 그 전에 상태가 정해져 있어야
         // i2i_tab build가 올바르게 판단한다.
-        if (inpaintAutoSwitchResult) {
+        if (!inpaintNoAutoSwitch) {
           // 결과를 작업 이미지로 자동 전환 → 이미지 변경 시 자동 해제 설정을 따라 마스크 처리
           i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
           targetI2iImage = result.image!;
@@ -4852,7 +5353,8 @@ class AppState extends ChangeNotifier {
         action: "img2img",
         img2imgStrength: img2imgStrength,
         img2imgNoise: img2imgNoise,
-        variancePlus: isVariancePlus,
+        // 모델이 미지원이면 VAR+는 전송하지 않는다
+        variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
         useCharacterPosition: useCharacterPosition,
         randomCharacterOrder: randomCharacterOrder,
         onStatus: (msg) {
@@ -4894,7 +5396,7 @@ class AppState extends ChangeNotifier {
         NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
 
         // 인페인트와 동일: 자동 전환 설정을 따르고, 결과는 릴에 추가
-        if (inpaintAutoSwitchResult) {
+        if (!inpaintNoAutoSwitch) {
           i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
           targetI2iImage = result.image!;
           targetI2iMetadata = parsedMeta;
@@ -5680,6 +6182,10 @@ class AppState extends ChangeNotifier {
 
   // 모델명 → naiv4vibe encodings 키
   String _modelToVibeKey(String model) {
+    // v5는 Vibe 미지원이라 여기 오지 않아야 하지만, 안전하게 v4.5 키로 폴백
+    if (model.contains("5") && !model.contains("4-5") && !model.contains("4.5")) {
+      return "v4-5full";
+    }
     if (model.contains("4-5") && model.contains("full")) {
       return "v4-5full";
     }
@@ -6099,7 +6605,10 @@ class AppState extends ChangeNotifier {
     }
 
     // 버전 키워드 매칭 (구체적인 것부터 체크)
-    // ⚠️ v5 출시 시 이 목록에 v5 키워드 추가 필요 (안 하면 v5 메타가 v4로 오인됨)
+    // v5 메타데이터가 v4로 오인되지 않도록 v5를 먼저 검사한다.
+    if (lower.contains('v5')) {
+      return NaiModels.v5Test;
+    }
     if (lower.contains('v4.5')) {
       return NaiModels.v45Full;
     }
@@ -6234,12 +6743,56 @@ class AppState extends ChangeNotifier {
     return suffix.isEmpty ? parsed : "${parsed}_$suffix";
   }
 
+  // PNG 바이트를 WebP(무손실)로 변환하고 원본 메타데이터를 EXIF로 이식한다.
+  // 실패하면 null을 반환해 호출부가 원본(PNG)으로 폴백하도록 한다.
+  Future<Uint8List?> _convertToWebpWithMetadata(Uint8List pngBytes) async {
+    try {
+      // 1) 원본 PNG의 파라미터 JSON을 먼저 확보 (변환하면 사라지므로)
+      String? metaJson;
+      final chunkJson = _extractPngCommentJson(pngBytes);
+      if (chunkJson != null && chunkJson.trim().startsWith('{')) {
+        metaJson = chunkJson;
+      }
+
+      // 2) WebP 인코딩 (안드로이드 시스템 API — 빠름)
+      //    quality 100 = 무손실, 95 = 손실이지만 화질 차이가 거의 없고 용량이 크게 준다
+      final encoded = await FlutterImageCompress.compressWithList(
+        pngBytes,
+        format: CompressFormat.webp,
+        quality: webpLossy ? 95 : 100,
+      );
+      if (encoded.isEmpty) {
+        return null;
+      }
+      final webp = Uint8List.fromList(encoded);
+
+      // 3) 메타데이터가 있으면 EXIF 청크로 이식
+      if (metaJson == null) {
+        return webp;
+      }
+      return _injectExifIntoWebp(webp, _buildExifBlock(metaJson)) ?? webp;
+    } catch (e) {
+      debugPrint('WebP 변환 실패(원본 유지): $e');
+      return null;
+    }
+  }
+
   Future<String?> autoSaveImage(BuildContext? context, Uint8List bytes) async {
     sessionSaveCount++;
     sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
 
     String fileName = _getFormattedFileName("");
-    final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
+    final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
+    String ext = isJpeg ? 'jpg' : 'png';
+
+    // 설정이 켜져 있고 PNG일 때만 WebP로 변환 (실패하면 원본 그대로)
+    if (saveAsWebp && !isJpeg) {
+      final converted = await _convertToWebpWithMetadata(bytes);
+      if (converted != null) {
+        bytes = converted;
+        ext = 'webp';
+      }
+    }
 
     // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
     if (safRootUri != null) {
@@ -6285,8 +6838,18 @@ class AppState extends ChangeNotifier {
     sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
 
     String fileName = _getFormattedFileName("Manual");
-    final String ext = (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) ? 'jpg' : 'png';
+    final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
+    String ext = isJpeg ? 'jpg' : 'png';
     final messenger = ScaffoldMessenger.of(context); // async gap 전에 캡처
+
+    // 자동 저장과 동일하게 WebP 설정을 반영 (실패 시 원본 유지)
+    if (saveAsWebp && !isJpeg) {
+      final converted = await _convertToWebpWithMetadata(bytes);
+      if (converted != null) {
+        bytes = converted;
+        ext = 'webp';
+      }
+    }
 
     // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
     if (safRootUri != null) {
@@ -6407,14 +6970,20 @@ class AppState extends ChangeNotifier {
     int steps = int.tryParse(stepsController.text) ?? 28;
     bool isOpus = subscriptionTier >= 3;
 
+    // 모델이 지원하지 않으면 vibe/precise는 전송되지 않으므로 비용 계산에서도 제외
+    final capsForCost = modelCapsFor(selectedModel);
+
     // 활성 Precise Reference는 항상 Anlas 소모
-    bool hasPrecise = preciseRefs.any((r) => (r['enabled'] as bool?) ?? true);
+    bool hasPrecise =
+        capsForCost.supportsPrecise && preciseRefs.any((r) => (r['enabled'] as bool?) ?? true);
     if (hasPrecise) {
       return true;
     }
 
     // Vibe Transfer: 활성화된 것만, 인코딩 안 된 것이 있거나 4개 초과면 Anlas 소모
-    final activeVibes = vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList();
+    final activeVibes = capsForCost.supportsVibe
+        ? vibeTransfers.where((v) => (v['enabled'] as bool?) ?? true).toList()
+        : <Map<String, dynamic>>[];
     if (activeVibes.isNotEmpty) {
       bool hasUnencodedVibe = activeVibes.any((v) => v['_encoded'] == null);
       bool tooManyVibes = activeVibes.length > 4;
