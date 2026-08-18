@@ -1,11 +1,11 @@
 import 'dart:math';
-import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:provider/provider.dart';
 import 'package:image/image.dart' as img;
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
+import 'prompt_edit_dialog.dart';
 
 class I2iTab extends StatefulWidget {
   const I2iTab({super.key});
@@ -272,6 +272,28 @@ class _I2iTabState extends State<I2iTab>
     ];
   }
 
+  // 최근 결과를 바로 폴더에 저장 (릴에서 꾹 누르지 않아도 되게)
+  // 모드 도구 줄의 마지막에 배치해 두 줄이 4개씩 나란히 오도록 한다.
+  Widget _saveResultButton() {
+    return _buildToolIcon(
+      'save_result',
+      Icons.save_alt,
+      "최근 결과 저장",
+      selectedOverride: false,
+      onTapOverride: () {
+        final st = _appStateRef;
+        if (st == null || st.i2iResults.isEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(duration: Duration(milliseconds: 2000), content: Text("저장할 결과가 없습니다.")),
+          );
+          return;
+        }
+        // 릴의 마지막 항목이 가장 최근 결과
+        st.saveI2iToFolder(st.i2iResults.length - 1, context);
+      },
+    );
+  }
+
   // 모드 전용 도구 (강도/노이즈/픽셀/미리보기/직전이미지/마스킹표시 등)
   List<Widget> _modeToolWidgets(AppState state) {
     return [
@@ -399,6 +421,9 @@ class _I2iTabState extends State<I2iTab>
           ),
         ),
       ],
+      // 모드 도구 줄 마지막에 저장 버튼 (두 줄이 4개씩 맞춰지도록)
+      const SizedBox(width: 6),
+      _saveResultButton(),
     ];
   }
 
@@ -1472,263 +1497,6 @@ class _I2iTabState extends State<I2iTab>
     );
   }
 
-  void _showPromptEditDialog(
-    BuildContext context,
-    AppState state,
-    String title,
-    IconData icon,
-    Color color,
-    TextEditingController controller,
-  ) {
-    FocusNode focusNode = FocusNode();
-    final String initialText = controller.text;
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        List<String> suggestions = [];
-
-        return StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
-            focusNode.addListener(() {
-              if (!focusNode.hasFocus) {
-                Future.delayed(const Duration(milliseconds: 150), () {
-                  if (ctx.mounted) {
-                    setModalState(() {
-                      suggestions.clear();
-                    });
-                  }
-                });
-              }
-            });
-
-            void onTextChanged() {
-              String text = controller.text;
-              int cursor = controller.selection.baseOffset;
-              if (cursor < 0) {
-                cursor = text.length;
-              }
-
-              String beforeCursor = text.substring(0, cursor);
-
-              int lastComma = beforeCursor.lastIndexOf(',');
-              int lastColon = beforeCursor.lastIndexOf(':');
-              int lastNewline = beforeCursor.lastIndexOf('\n');
-              int lastParen = max(
-                beforeCursor.lastIndexOf(')'),
-                max(
-                  beforeCursor.lastIndexOf('('),
-                  max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
-                ),
-              );
-              int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-              String currentWord = lastDelimiter == -1
-                  ? beforeCursor
-                  : beforeCursor.substring(lastDelimiter + 1);
-
-              currentWord = currentWord.trimLeft();
-
-              if (currentWord.isEmpty) {
-                setModalState(() {
-                  suggestions = [];
-                });
-                return;
-              }
-
-              if (currentWord.startsWith('__')) {
-                String searchWord = currentWord.replaceAll('__', '').toLowerCase();
-                List<String> matches = state.wildcards
-                    .where((w) => w.name.toLowerCase().startsWith(searchWord))
-                    .map((w) => "__${w.name}__")
-                    .take(15)
-                    .toList();
-
-                setModalState(() {
-                  suggestions = matches;
-                });
-                return;
-              }
-
-              List<String> matches = smartMatchTags(state.searchTags, currentWord);
-
-              setModalState(() {
-                suggestions = matches;
-              });
-            }
-
-            void insertTag(String rawTag) {
-              PromptUtils.applyTagToController(controller, rawTag);
-
-              setModalState(() {
-                suggestions.clear();
-              });
-              state.saveAllSettings();
-              state.refreshUI();
-            }
-
-            return Dialog(
-              insetPadding: PromptUtils.promptEditorDialogInsets,
-              backgroundColor: const Color(0xFF1E1E1E),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(icon, color: color, size: 22),
-                        const SizedBox(width: 6),
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    Container(
-                      height: 250,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: color.withValues(alpha: 0.5)),
-                        borderRadius: BorderRadius.circular(12),
-                        color: const Color(0xFF121212),
-                      ),
-                      child: TextField(
-                        controller: controller,
-                        focusNode: focusNode,
-                        onChanged: (_) {
-                          onTextChanged();
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
-                        maxLines: null,
-                        expands: true,
-                        style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.all(16),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: suggestions.isNotEmpty ? 40 : 0,
-                      child: suggestions.isNotEmpty
-                          ? ListView.builder(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: suggestions.length,
-                              itemBuilder: (context, index) {
-                                final raw = suggestions[index];
-                                final isContains = raw.startsWith(kContainsMarker);
-                                final display = PromptUtils.displayTag(raw);
-                                return Padding(
-                                  padding: const EdgeInsets.only(right: 8.0),
-                                  child: ActionChip(
-                                    label: Text(
-                                      display,
-                                      style: TextStyle(
-                                        color: state.isE621Tag(raw)
-                                            ? const Color(0xFF3B9EFF)
-                                            : (isContains ? Colors.white54 : Colors.white),
-                                        fontWeight: isContains
-                                            ? FontWeight.normal
-                                            : FontWeight.bold,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    backgroundColor: color.withValues(
-                                      alpha: isContains ? 0.08 : 0.2,
-                                    ),
-                                    side: BorderSide(
-                                      color: color.withValues(alpha: isContains ? 0.3 : 1.0),
-                                      width: isContains ? 0.5 : 1.5,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    onPressed: () => insertTag(raw),
-                                  ),
-                                );
-                              },
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        OutlinedButton(
-                          onPressed: () {
-                            controller.clear();
-                            setModalState(() {
-                              suggestions.clear();
-                            });
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: color),
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: Icon(Icons.delete_sweep, color: color, size: 20),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton(
-                          onPressed: () {
-                            controller.text = initialText;
-                            setModalState(() {
-                              suggestions.clear();
-                            });
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: color),
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: Icon(Icons.restore, color: color, size: 20),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: color,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: const Text(
-                            "닫기",
-                            style: TextStyle(
-                              color: Colors.black,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    ).then((_) => focusNode.dispose());
-  }
-
   Widget _buildPromptCard(
     BuildContext context,
     AppState state, {
@@ -1792,7 +1560,7 @@ class _I2iTabState extends State<I2iTab>
                   // 접혀 있어도 바로 편집할 수 있게 연필은 항상 표시
                   GestureDetector(
                     onTap: () =>
-                        _showPromptEditDialog(context, state, title, icon, color, controller),
+                        showPromptEditDialog(context, state, title, icon, color, controller),
                     behavior: HitTestBehavior.opaque,
                     child: Padding(
                       padding: const EdgeInsets.only(left: 8),
@@ -1806,7 +1574,7 @@ class _I2iTabState extends State<I2iTab>
           // 본문(미리보기): 접히면 감춤. 탭하면 편집 다이얼로그
           if (!isCollapsed)
             GestureDetector(
-              onTap: () => _showPromptEditDialog(context, state, title, icon, color, controller),
+              onTap: () => showPromptEditDialog(context, state, title, icon, color, controller),
               behavior: HitTestBehavior.opaque,
               child: Padding(
                 padding: const EdgeInsets.all(16.0),

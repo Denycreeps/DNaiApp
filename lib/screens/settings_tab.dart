@@ -772,6 +772,17 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
             },
             radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
           ),
+          // 캐릭터 탭 재탭 토글
+          _toggleTile(
+            icon: Icons.touch_app,
+            title: "캐릭터 재선택으로 ON/OFF",
+            value: state.charRetapToggle,
+            onChanged: (val) {
+              state.charRetapToggle = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
         ],
       ),
 
@@ -846,17 +857,19 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
               },
             ),
           ],
-          // 10. i2i탭 UI 배치 변경 (ON: 모드 가로 1줄 + 실행 버튼 우하단)
-          _toggleTile(
-            icon: Icons.view_quilt,
-            title: "i2i탭 다른 UI로 변경",
-            value: state.i2iAltLayout,
-            onChanged: (val) {
-              state.i2iAltLayout = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
+          // ⚠️ [1차 UI 비활성] i2i탭은 2차 배치로 고정되어 토글을 숨겼다.
+          //  1차 UI를 되살리려면 아래 주석을 해제하고
+          //  AppState의 i2iAltLayout 강제 true(로드/복원부)를 풀면 된다.
+          // _toggleTile(
+          //   icon: Icons.view_quilt,
+          //   title: "i2i탭 다른 UI로 변경",
+          //   value: state.i2iAltLayout,
+          //   onChanged: (val) {
+          //     state.i2iAltLayout = val;
+          //     state.saveAllSettings();
+          //     state.refreshUI();
+          //   },
+          // ),
         ],
       ),
 
@@ -1172,6 +1185,18 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
 
   List<Widget> _storageSection(BuildContext context, AppState state) {
     return [
+      // 저장 폴더 방식
+      _toggleTile(
+        icon: Icons.folder_outlined,
+        title: "날짜별 폴더에 저장",
+        value: state.saveFolderByDateOnly,
+        onChanged: (val) {
+          state.saveFolderByDateOnly = val;
+          state.saveAllSettings();
+          state.refreshUI();
+        },
+      ),
+      const SizedBox(height: 16),
       // 이미지 저장 형식 (일반 탭에서 이동 — 저장 관련이므로 여기가 맞다)
       _toggleTile(
         icon: Icons.image_outlined,

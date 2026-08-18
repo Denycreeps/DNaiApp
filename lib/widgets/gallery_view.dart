@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
+import 'package:provider/provider.dart';
+import 'detail_settings_modal.dart';
 
 // 갤러리 뷰: 폴더를 탐색하고 이미지를 실제 갤러리 앱처럼 보여준다.
 // - 폴더 우선 표시 (상단), 그 아래 이미지
@@ -1461,6 +1463,15 @@ class GalleryViewState extends State<GalleryView> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.download_outlined, color: Color(0xFF8B5CF6)),
+              title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                closeViewer?.call(); // 뷰어에서 왔으면 닫고 프롬프트 탭으로
+                _safLoadPrompt(item);
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.info_outline, color: Color(0xFFFFC107)),
               title: const Text("EXIF 확인", style: TextStyle(color: Colors.white)),
               onTap: () {
@@ -1554,6 +1565,25 @@ class GalleryViewState extends State<GalleryView> {
       allowPrefixSuffix: false,
       allowSettings: false,
     );
+  }
+
+  // 프롬프트 불러오기 (SAF 경로) — 히스토리 꾹 메뉴와 동일한 다이얼로그
+  Future<void> _safLoadPrompt(({String uri, String name}) item) async {
+    final bytes = await widget.state.readSafImage(item.uri);
+    if (bytes == null || !mounted) {
+      return;
+    }
+    final meta = extractNovelAIMetadata(bytes);
+    if (meta == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          duration: Duration(milliseconds: 2400),
+          content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
+        ),
+      );
+      return;
+    }
+    showLoadPromptDialog(context, widget.state, meta);
   }
 
   Future<void> _safShowExif(({String uri, String name}) item) async {
@@ -2121,6 +2151,14 @@ class GalleryViewState extends State<GalleryView> {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.download_outlined, color: Color(0xFF8B5CF6)),
+              title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _loadPromptFrom(img);
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.info_outline, color: Color(0xFFFFC107)),
               title: const Text("EXIF 확인", style: TextStyle(color: Colors.white)),
               onTap: () {
@@ -2220,6 +2258,29 @@ class GalleryViewState extends State<GalleryView> {
   }
 
   // EXIF(메타데이터) 확인 다이얼로그 (히스토리에 추가하지 않음)
+  // 프롬프트 불러오기 — 히스토리 꾹 메뉴와 동일한 다이얼로그
+  Future<void> _loadPromptFrom(File img) async {
+    try {
+      final bytes = await img.readAsBytes();
+      if (!mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      if (meta == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(milliseconds: 2400),
+            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
+          ),
+        );
+        return;
+      }
+      showLoadPromptDialog(context, context.read<AppState>(), meta);
+    } catch (e) {
+      debugPrint("프롬프트 불러오기 실패: $e");
+    }
+  }
+
   Future<void> _showExif(File img) async {
     try {
       final bytes = await img.readAsBytes();

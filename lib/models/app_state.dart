@@ -1779,6 +1779,13 @@ class AppState extends ChangeNotifier {
   bool removeClothes = false;
   // 의상 상태/동작 태그 제거 (unworn, torn, grab 등)
   bool removeClothingEvents = false;
+
+  // 캐릭터 탭에서 선택된 캐릭터를 한 번 더 눌러 ON/OFF 하는 기능
+  // (자주 탭하는 사람은 오조작이 잦다는 의견이 있어 끌 수 있게 함)
+  bool charRetapToggle = true;
+
+  // 저장 폴더를 '날짜'로만 만든다 (기본 OFF = 실행할 때마다 날짜_시간 폴더)
+  bool saveFolderByDateOnly = false;
   bool removeColors = false;
   bool isAutoSave = true;
   // 이미지를 WebP(무손실)로 저장 — 용량 약 26% 절감, 메타데이터는 EXIF로 보존
@@ -1795,7 +1802,13 @@ class AppState extends ChangeNotifier {
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
   // i2i탭 UI 배치 변경: ON이면 모드 칩 가로 1줄 + 실행 버튼 우하단 배치
-  bool i2iAltLayout = false;
+  // ⚠️ [1차 UI 비활성] i2i 탭은 2차 배치(대체 UI)로 고정.
+  //  - 이 값은 항상 true로 유지된다(설정 토글 제거 + 로드 시 강제).
+  //    따라서 i2i_tab.dart의 `if (!state.i2iAltLayout)` 분기는 실행되지 않는다.
+  //  - 1차 UI 코드는 i2i_tab.dart에 그대로 남아 있다(삭제 시 참고: 갈리는 곳 2군데,
+  //    `_classicToolbarChildren`와 모드칩 2×2 배치).
+  //  - 되살리려면: 아래 로드부의 강제 true를 풀고 settings_tab의 토글 주석을 해제.
+  bool i2iAltLayout = true;
   // 프롬프트 탭 2번째 UI (합본 미리보기 + 기능 묶음). 기본 OFF — 기존 UI 유지
   // 프롬프트 탭을 개편된 새 레이아웃으로 표시 (기본 OFF = 기존 사용자에게 익숙한 예전 UI)
   bool promptNewLayout = false;
@@ -2011,6 +2024,18 @@ class AppState extends ChangeNotifier {
   int sessionSaveCount = 0;
   int sessionGenerateCount = 0;
   String? sessionFolderName;
+
+  // 저장 폴더 이름을 결정한다.
+  //  - 기본: 앱 실행 세션마다 'yyyyMMdd_HHmmss' (껐다 켤 때마다 새 폴더)
+  //  - saveFolderByDateOnly: 'yyyyMMdd' 로 하루에 한 폴더만 사용
+  //    (자정을 넘기면 자동으로 다음 날짜 폴더가 만들어진다)
+  String _resolveSessionFolder() {
+    if (saveFolderByDateOnly) {
+      return DateFormat('yyyyMMdd').format(DateTime.now());
+    }
+    return sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+  }
+
   // 갤러리 모드 상태
   String? galleryCurrentPath; // 현재 보고 있는 폴더 (마지막 본 폴더 기억)
   int galleryColumns = 3; // 갤러리 가로 표시 개수 (기본 3)
@@ -2078,7 +2103,7 @@ class AppState extends ChangeNotifier {
     try {
       // 확장자와 mime이 어긋나면 안드로이드가 확장자를 덧붙인다(예: name.webp.png)
       final mime = ext == 'jpg' ? 'image/jpeg' : (ext == 'webp' ? 'image/webp' : 'image/png');
-      final session = sessionFolderName ?? DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final session = _resolveSessionFolder();
       // 루트 폴더명이 이미 'DNaiApp'(대소문자 무시)이면 DNaiApp 중첩 생성 방지
       final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
       final pathParts = rootIsDnai ? [session] : ['DNaiApp', session];
@@ -2848,6 +2873,8 @@ class AppState extends ChangeNotifier {
     removeCharacteristics = prefs.getBool('remove_char_traits') ?? false;
     removeClothes = prefs.getBool('remove_clothes') ?? false;
     removeClothingEvents = prefs.getBool('remove_clothing_events') ?? false;
+    charRetapToggle = prefs.getBool('charRetapToggle') ?? true;
+    saveFolderByDateOnly = prefs.getBool('saveFolderByDateOnly') ?? false;
     removeColors = prefs.getBool('remove_colors') ?? false;
     customRemoveController.text = prefs.getString('custom_remove') ?? "";
     isAutoSave = prefs.getBool('auto_save') ?? true;
@@ -2861,7 +2888,7 @@ class AppState extends ChangeNotifier {
     img2imgNoise = prefs.getDouble('img2imgNoise') ?? 0.1;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
-    i2iAltLayout = prefs.getBool('i2iAltLayout') ?? false;
+    i2iAltLayout = true; // [1차 UI 비활성] 저장값과 무관하게 항상 2차 배치
     promptAltLayout = prefs.getBool('promptAltLayout') ?? false;
     promptNewLayout = prefs.getBool('promptNewLayout') ?? false;
     gelbooruSearchPages = (prefs.getInt('gelbooruSearchPages') ?? 40).clamp(40, 120);
@@ -2936,6 +2963,10 @@ class AppState extends ChangeNotifier {
       selectedModel = NaiModels.v45Full;
     }
     selectedSampler = prefs.getString('sampler') ?? "k_euler_ancestral";
+    // ddim은 V4 계열에서 동작하지 않아 제거됨 — 예전 설정이 남아 있으면 기본값으로
+    if (selectedSampler == 'ddim') {
+      selectedSampler = "k_euler_ancestral";
+    }
     selectedScheduler = prefs.getString('scheduler') ?? "karras";
     selectedResolution = prefs.getString('resolution') ?? "832 x 1216";
     resolutionScale = prefs.getDouble('resolutionScale') ?? 1.0;
@@ -3087,6 +3118,8 @@ class AppState extends ChangeNotifier {
       'remove_char_traits': removeCharacteristics,
       'remove_clothes': removeClothes,
       'remove_clothing_events': removeClothingEvents,
+      'charRetapToggle': charRetapToggle,
+      'saveFolderByDateOnly': saveFolderByDateOnly,
       'remove_colors': removeColors,
       'auto_save': isAutoSave,
       'saveAsWebp': saveAsWebp,
@@ -3237,6 +3270,8 @@ class AppState extends ChangeNotifier {
     removeCharacteristics = data['remove_char_traits'] ?? false;
     removeClothes = data['remove_clothes'] ?? false;
     removeClothingEvents = data['remove_clothing_events'] ?? false;
+    charRetapToggle = data['charRetapToggle'] ?? true;
+    saveFolderByDateOnly = data['saveFolderByDateOnly'] ?? false;
     removeColors = data['remove_colors'] ?? false;
     isAutoSave = data['auto_save'] ?? true;
     saveAsWebp = data['saveAsWebp'] ?? false;
@@ -3249,7 +3284,7 @@ class AppState extends ChangeNotifier {
     img2imgNoise = (data['img2imgNoise'] ?? 0.1).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
-    i2iAltLayout = data['i2iAltLayout'] ?? false;
+    i2iAltLayout = true; // [1차 UI 비활성] 백업을 불러와도 2차 배치 유지
     promptAltLayout = data['promptAltLayout'] ?? false;
     promptNewLayout = data['promptNewLayout'] ?? false;
     gelbooruSearchPages = ((data['gelbooruSearchPages'] ?? 40) as int).clamp(40, 120);
@@ -3457,6 +3492,8 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('remove_char_traits', removeCharacteristics);
       await prefs.setBool('remove_clothes', removeClothes);
       await prefs.setBool('remove_clothing_events', removeClothingEvents);
+      await prefs.setBool('charRetapToggle', charRetapToggle);
+      await prefs.setBool('saveFolderByDateOnly', saveFolderByDateOnly);
       await prefs.setBool('remove_colors', removeColors);
       await prefs.setString('custom_remove', customRemoveController.text);
       await prefs.setBool('auto_save', isAutoSave);
@@ -6779,7 +6816,7 @@ class AppState extends ChangeNotifier {
 
   Future<String?> autoSaveImage(BuildContext? context, Uint8List bytes) async {
     sessionSaveCount++;
-    sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+    final sessionFolder = _resolveSessionFolder();
 
     String fileName = _getFormattedFileName("");
     final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
@@ -6807,7 +6844,7 @@ class AppState extends ChangeNotifier {
     try {
       final appDir = await getExternalStorageDirectory();
       if (appDir != null) {
-        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolderName');
+        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolder');
         if (!await directory.exists()) {
           await directory.create(recursive: true);
         }
@@ -6835,7 +6872,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> manualSaveImage(BuildContext context, Uint8List bytes) async {
     sessionSaveCount++;
-    sessionFolderName ??= DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+    final sessionFolder = _resolveSessionFolder();
 
     String fileName = _getFormattedFileName("Manual");
     final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
@@ -6865,7 +6902,7 @@ class AppState extends ChangeNotifier {
     try {
       final appDir = await getExternalStorageDirectory();
       if (appDir != null) {
-        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolderName');
+        final directory = Directory('${appDir.path}/DNaiApp/$sessionFolder');
         if (!await directory.exists()) {
           await directory.create(recursive: true);
         }

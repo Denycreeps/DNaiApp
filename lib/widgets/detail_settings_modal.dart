@@ -18,7 +18,7 @@ const List<String> _samplers = [
   "k_dpmpp_2m_sde",
   "k_dpmpp_2m",
   "k_dpmpp_sde",
-  "ddim",
+  // "ddim" 제거: V4 계열에서 정상 동작하지 않는다(API로 보내면 노이즈 이미지/에러).
 ];
 
 // [추가] 샘플러 표시명 매핑 (NovelAI 웹사이트와 동일)
@@ -29,7 +29,6 @@ const Map<String, String> _samplerDisplayNames = {
   "k_dpmpp_2m_sde": "DPM++ 2M SDE",
   "k_dpmpp_2m": "DPM++ 2M",
   "k_dpmpp_sde": "DPM++ SDE",
-  "ddim": "DDIM",
 };
 const List<String> _schedulers = ["native", "karras", "exponential", "polyexponential"];
 // 해상도 목록은 model_caps.kNaiResolutions 한 곳에서만 관리 (중복 하드코딩 제거)
@@ -499,7 +498,10 @@ void showDetailSettingsModal(BuildContext context) {
                             buildInputContainer(
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
-                                  value: state.selectedSampler,
+                                  // 예전에 저장된 값이 목록에 없으면(예: 제거된 ddim) 기본값으로 폴백
+                                  value: _samplers.contains(state.selectedSampler)
+                                      ? state.selectedSampler
+                                      : _samplers.first,
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: const Color(0xFF2A2A2D),
@@ -811,7 +813,7 @@ void showSaveImageModal(
                   );
                   return;
                 }
-                _showLoadPromptDialog(context, state, meta);
+                showLoadPromptDialog(context, state, meta);
               },
             ),
 
@@ -823,7 +825,7 @@ void showSaveImageModal(
   );
 }
 
-void _showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta) {
+void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta) {
   bool loadPositive = true;
   bool loadNegative = true;
   bool loadCharacters = true;
@@ -1005,7 +1007,8 @@ void _applyMetadata(
     String resString = "${meta.width} x ${meta.height}";
     if (_defaultResolutions.contains(resString) || state.customResolutions.contains(resString)) {
       state.selectedResolution = resString;
-      state.resolutionMode = "수동";
+      // 해상도 '값'만 넣고 모드(수동/랜덤/자동)는 사용자가 고른 것을 유지한다.
+      // 예전에는 여기서 무조건 "수동"으로 바꿔버려 랜덤/자동 설정이 풀렸다.
     }
 
     var skipCfg = meta.extraParams['skip_cfg_above_sigma'];

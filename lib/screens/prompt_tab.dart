@@ -15,6 +15,7 @@ import 'package:archive/archive.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
+import 'prompt_edit_dialog.dart';
 
 // ============================================================================
 // 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
@@ -3169,7 +3170,7 @@ class _PromptTabState extends State<PromptTab> {
     required String title,
   }) {
     return GestureDetector(
-      onTap: () => _showPromptEditDialogShared(context, state, title, icon, color, controller),
+      onTap: () => showPromptEditDialog(context, state, title, icon, color, controller),
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFF1E1E1E),
@@ -3692,7 +3693,7 @@ class _PromptTabState extends State<PromptTab> {
             height: MediaQuery.of(context).size.height * 0.28,
             child: GestureDetector(
               // 탭하면 긍정 프롬프트를 바로 편집 (가장 자주 고치는 곳)
-              onTap: () => _showPromptEditDialogShared(
+              onTap: () => showPromptEditDialog(
                 context,
                 state,
                 "긍정적 프롬프트",
@@ -4715,17 +4716,21 @@ class _PromptTabState extends State<PromptTab> {
         children: [
           Row(
             children: [
+              // 설정 '캐릭터 재선택으로 ON/OFF'를 끄면 여기서도 토글되지 않는다
               IconButton(
                 icon: Icon(
                   isOn ? Icons.visibility : Icons.visibility_off,
+                  // 색은 항상 상태를 나타낸다 (설정과 무관)
                   color: isOn ? Colors.deepPurpleAccent : Colors.grey,
                   size: 20,
                 ),
-                onPressed: () {
-                  state.characters[index].isActive = !isOn;
-                  state.saveAllSettings();
-                  state.refreshUI();
-                },
+                onPressed: state.charRetapToggle
+                    ? () {
+                        state.characters[index].isActive = !isOn;
+                        state.saveAllSettings();
+                        state.refreshUI();
+                      }
+                    : null,
               ),
               Expanded(
                 child: Text(
@@ -4796,13 +4801,15 @@ class _PromptTabState extends State<PromptTab> {
             }
           }
         });
-        _showPromptEditDialogShared(
+        showPromptEditDialog(
           ctx,
           state,
           "$label 프롬프트",
           positive ? Icons.add_circle_outline : Icons.remove_circle_outline,
           color,
           ctrl,
+          // 여기서 만든 임시 컨트롤러이므로 닫힐 때 직접 정리
+          onClosed: ctrl.dispose,
         );
       },
       child: Container(
@@ -6385,278 +6392,6 @@ String _resizePrecise(Uint8List bytes) {
   return base64Encode(jpg);
 }
 
-void _showPromptEditDialogShared(
-  BuildContext context,
-  AppState state,
-  String title,
-  IconData icon,
-  Color color,
-  TextEditingController controller,
-) {
-  FocusNode focusNode = FocusNode();
-  final String initialText = controller.text;
-
-  showDialog(
-    context: context,
-    builder: (ctx) {
-      List<String> suggestions = [];
-
-      return StatefulBuilder(
-        builder: (BuildContext context, StateSetter setModalState) {
-          focusNode.addListener(() {
-            if (!focusNode.hasFocus) {
-              Future.delayed(const Duration(milliseconds: 150), () {
-                if (ctx.mounted) {
-                  setModalState(() {
-                    suggestions.clear();
-                  });
-                }
-              });
-            }
-          });
-
-          Timer? tagDebounce;
-
-          void onTextChanged() {
-            String text = controller.text;
-            int cursor = controller.selection.baseOffset;
-            if (cursor < 0) {
-              cursor = text.length;
-            }
-
-            String beforeCursor = text.substring(0, cursor);
-
-            int lastComma = beforeCursor.lastIndexOf(',');
-            int lastColon = beforeCursor.lastIndexOf(':');
-            int lastNewline = beforeCursor.lastIndexOf('\n');
-            // '(' ')'는 구분자에서 제외 — 태그 이름 자체에 괄호가 들어가기 때문
-            // (예: "zero (test)"). NovelAI 강조 문법은 {}/[]라 영향 없음.
-            int lastParen = max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|'));
-            int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-            String currentWord = lastDelimiter == -1
-                ? beforeCursor
-                : beforeCursor.substring(lastDelimiter + 1);
-
-            currentWord = currentWord.trimLeft();
-
-            if (currentWord.isEmpty) {
-              setModalState(() {
-                suggestions = [];
-              });
-              return;
-            }
-
-            if (currentWord.startsWith('__')) {
-              String searchWord = currentWord.replaceAll('__', '').toLowerCase();
-              List<String> matches = state.wildcards
-                  .where((w) => w.name.toLowerCase().startsWith(searchWord))
-                  .map((w) => "__${w.name}__")
-                  .take(15)
-                  .toList();
-
-              setModalState(() {
-                suggestions = matches;
-              });
-              return;
-            }
-
-            // 150ms 디바운스 (빠른 응답 + 부하 방지)
-            tagDebounce?.cancel();
-            final capturedWord = currentWord; // 현재 시점 캡처
-            tagDebounce = Timer(const Duration(milliseconds: 100), () {
-              // 디바운스 후 입력이 바뀌었으면 무시
-              final nowText = controller.text;
-              final nowCursor = controller.selection.baseOffset;
-              if (nowCursor < 0 || nowText != controller.text) {
-                return;
-              }
-              final nowBefore = nowText.substring(0, nowCursor.clamp(0, nowText.length));
-              final nowLastDel = max(
-                nowBefore.lastIndexOf(','),
-                max(
-                  nowBefore.lastIndexOf(':'),
-                  max(
-                    nowBefore.lastIndexOf('\n'),
-                    max(nowBefore.lastIndexOf('{'), nowBefore.lastIndexOf('|')),
-                  ),
-                ),
-              );
-              final nowWord = (nowLastDel == -1 ? nowBefore : nowBefore.substring(nowLastDel + 1))
-                  .trimLeft();
-              if (nowWord != capturedWord || nowWord.isEmpty) {
-                setModalState(() => suggestions = []);
-                return;
-              }
-              List<String> matches = smartMatchTags(state.searchTags, currentWord);
-              setModalState(() {
-                suggestions = matches;
-              });
-            });
-          }
-
-          void insertTag(String tag) {
-            PromptUtils.applyTagToController(controller, tag);
-
-            setModalState(() {
-              suggestions.clear();
-            });
-            state.saveAllSettings();
-            state.refreshUI();
-          }
-
-          return Dialog(
-            insetPadding: PromptUtils.promptEditorDialogInsets,
-            backgroundColor: const Color(0xFF1E1E1E),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Row(
-                    children: [
-                      Icon(icon, color: color, size: 22),
-                      const SizedBox(width: 8),
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-
-                  Container(
-                    height: 250,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: color.withValues(alpha: 0.5)),
-                      borderRadius: BorderRadius.circular(12),
-                      color: const Color(0xFF121212),
-                    ),
-                    child: TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      onChanged: (_) {
-                        onTextChanged();
-                        state.saveAllSettings();
-                        state.refreshUI();
-                      },
-                      maxLines: null,
-                      expands: true,
-                      style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
-                      decoration: const InputDecoration(
-                        border: InputBorder.none,
-                        contentPadding: EdgeInsets.all(16),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    height: suggestions.isNotEmpty ? 40 : 0,
-                    child: suggestions.isNotEmpty
-                        ? ListView.builder(
-                            scrollDirection: Axis.horizontal,
-                            itemCount: suggestions.length,
-                            itemBuilder: (context, index) {
-                              return Padding(
-                                padding: const EdgeInsets.only(right: 8.0),
-                                child: ActionChip(
-                                  label: Text(
-                                    PromptUtils.displayTag(suggestions[index]),
-                                    style: TextStyle(
-                                      color: state.isE621Tag(suggestions[index])
-                                          ? const Color(0xFF3B9EFF)
-                                          : Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                  backgroundColor: color.withValues(alpha: 0.2),
-                                  side: BorderSide(color: color, width: 1.5),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  onPressed: () => insertTag(suggestions[index]),
-                                ),
-                              );
-                            },
-                          )
-                        : const SizedBox.shrink(),
-                  ),
-
-                  const SizedBox(height: 12),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      OutlinedButton(
-                        onPressed: () {
-                          controller.clear();
-                          setModalState(() {
-                            suggestions.clear();
-                          });
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: color),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        child: Icon(Icons.delete_sweep, color: color, size: 20),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton(
-                        onPressed: () {
-                          controller.text = initialText;
-                          setModalState(() {
-                            suggestions.clear();
-                          });
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: color),
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        child: Icon(Icons.restore, color: color, size: 20),
-                      ),
-                      const SizedBox(width: 8),
-                      ElevatedButton(
-                        onPressed: () => Navigator.pop(ctx),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: color,
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                        child: const Text(
-                          "닫기",
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      );
-    },
-  ).then((_) => focusNode.dispose());
-}
-
 // ============================================================================
 // 섹션 메타정보 (ID → 제목, 아이콘, 색상)
 // ============================================================================
@@ -6783,11 +6518,22 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
       });
       cache[index] = ctrl;
     } else {
-      // 캐릭터 탭 등에서 원본이 바뀌었을 수 있으니 동기화 (포커스 없을 때만)
+      // 캐릭터 탭 등 외부에서 원본이 바뀐 경우에만 동기화한다.
+      // ⚠️ ctrl.text 에 대입하면 커서/선택 범위가 맨 끝으로 초기화된다.
+      //    편집 중에는 리스너가 원본을 실시간 갱신하므로 값이 이미 같고,
+      //    혹시 달라도 선택 범위를 보존해서 드래그 선택이 풀리지 않게 한다.
       final ctrl = cache[index]!;
       final src = positive ? state.characters[index].positive : state.characters[index].negative;
       if (ctrl.text != src) {
-        ctrl.text = src;
+        final sel = ctrl.selection;
+        ctrl.value = ctrl.value.copyWith(
+          text: src,
+          // 선택 범위가 새 텍스트 길이를 넘지 않도록 보정
+          selection: sel.start <= src.length && sel.end <= src.length
+              ? sel
+              : TextSelection.collapsed(offset: src.length),
+          composing: TextRange.empty,
+        );
       }
     }
     return cache[index]!;
@@ -6938,19 +6684,25 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                       ),
                       child: Row(
                         children: [
+                          // 설정 '캐릭터 재선택으로 ON/OFF'를 끄면 여기서도 토글되지 않는다
                           IconButton(
                             icon: Icon(
                               isOn ? Icons.visibility : Icons.visibility_off,
+                              // 색은 항상 상태를 나타낸다 (설정과 무관)
                               color: isOn ? Colors.deepPurpleAccent : Colors.grey,
                               size: 20,
                             ),
-                            tooltip: isOn ? "끄기" : "켜기",
-                            onPressed: () {
-                              state.characters[i].isActive = !isOn;
-                              state.saveAllSettings();
-                              state.refreshUI();
-                              setLocal(() {});
-                            },
+                            tooltip: state.charRetapToggle
+                                ? (isOn ? "끄기" : "켜기")
+                                : "설정에서 'ON/OFF'를 켜면 사용할 수 있어요",
+                            onPressed: state.charRetapToggle
+                                ? () {
+                                    state.characters[i].isActive = !isOn;
+                                    state.saveAllSettings();
+                                    state.refreshUI();
+                                    setLocal(() {});
+                                  }
+                                : null,
                           ),
                           Expanded(
                             child: InkWell(
@@ -7047,7 +6799,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                   text: char.positive,
                   onTap: () {
                     // 프롬프트 탭의 입력 다이얼로그 그대로 재사용 (세세한 경험 동일)
-                    _showPromptEditDialogShared(
+                    showPromptEditDialog(
                       context,
                       state,
                       "긍정 프롬프트",
@@ -7064,7 +6816,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                   icon: Icons.remove_circle_outline,
                   text: char.negative,
                   onTap: () {
-                    _showPromptEditDialogShared(
+                    showPromptEditDialog(
                       context,
                       state,
                       "부정 프롬프트",

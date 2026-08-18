@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
 import '../widgets/gallery_view.dart';
+import 'package:image_picker/image_picker.dart';
 
 // ============================================================================
 // 히스토리 탭 메인 UI
@@ -18,6 +19,11 @@ class HistoryTab extends StatefulWidget {
 
 class _HistoryTabState extends State<HistoryTab> {
   late PageController _pageController;
+
+  // 새 이미지 추가 등으로 특정 페이지로 강제 이동하는 중임을 표시한다.
+  // PageView가 리스트 길이 변화로 스스로 onPageChanged를 발생시켜
+  // 목표 위치를 덮어쓰는 것을 막는다.
+  int? _pendingJumpTarget;
   late ScrollController _thumbnailScrollController;
   late AppState _appState;
 
@@ -735,6 +741,12 @@ class _HistoryTabState extends State<HistoryTab> {
                       controller: _pageController,
                       physics: const NeverScrollableScrollPhysics(),
                       onPageChanged: (idx) {
+                        // 새 이미지 추가로 강제 이동 중일 때는 PageView가 내부적으로
+                        // 발생시키는 onPageChanged가 목표 위치를 덮어쓰지 않게 무시한다.
+                        if (_pendingJumpTarget != null && idx != _pendingJumpTarget) {
+                          return;
+                        }
+                        _pendingJumpTarget = null;
                         setState(() {
                           _currentIndex = idx;
                         });
@@ -987,23 +999,58 @@ class _HistoryTabState extends State<HistoryTab> {
                 fontSize: 16,
               ),
             ),
+            // 불러오기 두 갈래: 히스토리에 추가 / 프롬프트만 가져오기
             Align(
               alignment: Alignment.centerRight,
-              child: OutlinedButton(
-                onPressed: () => state.importImageToHistory(context),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                ),
-                child: const Text(
-                  "이미지 불러오기",
-                  style: TextStyle(
-                    color: Color(0xFF8B5CF6),
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  OutlinedButton(
+                    onPressed: () => _importPromptOnly(context, state),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF00BFA5), width: 1.5),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                      minimumSize: const Size(0, 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        "프롬프트",
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: Color(0xFF00BFA5),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
                   ),
-                ),
+                  const SizedBox(width: 6),
+                  OutlinedButton(
+                    onPressed: () => state.importImageToHistory(context),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                      minimumSize: const Size(0, 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        "히스토리",
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: Color(0xFF8B5CF6),
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1056,6 +1103,35 @@ class _HistoryTabState extends State<HistoryTab> {
   // ============================================================================
   // build
   // ============================================================================
+  // 이미지를 골라 '프롬프트만' 불러온다 (히스토리에 추가하지 않음).
+  // 갤러리 꾹 메뉴의 '프롬프트 불러오기'와 같은 다이얼로그를 띄운다.
+  Future<void> _importPromptOnly(BuildContext context, AppState state) async {
+    try {
+      final picker = ImagePicker();
+      final image = await picker.pickImage(source: ImageSource.gallery);
+      if (image == null) {
+        return;
+      }
+      final bytes = await image.readAsBytes();
+      if (!context.mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      if (meta == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(milliseconds: 2400),
+            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
+          ),
+        );
+        return;
+      }
+      showLoadPromptDialog(context, state, meta);
+    } catch (e) {
+      debugPrint("프롬프트 불러오기 오류: $e");
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
@@ -1199,6 +1275,7 @@ class _HistoryTabState extends State<HistoryTab> {
       if (!isEmpty && state.selectedHistoryIndex >= 0) {
         final target = state.selectedHistoryIndex.clamp(0, images.length - 1);
         _currentIndex = target;
+        _pendingJumpTarget = target;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) {
             return;
@@ -1212,6 +1289,7 @@ class _HistoryTabState extends State<HistoryTab> {
             }
             _scrollToThumbnail(target);
             setState(() => _currentIndex = target);
+            _pendingJumpTarget = null; // 이동 완료 — 이후 스와이프는 정상 처리
           });
         });
       }

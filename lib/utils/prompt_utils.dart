@@ -27,6 +27,22 @@ class PromptUtils {
   // ============================================================================
   // 자동완성 태그 삽입 유틸리티 (모든 탭에서 공유)
   // ============================================================================
+  // 태그명에 포함된 '(' 는 구분자가 아니다.
+  //  예: "artist:test (te" 에서 '(' 를 구분자로 보면 자동완성이 겹쳐 붙는다
+  //      ("test (test (test)"). 앞에 공백이 있는 '(' 는 태그명의 일부로 간주하고 건너뛴다.
+  //  반면 "{a|b" 나 "b(c" 처럼 문법/연결로 쓰인 괄호는 구분자로 인정한다.
+  static int _lastSyntaxOpenParen(String text) {
+    int i = text.lastIndexOf('(');
+    while (i > 0) {
+      if (text[i - 1] == ' ') {
+        i = text.lastIndexOf('(', i - 1);
+      } else {
+        return i;
+      }
+    }
+    return i;
+  }
+
   static String buildCompletedText(String beforeCursor, String tag) {
     // 특별 처리: 선택한 태그가 'artist:' 같은 접두사 자체면
     // 뒤에 작가명을 이어 입력해야 하므로 쉼표/공백/:: 없이 그대로 끝낸다.
@@ -38,7 +54,7 @@ class PromptUtils {
       int lastNewline = beforeCursor.lastIndexOf('\n');
       int lastColon = beforeCursor.lastIndexOf(':');
       int lastOpen = max(
-        beforeCursor.lastIndexOf('('),
+        _lastSyntaxOpenParen(beforeCursor),
         max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
       );
       int cut = max(lastComma, max(lastNewline, max(lastColon, lastOpen)));
@@ -53,9 +69,10 @@ class PromptUtils {
     int lastComma = beforeCursor.lastIndexOf(',');
     int lastColon = beforeCursor.lastIndexOf(':');
     int lastNewline = beforeCursor.lastIndexOf('\n');
+    // 닫는 ')' 도 태그명 끝일 수 있으나, 그 뒤에 새 태그를 쓰는 상황이므로 구분자로 둔다
     int lastCloseParen = beforeCursor.lastIndexOf(')');
     int lastOpenParen = max(
-      beforeCursor.lastIndexOf('('),
+      _lastSyntaxOpenParen(beforeCursor),
       max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|')),
     );
     int lastParen = max(lastCloseParen, lastOpenParen);

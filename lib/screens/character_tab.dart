@@ -1,9 +1,8 @@
-import 'dart:math';
-import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
+import 'prompt_edit_dialog.dart';
 
 class CharacterTab extends StatefulWidget {
   const CharacterTab({super.key});
@@ -15,6 +14,8 @@ class CharacterTab extends StatefulWidget {
 class _CharacterTabState extends State<CharacterTab> {
   bool _isGridActive = false; // 그리드에서 캐릭터 선택됨 (이동 대기)
 
+  // 프롬프트 입력 다이얼로그 — 공용 구현(prompt_edit_dialog.dart)을 사용한다.
+  //  캐릭터 탭은 값+콜백 방식으로 호출하므로, 임시 컨트롤러를 만들어 연결한다.
   void _showPromptEditDialog(
     BuildContext context,
     AppState state,
@@ -23,257 +24,11 @@ class _CharacterTabState extends State<CharacterTab> {
     Color color,
     String currentText,
     ValueChanged<String> onSaved,
-  ) async {
-    TextEditingController tc = TextEditingController(text: currentText);
-    FocusNode focusNode = FocusNode();
-    final String initialText = currentText;
-
-    await showDialog(
-      context: context,
-      builder: (ctx) {
-        // Linter 규칙 준수: 변수명 앞 언더스코어 제거
-        List<String> suggestions = [];
-
-        return StatefulBuilder(
-          builder: (BuildContext context, StateSetter setModalState) {
-            focusNode.addListener(() {
-              if (!focusNode.hasFocus) {
-                Future.delayed(const Duration(milliseconds: 150), () {
-                  if (ctx.mounted) {
-                    setModalState(() => suggestions.clear());
-                  }
-                });
-              }
-            });
-
-            // Linter 규칙 준수: 함수명 앞 언더스코어 제거
-            void onTextChanged() {
-              String text = tc.text;
-              int cursor = tc.selection.baseOffset;
-              if (cursor < 0) {
-                cursor = text.length;
-              }
-
-              String beforeCursor = text.substring(0, cursor);
-
-              int lastComma = beforeCursor.lastIndexOf(',');
-              int lastColon = beforeCursor.lastIndexOf(':');
-              int lastNewline = beforeCursor.lastIndexOf('\n');
-              // '(' ')'는 구분자에서 제외 — 태그 이름 자체에 괄호가 들어가기 때문
-              // (예: "zero (test)"). NovelAI 강조 문법은 {}/[]라 영향 없음.
-              int lastParen = max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|'));
-              int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-              String currentWord = lastDelimiter == -1
-                  ? beforeCursor
-                  : beforeCursor.substring(lastDelimiter + 1);
-
-              currentWord = currentWord.trimLeft();
-
-              if (currentWord.isEmpty) {
-                setModalState(() {
-                  suggestions = [];
-                });
-                return;
-              }
-
-              if (currentWord.startsWith('__')) {
-                String searchWord = currentWord.replaceAll('__', '').toLowerCase();
-                List<String> matches = state.wildcards
-                    .where((w) => w.name.toLowerCase().startsWith(searchWord))
-                    .map((w) => "__${w.name}__")
-                    .take(15)
-                    .toList();
-
-                setModalState(() {
-                  suggestions = matches;
-                });
-                return;
-              }
-
-              List<String> matches = smartMatchTags(state.searchTags, currentWord);
-
-              setModalState(() {
-                suggestions = matches;
-              });
-            }
-
-            // Linter 규칙 준수: 함수명 앞 언더스코어 제거
-            void insertTag(String rawTag) {
-              PromptUtils.applyTagToController(tc, rawTag);
-
-              setModalState(() {
-                suggestions.clear();
-              });
-              onSaved(tc.text);
-            }
-
-            return Dialog(
-              insetPadding: PromptUtils.promptEditorDialogInsets,
-              backgroundColor: const Color(0xFF1E1E1E),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(icon, color: color, size: 22),
-                        const SizedBox(width: 8),
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-
-                    Container(
-                      height: 250,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: color.withValues(alpha: 0.5)),
-                        borderRadius: BorderRadius.circular(12),
-                        color: const Color(0xFF121212),
-                      ),
-                      child: TextField(
-                        controller: tc,
-                        focusNode: focusNode,
-                        onChanged: (val) {
-                          onTextChanged(); // 수정된 함수 호출
-                          onSaved(val);
-                          state.refreshUI();
-                        },
-                        maxLines: null,
-                        expands: true,
-                        style: PromptUtils.promptEditorTextStyle(state.promptEditorFontSize),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          contentPadding: EdgeInsets.all(16),
-                          hintText: "프롬프트를 입력하세요...",
-                          hintStyle: TextStyle(color: Colors.white30),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      height: suggestions.isNotEmpty ? 40 : 0, // 수정된 변수 사용
-                      child: suggestions.isNotEmpty
-                          ? ListView.builder(
-                              scrollDirection: Axis.horizontal,
-                              itemCount: suggestions.length,
-                              itemBuilder: (context, index) {
-                                final raw = suggestions[index];
-                                final isContains = raw.startsWith(kContainsMarker);
-                                final display = PromptUtils.displayTag(raw);
-                                return Padding(
-                                  padding: const EdgeInsets.only(right: 8.0),
-                                  child: ActionChip(
-                                    label: Text(
-                                      display,
-                                      style: TextStyle(
-                                        color: state.isE621Tag(raw)
-                                            ? const Color(0xFF3B9EFF)
-                                            : (isContains ? Colors.white54 : Colors.white),
-                                        fontWeight: isContains
-                                            ? FontWeight.normal
-                                            : FontWeight.bold,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    backgroundColor: color.withValues(
-                                      alpha: isContains ? 0.08 : 0.2,
-                                    ),
-                                    side: BorderSide(
-                                      color: color.withValues(alpha: isContains ? 0.3 : 1.0),
-                                      width: isContains ? 0.5 : 1.5,
-                                    ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    onPressed: () => insertTag(raw),
-                                  ),
-                                );
-                              },
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        OutlinedButton(
-                          onPressed: () {
-                            tc.clear();
-                            setModalState(() {
-                              suggestions.clear();
-                            });
-                            onSaved(tc.text);
-                            state.refreshUI();
-                          },
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: color),
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: Icon(Icons.delete_sweep, color: color, size: 20),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton(
-                          onPressed: () {
-                            tc.text = initialText;
-                            setModalState(() {
-                              suggestions.clear();
-                            });
-                            onSaved(tc.text);
-                            state.refreshUI();
-                          },
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: color),
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: Icon(Icons.restore, color: color, size: 20),
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: color,
-                            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          child: const Text(
-                            "닫기",
-                            style: TextStyle(
-                              color: Colors.black,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    ).then((_) {
-      focusNode.dispose();
-      tc.dispose(); // 다이얼로그 닫힐 때 컨트롤러도 정리 (미세 누수 방지)
-    });
-    state.saveAllSettings();
+  ) {
+    final tc = TextEditingController(text: currentText);
+    // 입력 내용을 실시간으로 콜백에 전달 (공용 다이얼로그는 컨트롤러 기반)
+    tc.addListener(() => onSaved(tc.text));
+    showPromptEditDialog(context, state, title, icon, color, tc);
   }
 
   Widget _buildPromptCard({
@@ -391,8 +146,9 @@ class _CharacterTabState extends State<CharacterTab> {
                       return GestureDetector(
                         onTap: () {
                           setState(() {
-                            if (isSelected) {
+                            if (isSelected && state.charRetapToggle) {
                               // 이미 선택된 상태에서 한 번 더 누르면 ON/OFF
+                              // (설정에서 끌 수 있다 — 오조작 방지)
                               state.characters[index].isActive = !state.characters[index].isActive;
                             } else {
                               state.selectedCharIndex = index;
