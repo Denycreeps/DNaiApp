@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -13,6 +14,26 @@ import 'screens/settings_tab.dart';
 import 'widgets/detail_settings_modal.dart';
 
 void main() {
+  // ── [디버그] 잡히지 않은 오류를 로그로 남긴다 ──
+  //  화면이 튕기거나 흰 화면이 될 때 원인을 확인하기 위한 장치.
+  //  문제가 해결되면 지워도 되지만, 남겨두면 앞으로도 도움이 된다.
+  WidgetsFlutterBinding.ensureInitialized();
+  FlutterError.onError = (details) {
+    debugPrint('════════ Flutter 오류 ════════');
+    debugPrint('${details.exception}');
+    debugPrint('${details.stack}');
+    debugPrint('══════════════════════════════');
+    FlutterError.presentError(details);
+  };
+  // 위젯 트리 밖(비동기 등)에서 난 오류
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('════════ 처리되지 않은 오류 ════════');
+    debugPrint('$error');
+    debugPrint('$stack');
+    debugPrint('════════════════════════════════════');
+    return true; // 앱을 죽이지 않고 계속 진행
+  };
+
   runApp(
     MultiProvider(
       providers: [
@@ -50,7 +71,6 @@ class _NovelAiAppState extends State<NovelAiApp>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   TabController? _tabController;
   late PageController _pageController;
-  final ScrollController _historyScrollController = ScrollController();
   bool _updateDialogVisible = false;
   List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
   DateTime? _lastBackPress; // 두 번 눌러 종료 판정용
@@ -67,7 +87,6 @@ class _NovelAiAppState extends State<NovelAiApp>
     WidgetsBinding.instance.removeObserver(this);
     _tabController?.dispose();
     _pageController.dispose();
-    _historyScrollController.dispose();
     super.dispose();
   }
 
@@ -342,14 +361,9 @@ class _NovelAiAppState extends State<NovelAiApp>
             _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
             ? _visibleTabIndices[_tabController!.index]
             : -1;
-        if (origIdx == 1 && _historyScrollController.hasClients && !state.isHistoryGridView) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _historyScrollController.animateTo(
-              _historyScrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-            );
-          });
+        if (origIdx == 1 && !state.isHistoryGridView) {
+          // 컨트롤러를 직접 만지지 않고 요청만 보낸다 (HistoryTab이 처리)
+          state.requestHistoryScrollToEnd();
         }
         setState(() {});
       });
@@ -488,10 +502,6 @@ class _NovelAiAppState extends State<NovelAiApp>
                   if (_tabController!.index != targetVisibleTab) {
                     _tabController!.animateTo(targetVisibleTab);
                   }
-                  // 설정 탭(origIdx 5)에 진입하면 항상 [일반] 하위탭으로 리셋
-                  if (_visibleTabIndices[targetVisibleTab] == 5) {
-                    state.settingsTabReset?.call();
-                  }
                 },
                 itemBuilder: (context, index) {
                   int visibleIdx = index % tabCount;
@@ -501,24 +511,10 @@ class _NovelAiAppState extends State<NovelAiApp>
                       return _buildTabScrollContent(
                         state,
                         0,
-                        PromptTab(
-                          onScrollToHistoryEnd: () {
-                            if (_historyScrollController.hasClients) {
-                              _historyScrollController.animateTo(
-                                _historyScrollController.position.maxScrollExtent,
-                                duration: const Duration(milliseconds: 300),
-                                curve: Curves.easeOut,
-                              );
-                            }
-                          },
-                        ),
+                        PromptTab(onScrollToHistoryEnd: state.requestHistoryScrollToEnd),
                       );
                     case 1:
-                      return _buildTabScrollContent(
-                        state,
-                        1,
-                        HistoryTab(scrollController: _historyScrollController),
-                      );
+                      return _buildTabScrollContent(state, 1, const HistoryTab());
                     case 2:
                       return _buildTabScrollContent(state, 2, const I2iTab());
                     case 3:

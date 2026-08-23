@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
 import '../models/nai_character.dart';
-import 'package:provider/provider.dart';
 import 'detail_settings_modal.dart';
 
 // 갤러리 뷰: 폴더를 탐색하고 이미지를 실제 갤러리 앱처럼 보여준다.
@@ -17,6 +16,41 @@ import 'detail_settings_modal.dart';
 // - 이미지 뷰어 좌우 스와이프로 이전/다음
 
 // 폴더 1개의 미리보기 정보 (썸네일 + 장수)
+// ══════════════════════════════════════════════════════════════════════
+// 갤러리 이미지 어댑터
+//  갤러리는 두 가지 경로로 이미지를 다룬다.
+//    · SAF  : 안드로이드 문서 URI (state.readSafImage 로 읽음)
+//    · 파일 : 앱이 직접 접근하는 File (readAsBytes 로 읽음)
+//  이 둘의 차이는 "바이트를 어떻게 읽나"와 "표시할 이름" 뿐이라서,
+//  그 부분만 이 클래스로 감싸면 꾹 메뉴와 핸들러를 하나로 쓸 수 있다.
+//  (예전에는 _safXxx / _xxx 로 짝이 나뉘어 한쪽만 고쳐지는 일이 있었다.)
+// ══════════════════════════════════════════════════════════════════════
+class GalleryItem {
+  /// 다이얼로그 제목 등에 쓰는 표시 이름 (파일명)
+  final String name;
+
+  /// 이미지 바이트를 읽어온다. 실패하면 null.
+  final Future<Uint8List?> Function() readBytes;
+
+  /// 삭제 기능 (SAF 경로에만 있음). null이면 메뉴에서 숨긴다.
+  final Future<void> Function()? onDelete;
+
+  /// 다른 폴더로 이동 (SAF 경로에만 있음). null이면 메뉴에서 숨긴다.
+  final VoidCallback? onMove;
+
+  /// 실제 파일 경로 (파일 경로에만 있음).
+  /// 히스토리에 추가할 때 원본 위치를 기록하는 용도이며, SAF는 경로가 없어 null.
+  final String? filePath;
+
+  const GalleryItem({
+    required this.name,
+    required this.readBytes,
+    this.onDelete,
+    this.onMove,
+    this.filePath,
+  });
+}
+
 class _FolderInfo {
   final Directory dir;
   final List<File> previews; // 미리보기용 (최대 4장)
@@ -138,24 +172,75 @@ class GalleryViewState extends State<GalleryView> {
     return false;
   }
 
+  // 자동 새로고침 최소 간격.
+  //  연속 생성 중에는 저장 알림이 계속 오는데, 그때마다 목록을 다시 읽으면
+  //  썸네일이 로딩될 틈이 없다. 최소 이 간격을 두고 한 번씩만 갱신한다.
+  static const Duration _autoRefreshMinGap = Duration(milliseconds: 1500);
+  DateTime? _lastAutoRefreshAt;
+
   void _scheduleSafAutoRefresh() {
     if (_safAutoRefreshScheduled) {
       return; // 같은 프레임의 연속 저장 알림을 하나로 합침
     }
+    // 직전 갱신에서 얼마 지나지 않았으면 잠시 뒤에 한 번만 (몰아치는 저장 흡수)
+    final last = _lastAutoRefreshAt;
+    if (last != null) {
+      final elapsed = DateTime.now().difference(last);
+      if (elapsed < _autoRefreshMinGap) {
+        _safAutoRefreshScheduled = true;
+        Future.delayed(_autoRefreshMinGap - elapsed, () {
+          _safAutoRefreshScheduled = false;
+          if (mounted) {
+            _scheduleSafAutoRefresh();
+          }
+        });
+        return;
+      }
+    }
     _safAutoRefreshScheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _safAutoRefreshScheduled = false;
+      _lastAutoRefreshAt = DateTime.now();
       if (!mounted || _safSelectMode || _loading) {
         return;
       }
       _lastSafRevision = widget.state.gallerySafRevision;
-      // 갱신 전 스크롤 위치 저장 → 갱신 후 복원 (맨 위로 튀는 것 방지)
+      // 갱신 전 스크롤 위치와 개수 저장 → 갱신 후 복원 (맨 위로 튀는 것 방지)
       final double prevOffset = _safGridScroll.hasClients ? _safGridScroll.offset : 0.0;
-      await _reloadSafDir();
-      if (mounted && _safGridScroll.hasClients && prevOffset > 0) {
-        // 목록 길이가 줄었을 수 있으니 최대 범위로 클램프
-        final double target = prevOffset.clamp(0.0, _safGridScroll.position.maxScrollExtent);
-        _safGridScroll.jumpTo(target);
+      final int prevCount = _safImages.length;
+      // 자동 갱신은 '현재 폴더의 이미지 목록'만 다시 읽는다.
+      //  하위 폴더는 생성 중에 바뀌지 않으므로 다시 조회할 이유가 없다.
+      //  (전체 조회는 하위 폴더 수만큼 SAF 호출이 늘어 체감이 크게 느려진다)
+      await _refreshSafImagesOnly();
+      if (mounted && prevOffset > 0) {
+        // ⚠️ setState 직후에는 아직 새 목록이 그려지지 않아 maxScrollExtent가 옛 값이다.
+        //    한 프레임 뒤에 복원해야 늘어난 목록 기준으로 정확히 맞는다.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_safGridScroll.hasClients) {
+            return;
+          }
+          // 최신순 정렬이면 새 이미지가 '맨 앞'에 들어와 보던 항목이 아래로 밀린다.
+          // 늘어난 줄 수만큼 오프셋을 더해 같은 이미지를 계속 보게 한다.
+          double adjusted = prevOffset;
+          final int added = _safImages.length - prevCount;
+          if (added > 0 && widget.state.gallerySortMode == 'name_desc') {
+            final int columns = widget.state.galleryColumns.clamp(1, 8);
+            final int addedRows = (added + columns - 1) ~/ columns;
+            // 타일은 정사각형(childAspectRatio: 1) + 세로 간격 6
+            final double gridWidth = _safGridScroll.position.viewportDimension > 0
+                ? MediaQuery.of(context).size.width -
+                      16 // 좌우 padding 8+8
+                : 0;
+            if (gridWidth > 0) {
+              final double tile = (gridWidth - 6 * (columns - 1)) / columns;
+              adjusted += addedRows * (tile + 6);
+            }
+          }
+          final double target = adjusted.clamp(0.0, _safGridScroll.position.maxScrollExtent);
+          if ((_safGridScroll.offset - target).abs() > 1.0) {
+            _safGridScroll.jumpTo(target);
+          }
+        });
       }
       // 갱신 도중 저장이 더 있었으면 한 번 더 (배치 생성 누락 방지)
       if (mounted && !_safSelectMode && widget.state.gallerySafRevision != _lastSafRevision) {
@@ -342,8 +427,18 @@ class GalleryViewState extends State<GalleryView> {
   }
 
   // 특정 SAF 디렉토리 로드. push=true면 현재 위치를 스택에 쌓고 들어감.
-  Future<void> _loadSafDir(String uri, String name, {bool push = false}) async {
-    setState(() => _loading = true);
+  //  silent: true 면 로딩 스피너를 띄우지 않는다.
+  //    자동 갱신 때 그리드가 사라졌다 나타나면 ScrollController가 분리되어
+  //    스크롤 위치를 완전히 잃어버린다(맨 위로 튐).
+  Future<void> _loadSafDir(
+    String uri,
+    String name, {
+    bool push = false,
+    bool silent = false,
+  }) async {
+    if (!silent) {
+      setState(() => _loading = true);
+    }
     final cur = _safDirUri;
     if (push && cur != null) {
       _safStack.add((uri: cur, name: _safDirName));
@@ -358,7 +453,13 @@ class GalleryViewState extends State<GalleryView> {
         _safFolderPreview[f.uri] = f.previews;
       }
     }
-    _safThumbFutures.clear(); // 디렉토리 바뀌면 타일 future 정리 (캐시는 유지)
+    // ⚠️ 같은 폴더를 다시 읽는 경우(자동 새로고침)에는 진행 중인 썸네일 로딩을
+    //    버리면 안 된다. 버리면 처음부터 다시 읽게 되어, 생성 속도가 로딩보다
+    //    빠를 때 영원히 완료되지 않는다(화면에 아무것도 안 보임).
+    //    폴더가 실제로 바뀔 때만 정리한다.
+    if (_safDirUri != uri) {
+      _safThumbFutures.clear();
+    }
     setState(() {
       _safMode = true;
       _safDirUri = uri;
@@ -392,15 +493,84 @@ class GalleryViewState extends State<GalleryView> {
     await _loadSafDir(parent.uri, parent.name);
   }
 
+  // 자동 갱신용 경량 새로고침: 현재 폴더의 이미지 목록만 교체한다.
+  //  · 하위 폴더/미리보기는 건드리지 않음 → SAF 조회 1회로 끝
+  //  · 썸네일 로딩(_safThumbFutures)도 유지 → 진행 중인 로딩이 끊기지 않음
+  //  · 로딩 스피너를 띄우지 않음 → 그리드가 사라지지 않아 스크롤 위치 보존
+  // 하위 폴더 하나만 다시 읽어 개수·미리보기를 갱신한다 (SAF 조회 1회).
+  //  나머지 폴더의 캐시는 그대로라 썸네일이 다시 로드되지 않는다.
+  Future<void> _refreshOneSafFolder(int index, String folderUri) async {
+    final imgs = await widget.state.listSafImagesOnly(folderUri);
+    if (!mounted || index >= _safFolders.length) {
+      return;
+    }
+    final old = _safFolders[index];
+    if (old.uri != folderUri) {
+      return; // 그 사이 목록이 바뀌었으면 건너뛴다
+    }
+    final previews = imgs.take(4).toList();
+    setState(() {
+      _safFolders[index] = (
+        uri: old.uri,
+        name: old.name,
+        imageCount: imgs.length,
+        previews: previews,
+      );
+      // 이 폴더의 미리보기만 새로 시딩 (다른 폴더 캐시는 유지)
+      _safFolderPreview[folderUri] = previews;
+      _safPreviewFutures.remove(folderUri);
+    });
+  }
+
+  Future<void> _refreshSafImagesOnly() async {
+    final d = _safDirUri;
+    if (d == null) {
+      await _reloadSafDir(keepThumbs: true, silent: true);
+      return;
+    }
+    // 새 이미지가 '지금 보고 있는 폴더'에 저장됐는지 확인한다.
+    final savedDir = widget.state.lastSavedSafDirUri;
+    if (savedDir != null && savedDir != d) {
+      // 다른 폴더에 저장됐다 — 지금 화면에 그 폴더 타일이 있으면 '그것만' 갱신한다.
+      //  전체를 다시 읽으면 나머지 폴더의 미리보기 캐시까지 날아가 썸네일이
+      //  전부 다시 로드된다(상위 폴더에서 볼 때 특히 체감이 크다).
+      final idx = _safFolders.indexWhere((f) => f.uri == savedDir);
+      if (idx >= 0) {
+        await _refreshOneSafFolder(idx, savedDir);
+        return;
+      }
+      // 목록에 없는 폴더다. 현재 폴더 '바로 아래'에 새로 생긴 경우라면
+      // 목록 자체가 달라졌으니 전체를 다시 읽어야 한다.
+      // 전혀 무관한 폴더(형제·다른 가지)라면 화면에 영향이 없으므로 넘어간다.
+      if (_isSameOrDescendant(savedDir, d)) {
+        await _reloadSafDir(keepThumbs: true, silent: true);
+      }
+      return;
+    }
+    final imgs = await widget.state.listSafImagesOnly(d);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _safImages = imgs;
+      _sortSafLists();
+    });
+  }
+
   // 현재 디렉토리 새로고침
-  Future<void> _reloadSafDir() async {
-    // 새로고침은 미리보기도 갱신 (폴더 내용이 바뀌었을 수 있으니 캐시 비움)
+  //  keepThumbs: 진행 중인 썸네일 로딩을 유지할지.
+  //    자동 새로고침(생성 중)에는 true — 매번 버리면 로딩이 끝나지 않는다.
+  //    당겨서 새로고침 등 사용자가 명시적으로 요청하면 false로 전부 다시 읽는다.
+  Future<void> _reloadSafDir({bool keepThumbs = false, bool silent = false}) async {
+    // 폴더 미리보기는 내용이 바뀌었을 수 있으니 갱신
     _safFolderPreview.clear();
     _safPreviewFutures.clear();
-    _safThumbFutures.clear();
+    if (!keepThumbs) {
+      _safThumbFutures.clear();
+    }
     final d = _safDirUri;
     if (d != null) {
-      await _loadSafDir(d, _safDirName);
+      await _loadSafDir(d, _safDirName, silent: silent);
     } else {
       await _loadSafRootDir();
     }
@@ -1133,7 +1303,7 @@ class GalleryViewState extends State<GalleryView> {
         startIndex: index,
         nameOf: (i) => _safImages[i].name,
         pageOf: _safViewerPage,
-        onLongPress: (i, close) => _showSafImageMenu(_safImages[i], close),
+        onLongPress: (i, close) => _showGalleryImageMenu(_safItem(_safImages[i], close), close),
       ),
     );
   }
@@ -1274,14 +1444,21 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // ⓘ: 1장이면 전체 메뉴, 여러장이면 히스토리 추가 + 이동하기
-  void _safShowSelectionMenu() {
-    final refs = _safSelectedRefs();
-    if (refs.isEmpty) {
+  // ⓘ 메뉴 (SAF/파일 공용)
+  //  1장이면 전체 메뉴를 그대로 열고, 여러 장이면 일괄 작업만 보여준다.
+  //  이동하기는 그 기능이 있는 경로(SAF)에서만 노출된다.
+  void _showBatchSelectionMenu({
+    required int count,
+    required GalleryItem Function() singleItem,
+    required VoidCallback onAddAll,
+    VoidCallback? onMoveAll,
+  }) {
+    if (count == 0) {
       return;
     }
-    if (refs.length == 1) {
-      _showSafImageMenu(refs.first, null, true); // fromSelection=true
+    if (count == 1) {
+      // 단일 선택은 일반 메뉴와 동일하게 (fromSelection=true → 삭제 숨김/이동 노출)
+      _showGalleryImageMenu(singleItem(), null, true);
       return;
     }
     showModalBottomSheet(
@@ -1297,34 +1474,53 @@ class GalleryViewState extends State<GalleryView> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Text(
-                "${refs.length}장 선택됨",
+                "$count장 선택됨",
                 style: const TextStyle(color: Colors.white70, fontSize: 13),
               ),
             ),
             const Divider(height: 1, color: Colors.white12),
             ListTile(
               leading: const Icon(Icons.add_photo_alternate_outlined, color: Color(0xFF8B5CF6)),
-              title: Text(
-                "히스토리 목록에 추가 (${refs.length}장)",
-                style: const TextStyle(color: Colors.white),
+              title: Text("히스토리 목록에 추가 ($count장)", style: const TextStyle(color: Colors.white)),
+              onTap: () {
+                Navigator.pop(ctx);
+                onAddAll();
+              },
+            ),
+            if (onMoveAll != null)
+              ListTile(
+                leading: const Icon(Icons.drive_file_move_outline, color: Color(0xFF42A5F5)),
+                title: Text("이동하기 ($count장)", style: const TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  onMoveAll();
+                },
               ),
-              onTap: () {
-                Navigator.pop(ctx);
-                _safBatchAddToHistory(refs);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.drive_file_move_outline, color: Color(0xFF42A5F5)),
-              title: Text("이동하기 (${refs.length}장)", style: const TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _safMoveRefs(refs);
-              },
-            ),
             const SizedBox(height: 8),
           ],
         ),
       ),
+    );
+  }
+
+  // ⓘ (SAF): 선택한 항목들로 공용 메뉴를 연다
+  void _safShowSelectionMenu() {
+    final refs = _safSelectedRefs();
+    _showBatchSelectionMenu(
+      count: refs.length,
+      singleItem: () => _safItem(refs.first),
+      onAddAll: () => _safBatchAddToHistory(refs),
+      onMoveAll: () => _safMoveRefs(refs),
+    );
+  }
+
+  // ⓘ (파일): 파일 경로엔 이동 기능이 없어 onMoveAll을 넘기지 않는다
+  void _showSelectionMenu() {
+    final files = _selectedFiles();
+    _showBatchSelectionMenu(
+      count: files.length,
+      singleItem: () => _fileItem(files.first),
+      onAddAll: () => _batchAddToHistory(files),
     );
   }
 
@@ -1409,11 +1605,12 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // ===== SAF 이미지 꾹 누르기 메뉴 =====
-  // fromSelection: 선택모드 툴바(ⓘ)에서 호출된 경우 true.
-  //   → 선택모드엔 이미 삭제 버튼이 있으므로 메뉴에서 "삭제"는 숨기고, 대신 "이동하기"를 노출.
-  void _showSafImageMenu(
-    ({String uri, String name}) item, [
+  // 이미지 꾹 메뉴 (SAF/파일 공용)
+  //  항목 구성은 같고, 이동/삭제는 그 기능이 있는 경로(SAF)에서만 보인다.
+  //  fromSelection: 선택모드 툴바(ⓘ)에서 호출된 경우 true.
+  //    → 선택모드엔 이미 삭제 버튼이 있으므로 "삭제"는 숨기고 "이동하기"를 노출.
+  void _showGalleryImageMenu(
+    GalleryItem item, [
     VoidCallback? closeViewer,
     bool fromSelection = false,
   ]) {
@@ -1442,7 +1639,7 @@ class GalleryViewState extends State<GalleryView> {
               title: const Text("히스토리 목록에 추가", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
-                _safAddToHistory(item);
+                _addToHistory(item);
               },
             ),
             ListTile(
@@ -1451,7 +1648,7 @@ class GalleryViewState extends State<GalleryView> {
               onTap: () {
                 Navigator.pop(ctx);
                 closeViewer?.call(); // 뷰어에서 왔으면 닫고 탭 이동
-                _safSendToI2i(item);
+                _sendToI2i(item);
               },
             ),
             ListTile(
@@ -1459,7 +1656,7 @@ class GalleryViewState extends State<GalleryView> {
               title: const Text("프리셋에 프롬프트 저장", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
-                _safSaveToPreset(item);
+                _saveToPreset(item);
               },
             ),
             ListTile(
@@ -1468,7 +1665,7 @@ class GalleryViewState extends State<GalleryView> {
               onTap: () {
                 Navigator.pop(ctx);
                 closeViewer?.call(); // 뷰어에서 왔으면 닫고 프롬프트 탭으로
-                _safLoadPrompt(item);
+                _loadPromptFrom(item);
               },
             ),
             ListTile(
@@ -1476,27 +1673,27 @@ class GalleryViewState extends State<GalleryView> {
               title: const Text("EXIF 확인", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
-                _safShowExif(item);
+                _showExif(item);
               },
             ),
-            // 이동하기: 선택모드 메뉴에서만 노출 (단일/다중 공통)
-            if (fromSelection)
+            // 이동하기: 선택모드 메뉴에서만 (그 기능이 있는 경로에서만)
+            if (fromSelection && item.onMove != null)
               ListTile(
                 leading: const Icon(Icons.drive_file_move_outline, color: Color(0xFF42A5F5)),
                 title: const Text("이동하기", style: TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _safMoveRefs([item]);
+                  item.onMove!();
                 },
               ),
-            // 삭제: 선택모드가 아닐 때만 노출 (선택모드엔 툴바에 삭제 버튼이 있음)
-            if (!fromSelection)
+            // 삭제: 선택모드가 아닐 때만
+            if (!fromSelection && item.onDelete != null)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
                 title: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _confirmDeleteSafImage(item, closeViewer);
+                  item.onDelete!();
                 },
               ),
             const SizedBox(height: 8),
@@ -1506,128 +1703,182 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  Future<void> _safAddToHistory(({String uri, String name}) item) async {
-    final bytes = await widget.state.readSafImage(item.uri);
-    if (bytes == null || !mounted) {
-      return;
-    }
-    await widget.state.addBytesToHistory(bytes, context);
-  }
-
-  Future<void> _safSendToI2i(({String uri, String name}) item) async {
-    final bytes = await widget.state.readSafImage(item.uri);
-    if (bytes == null || !mounted) {
-      return;
-    }
-    final meta = extractNovelAIMetadata(bytes);
-    widget.state.sendToI2i(bytes, meta);
-    widget.state.navigateToTab(2);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        duration: Duration(milliseconds: 2400),
-        content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
-      ),
-    );
-  }
-
-  Future<void> _safSaveToPreset(({String uri, String name}) item) async {
-    final bytes = await widget.state.readSafImage(item.uri);
-    if (bytes == null || !mounted) {
-      return;
-    }
-    final meta = extractNovelAIMetadata(bytes);
-    if (meta == null) {
+  // 히스토리에 추가 (SAF/파일 공용)
+  //  filePath는 파일 경로일 때만 있다(원본 위치 기록용). SAF는 null.
+  Future<void> _addToHistory(GalleryItem item) async {
+    try {
+      final bytes = await item.readBytes();
+      if (bytes == null || !mounted) {
+        return;
+      }
+      await widget.state.addBytesToHistory(bytes, context, filePath: item.filePath);
+    } catch (e) {
+      debugPrint("히스토리 추가 실패: $e");
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text("이 이미지에는 저장된 프롬프트 데이터가 없습니다.")));
-      return;
+      ).showSnackBar(const SnackBar(content: Text("이미지를 불러오는 데 실패했습니다.")));
     }
-    final chars = <NaiCharacter>[];
-    for (int i = 0; i < meta.characterPrompts.length; i++) {
-      final neg = i < meta.characterUndesiredContents.length
-          ? meta.characterUndesiredContents[i]
-          : "";
-      chars.add(
-        NaiCharacter(
-          name: "C${i + 1}",
-          positive: meta.characterPrompts[i],
-          negative: neg,
-          isActive: true,
-        ),
-      );
-    }
-    showPresetSaveDialog(
-      context,
-      widget.state,
-      positive: meta.positive,
-      negative: meta.negative,
-      characters: chars,
-      allowPrefixSuffix: false,
-      allowSettings: false,
-    );
   }
 
-  // 프롬프트 불러오기 (SAF 경로) — 히스토리 꾹 메뉴와 동일한 다이얼로그
-  Future<void> _safLoadPrompt(({String uri, String name}) item) async {
-    final bytes = await widget.state.readSafImage(item.uri);
-    if (bytes == null || !mounted) {
-      return;
-    }
-    final meta = extractNovelAIMetadata(bytes);
-    if (meta == null) {
+  // i2i 탭으로 보내기 (SAF/파일 공용)
+  Future<void> _sendToI2i(GalleryItem item) async {
+    try {
+      final bytes = await item.readBytes();
+      if (bytes == null || !mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      widget.state.sendToI2i(bytes, meta);
+      widget.state.navigateToTab(2);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           duration: Duration(milliseconds: 2400),
-          content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
+          content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
         ),
       );
-      return;
+    } catch (e) {
+      debugPrint("i2i 전송 실패: $e");
     }
-    showLoadPromptDialog(context, widget.state, meta);
   }
 
-  Future<void> _safShowExif(({String uri, String name}) item) async {
-    final bytes = await widget.state.readSafImage(item.uri);
-    if (bytes == null || !mounted) {
-      return;
+  // ── GalleryItem 팩토리 ──
+  // SAF 항목 / 파일 항목을 공용 어댑터로 감싼다.
+  // closeViewer: 뷰어에서 열었다면 삭제 후 뷰어도 닫아야 한다
+  GalleryItem _safItem(({String uri, String name}) item, [VoidCallback? closeViewer]) {
+    return GalleryItem(
+      name: item.name,
+      readBytes: () => widget.state.readSafImage(item.uri),
+      onDelete: () async => _confirmDeleteSafImage(item, closeViewer),
+      onMove: () => _safMoveRefs([item]),
+    );
+  }
+
+  GalleryItem _fileItem(File img) {
+    return GalleryItem(
+      name: _folderName(img.path),
+      readBytes: () async => img.readAsBytes(),
+      filePath: img.path,
+    );
+  }
+
+  // 프리셋에 프롬프트 저장 (SAF/파일 공용)
+  Future<void> _saveToPreset(GalleryItem item) async {
+    try {
+      final bytes = await item.readBytes();
+      if (bytes == null || !mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      if (meta == null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("이 이미지에는 저장된 프롬프트 데이터가 없습니다.")));
+        return;
+      }
+      // 메타데이터의 캐릭터 프롬프트를 NaiCharacter 목록으로 변환
+      final chars = <NaiCharacter>[];
+      for (int i = 0; i < meta.characterPrompts.length; i++) {
+        final neg = i < meta.characterUndesiredContents.length
+            ? meta.characterUndesiredContents[i]
+            : "";
+        chars.add(
+          NaiCharacter(
+            name: "C${i + 1}",
+            positive: meta.characterPrompts[i],
+            negative: neg,
+            isActive: true,
+          ),
+        );
+      }
+      // 이미지엔 선행/후행·설정 스냅샷 개념이 없으므로 해당 칩은 비활성화
+      showPresetSaveDialog(
+        context,
+        widget.state,
+        positive: meta.positive,
+        negative: meta.negative,
+        characters: chars,
+        allowPrefixSuffix: false,
+        allowSettings: false,
+      );
+    } catch (e) {
+      debugPrint("프리셋 저장 실패: $e");
     }
-    final meta = extractNovelAIMetadata(bytes);
-    final text = buildExifSummary(meta);
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
-        title: Row(
-          children: [
-            const Icon(Icons.info_outline, color: Color(0xFFFFC107), size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                item.name,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+  }
+
+  // 프롬프트 불러오기 (SAF 경로) — 히스토리 꾹 메뉴와 동일한 다이얼로그
+  // 프롬프트 불러오기 (SAF/파일 공용) — 히스토리 꾹 메뉴와 동일한 다이얼로그
+  Future<void> _loadPromptFrom(GalleryItem item) async {
+    try {
+      final bytes = await item.readBytes();
+      if (bytes == null || !mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      if (meta == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(milliseconds: 2400),
+            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
+          ),
+        );
+        return;
+      }
+      showLoadPromptDialog(context, widget.state, meta);
+    } catch (e) {
+      debugPrint("프롬프트 불러오기 실패: $e");
+    }
+  }
+
+  // EXIF(메타데이터) 확인 다이얼로그 (SAF/파일 공용, 히스토리에 추가하지 않음)
+  Future<void> _showExif(GalleryItem item) async {
+    try {
+      final bytes = await item.readBytes();
+      if (bytes == null || !mounted) {
+        return;
+      }
+      final meta = extractNovelAIMetadata(bytes);
+      final text = buildExifSummary(meta);
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: const Color(0xFF1E1E1E),
+          title: Row(
+            children: [
+              const Icon(Icons.info_outline, color: Color(0xFFFFC107), size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  item.name,
+                  style: const TextStyle(color: Colors.white, fontSize: 14),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                text,
+                style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5),
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
             ),
           ],
         ),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              text,
-              style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
-          ),
-        ],
-      ),
-    );
+      );
+    } catch (e) {
+      debugPrint("EXIF 확인 실패: $e");
+    }
   }
 
   void _confirmDeleteSafImage(({String uri, String name}) item, [VoidCallback? onDeleted]) {
@@ -1770,8 +2021,13 @@ class GalleryViewState extends State<GalleryView> {
     }
     setState(() {}); // 목록에서 제거된 것 즉시 반영
     _showBriefSnack("$moved장 이동");
-    // 폴더 미리보기 등 갱신을 위해 현재 폴더 재조회
-    await _reloadSafDir();
+    // 이동한 이미지는 위에서 목록·캐시에서 이미 뺐으므로 현재 폴더는 그대로 두면 된다.
+    // 대상 폴더 타일이 화면에 있으면 개수·미리보기가 바뀌었으니 '그 타일만' 갱신한다.
+    //  (전체 재조회를 하면 나머지 폴더 썸네일까지 전부 다시 로드된다)
+    final destIdx = _safFolders.indexWhere((f) => f.uri == toParent);
+    if (destIdx >= 0) {
+      await _refreshOneSafFolder(destIdx, toParent);
+    }
   }
 
   Widget _buildFolderTile(_FolderInfo info) {
@@ -1966,53 +2222,6 @@ class GalleryViewState extends State<GalleryView> {
     return _images.where((f) => _selectedPaths.contains(f.path)).toList();
   }
 
-  // ⓘ 메뉴: 1장이면 전체 메뉴, 2장 이상이면 히스토리 추가만
-  void _showSelectionMenu() {
-    final files = _selectedFiles();
-    if (files.isEmpty) {
-      return;
-    }
-    if (files.length == 1) {
-      _showImageMenu(files.first); // 단일: 기존 전체 메뉴 재사용
-      return;
-    }
-    // 다중: 히스토리 추가만
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                "${files.length}장 선택됨",
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
-              ),
-            ),
-            const Divider(height: 1, color: Colors.white12),
-            ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined, color: Color(0xFF8B5CF6)),
-              title: Text(
-                "히스토리 목록에 추가 (${files.length}장)",
-                style: const TextStyle(color: Colors.white),
-              ),
-              onTap: () {
-                Navigator.pop(ctx);
-                _batchAddToHistory(files);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-  }
-
   // 다중 히스토리 추가
   Future<void> _batchAddToHistory(List<File> files) async {
     await widget.state.addFilesToHistory(files, context);
@@ -2059,6 +2268,8 @@ class GalleryViewState extends State<GalleryView> {
               for (final f in files) {
                 try {
                   await f.delete();
+                  // 히스토리의 '파일 있음' 표시가 낡지 않도록 캐시에서 지운다
+                  widget.state.invalidateFileExistsCache(f.path);
                   deleted++;
                 } catch (e) {
                   debugPrint("파일 삭제 실패 (${f.path}): $e");
@@ -2097,237 +2308,19 @@ class GalleryViewState extends State<GalleryView> {
         startIndex: startIndex,
         nameOf: (i) => _ioFileName(_images[i]),
         pageOf: _ioViewerPage,
-        onLongPress: (i, close) => _showImageMenu(_images[i], close),
-      ),
-    );
-  }
-
-  // 이미지 꾹 누르기 메뉴 (히스토리 추가 / i2i / 프리셋 저장 / EXIF)
-  // closeViewer: 뷰어에서 호출된 경우, i2i 이동 전에 뷰어를 닫기 위한 콜백
-  void _showImageMenu(File img, [VoidCallback? closeViewer]) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text(
-                _folderName(img.path),
-                style: const TextStyle(color: Colors.white70, fontSize: 13),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const Divider(height: 1, color: Colors.white12),
-            ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined, color: Color(0xFF8B5CF6)),
-              title: const Text("히스토리 목록에 추가", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _addToHistory(img);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.brush, color: Colors.deepPurpleAccent),
-              title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                closeViewer?.call(); // 뷰어에서 왔으면 닫고 탭 이동
-                _sendToI2i(img);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.bookmark_add_outlined, color: Color(0xFF00BFA5)),
-              title: const Text("프리셋에 프롬프트 저장", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _saveToPreset(img);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined, color: Color(0xFF8B5CF6)),
-              title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _loadPromptFrom(img);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.info_outline, color: Color(0xFFFFC107)),
-              title: const Text("EXIF 확인", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _showExif(img);
-              },
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
+        onLongPress: (i, close) => _showGalleryImageMenu(_fileItem(_images[i]), close),
       ),
     );
   }
 
   // 히스토리 목록에 추가 (히스토리 탭 '이미지 불러오기'와 동일 로직 재사용)
-  Future<void> _addToHistory(File img) async {
-    try {
-      final bytes = await img.readAsBytes();
-      if (!mounted) {
-        return;
-      }
-      await widget.state.addBytesToHistory(bytes, context, filePath: img.path);
-    } catch (e) {
-      debugPrint("히스토리 추가 실패: $e");
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("이미지를 불러오는 데 실패했습니다.")));
-    }
-  }
 
   // i2i 탭으로 보내기 (detail_settings_modal '이미지 수정하기 (i2i)'와 동일 시퀀스)
-  Future<void> _sendToI2i(File img) async {
-    try {
-      final bytes = await img.readAsBytes();
-      if (!mounted) {
-        return;
-      }
-      final meta = extractNovelAIMetadata(bytes);
-      widget.state.sendToI2i(bytes, meta);
-      widget.state.navigateToTab(2);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          duration: Duration(milliseconds: 2400),
-          content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
-        ),
-      );
-    } catch (e) {
-      debugPrint("i2i 전송 실패: $e");
-    }
-  }
 
   // 프리셋에 프롬프트 저장 (프롬프트탭과 동일한 공용 다이얼로그, 소스는 이미지 메타데이터)
-  Future<void> _saveToPreset(File img) async {
-    try {
-      final bytes = await img.readAsBytes();
-      if (!mounted) {
-        return;
-      }
-      final meta = extractNovelAIMetadata(bytes);
-      if (meta == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("이 이미지에는 저장된 프롬프트 데이터가 없습니다.")));
-        return;
-      }
-      // 메타데이터의 캐릭터 프롬프트를 NaiCharacter 목록으로 변환
-      final chars = <NaiCharacter>[];
-      for (int i = 0; i < meta.characterPrompts.length; i++) {
-        final neg = i < meta.characterUndesiredContents.length
-            ? meta.characterUndesiredContents[i]
-            : "";
-        chars.add(
-          NaiCharacter(
-            name: "C${i + 1}",
-            positive: meta.characterPrompts[i],
-            negative: neg,
-            isActive: true,
-          ),
-        );
-      }
-      // 이미지엔 선행/후행·설정 스냅샷 개념이 없으므로 해당 칩은 비활성화
-      showPresetSaveDialog(
-        context,
-        widget.state,
-        positive: meta.positive,
-        negative: meta.negative,
-        characters: chars,
-        allowPrefixSuffix: false,
-        allowSettings: false,
-      );
-    } catch (e) {
-      debugPrint("프리셋 저장 실패: $e");
-    }
-  }
 
   // EXIF(메타데이터) 확인 다이얼로그 (히스토리에 추가하지 않음)
   // 프롬프트 불러오기 — 히스토리 꾹 메뉴와 동일한 다이얼로그
-  Future<void> _loadPromptFrom(File img) async {
-    try {
-      final bytes = await img.readAsBytes();
-      if (!mounted) {
-        return;
-      }
-      final meta = extractNovelAIMetadata(bytes);
-      if (meta == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 2400),
-            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
-          ),
-        );
-        return;
-      }
-      showLoadPromptDialog(context, context.read<AppState>(), meta);
-    } catch (e) {
-      debugPrint("프롬프트 불러오기 실패: $e");
-    }
-  }
-
-  Future<void> _showExif(File img) async {
-    try {
-      final bytes = await img.readAsBytes();
-      if (!mounted) {
-        return;
-      }
-      final meta = extractNovelAIMetadata(bytes);
-      final text = buildExifSummary(meta);
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: Row(
-            children: [
-              const Icon(Icons.info_outline, color: Color(0xFFFFC107), size: 20),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _folderName(img.path),
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          content: SizedBox(
-            width: double.maxFinite,
-            child: SingleChildScrollView(
-              child: SelectableText(
-                text,
-                style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
-            ),
-          ],
-        ),
-      );
-    } catch (e) {
-      debugPrint("EXIF 확인 실패: $e");
-    }
-  }
 }
 
 // 좌우 스와이프 가능한 이미지 뷰어

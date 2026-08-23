@@ -10,14 +10,17 @@ import 'package:image_picker/image_picker.dart';
 // (중복된 데이터 파싱 기능은 모두 app_state.dart로 깔끔하게 이사갔습니다!)
 // ============================================================================
 class HistoryTab extends StatefulWidget {
-  final ScrollController scrollController;
-  const HistoryTab({super.key, required this.scrollController});
+  const HistoryTab({super.key});
 
   @override
   State<HistoryTab> createState() => _HistoryTabState();
 }
 
-class _HistoryTabState extends State<HistoryTab> {
+class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMixin {
+  // 탭 전환 시 상태를 유지해 재방문이 즉시 이뤄지게 한다
+  @override
+  bool get wantKeepAlive => true;
+
   late PageController _pageController;
 
   // 새 이미지 추가 등으로 특정 페이지로 강제 이동하는 중임을 표시한다.
@@ -25,6 +28,12 @@ class _HistoryTabState extends State<HistoryTab> {
   // 목표 위치를 덮어쓰는 것을 막는다.
   int? _pendingJumpTarget;
   late ScrollController _thumbnailScrollController;
+
+  // 목록 스크롤 컨트롤러는 이 탭이 직접 소유한다.
+  //  main이 만들어 넘기던 것을 여기로 옮겼다. (탭 전환 중 두 인스턴스가
+  //  같은 컨트롤러를 붙잡아 'attached to multiple scroll views'로 멈추던 문제)
+  final ScrollController _listScrollController = ScrollController();
+  int _lastScrollToEndRevision = 0;
   late AppState _appState;
 
   int _currentIndex = 0;
@@ -73,6 +82,7 @@ class _HistoryTabState extends State<HistoryTab> {
   void dispose() {
     _pageController.dispose();
     _thumbnailScrollController.dispose();
+    _listScrollController.dispose();
     super.dispose();
   }
 
@@ -111,6 +121,21 @@ class _HistoryTabState extends State<HistoryTab> {
         curve: Curves.easeOut,
       );
     }
+  }
+
+  // 디코드 크기 계산 — 화면에 보이는 크기만큼만 메모리에 올린다.
+  //  Image.memory는 기본적으로 원본 해상도로 디코드하는데,
+  //  832×1216 한 장이 RGBA로 약 4MB라 썸네일 수십 장이면 수백 MB가 된다.
+  int _gridThumbCacheWidth(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final logical = (mq.size.width - 24) / 4; // 4열 그리드 한 칸 폭
+    return (logical * mq.devicePixelRatio).round().clamp(120, 720);
+  }
+
+  int _stripThumbCacheWidth(BuildContext context) {
+    // 썸네일 줄 높이 64 기준
+    final ratio = MediaQuery.of(context).devicePixelRatio;
+    return (64 * ratio).round().clamp(96, 320);
   }
 
   NaiMetadata? _getMetadataForIndex(int index) {
@@ -626,7 +651,14 @@ class _HistoryTabState extends State<HistoryTab> {
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(7),
-                    child: Image.memory(images[realIndex], fit: BoxFit.cover),
+                    // 원본(약 832×1216)을 그대로 디코드하면 한 장에 4MB가 든다.
+                    // 4열 그리드는 화면폭/4 크기로만 보이므로 그만큼만 디코드한다.
+                    child: Image.memory(
+                      images[realIndex],
+                      fit: BoxFit.cover,
+                      cacheWidth: _gridThumbCacheWidth(context),
+                      gaplessPlayback: true,
+                    ),
                   ),
                 ),
               ),
@@ -936,7 +968,13 @@ class _HistoryTabState extends State<HistoryTab> {
                                     Colors.black.withValues(alpha: 0.35),
                                     BlendMode.darken,
                                   ),
-                            child: Image.memory(images[realIndex], fit: BoxFit.cover),
+                            // 64px 높이로만 보이므로 작게 디코드 (원본 한 장이 약 4MB)
+                            child: Image.memory(
+                              images[realIndex],
+                              fit: BoxFit.cover,
+                              cacheWidth: _stripThumbCacheWidth(context),
+                              gaplessPlayback: true,
+                            ),
                           ),
                         ),
                       ),
@@ -1134,6 +1172,7 @@ class _HistoryTabState extends State<HistoryTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // KeepAlive 필수 호출
     final state = context.watch<AppState>();
     final images = state.historyImages;
     final bool isEmpty = images.isEmpty;
@@ -1227,20 +1266,40 @@ class _HistoryTabState extends State<HistoryTab> {
       );
     }
 
-    if (!isGridView && state.scrollToThumbnailEnd) {
-      state.scrollToThumbnailEnd = false;
+    // main이나 프롬프트 탭에서 "히스토리 맨 아래로" 요청이 오면 처리한다.
+    //  revision 값이 늘어난 것만 보고 한 번씩 반응한다.
+    if (state.historyScrollToEndRevision != _lastScrollToEndRevision) {
+      _lastScrollToEndRevision = state.historyScrollToEndRevision;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_thumbnailScrollController.hasClients) {
-          Future.delayed(const Duration(milliseconds: 50), () {
-            if (_thumbnailScrollController.hasClients) {
-              _thumbnailScrollController.animateTo(
-                _thumbnailScrollController.position.maxScrollExtent,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOut,
-              );
-            }
-          });
+        if (!mounted || !_listScrollController.hasClients) {
+          return;
         }
+        _listScrollController.animateTo(
+          _listScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      });
+    }
+
+    if (!isGridView && state.scrollToThumbnailEnd) {
+      // ⚠️ build 도중에 AppState를 바꾸면 안 된다(Flutter가 경고하는 패턴).
+      //    플래그는 프레임이 끝난 뒤에 내린다.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        state.scrollToThumbnailEnd = false;
+      });
+      // 썸네일 줄이 다 그려진 뒤에 끝으로 스크롤 (지연 대신 프레임 콜백 2번)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_thumbnailScrollController.hasClients) {
+            return;
+          }
+          _thumbnailScrollController.animateTo(
+            _thumbnailScrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        });
       });
     }
 
@@ -1276,22 +1335,26 @@ class _HistoryTabState extends State<HistoryTab> {
         final target = state.selectedHistoryIndex.clamp(0, images.length - 1);
         _currentIndex = target;
         _pendingJumpTarget = target;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
+        // 목록이 새로 그려진 뒤에 이동해야 정확하다.
+        //  예전에는 80ms를 기다렸는데, 기기가 느리면 부족하고 빠르면 낭비였다.
+        //  PageView가 붙을 때까지 프레임 단위로 확인하는 편이 확실하다.
+        void jumpWhenReady([int tries = 0]) {
           if (!mounted) {
             return;
           }
-          Future.delayed(const Duration(milliseconds: 80), () {
-            if (!mounted) {
-              return;
+          if (!_pageController.hasClients) {
+            if (tries < 10) {
+              WidgetsBinding.instance.addPostFrameCallback((_) => jumpWhenReady(tries + 1));
             }
-            if (_pageController.hasClients) {
-              _pageController.jumpToPage(target);
-            }
-            _scrollToThumbnail(target);
-            setState(() => _currentIndex = target);
-            _pendingJumpTarget = null; // 이동 완료 — 이후 스와이프는 정상 처리
-          });
-        });
+            return;
+          }
+          _pageController.jumpToPage(target);
+          _scrollToThumbnail(target);
+          setState(() => _currentIndex = target);
+          _pendingJumpTarget = null; // 이동 완료 — 이후 스와이프는 정상 처리
+        }
+
+        WidgetsBinding.instance.addPostFrameCallback((_) => jumpWhenReady());
       }
     }
 
@@ -1310,7 +1373,7 @@ class _HistoryTabState extends State<HistoryTab> {
     }
 
     return SingleChildScrollView(
-      controller: widget.scrollController,
+      controller: _listScrollController,
       padding: const EdgeInsets.all(16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

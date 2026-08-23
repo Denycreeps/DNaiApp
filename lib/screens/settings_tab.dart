@@ -15,7 +15,12 @@ class SettingsTab extends StatefulWidget {
   State<SettingsTab> createState() => _SettingsTabState();
 }
 
-class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStateMixin {
+class _SettingsTabState extends State<SettingsTab>
+    with SingleTickerProviderStateMixin, AutomaticKeepAliveClientMixin {
+  // 탭 전환 시 상태를 유지해 재방문이 즉시 이뤄지게 한다
+  @override
+  bool get wantKeepAlive => true;
+
   late final TabController _tabController;
   late final AppState _appState;
 
@@ -23,25 +28,35 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
-    // 설정 진입 시 항상 [일반] 탭으로 리셋되도록 핸들러 등록 (main onPageChanged가 호출)
     _appState = context.read<AppState>();
-    _myResetHandler = () {
-      if (mounted && _tabController.index != 0) {
-        _tabController.animateTo(0);
-      }
-    };
-    _appState.settingsTabReset = _myResetHandler;
+    // 탭을 옮길 때마다 '방문했음'을 기록해 그때부터 내용을 만든다 (지연 생성)
+    _tabController.addListener(_markTabVisited);
+    // 스와이프 도중에도 반응하도록 애니메이션에도 붙인다
+    _tabController.animation?.addListener(_markTabVisited);
   }
 
-  // dispose 시 identity 비교용 (PageView가 같은 탭을 잠깐 두 인스턴스로 만들 때
-  // 옛 인스턴스가 새 인스턴스의 핸들러를 지우지 않도록)
-  late final void Function() _myResetHandler;
+  // 실제로 열어본 탭만 내용을 만든다.
+  //  설정 탭 4개를 전부 만들면 위젯이 200개 가까이 되어 진입할 때 한 번 멈칫한다.
+  //  처음에는 [일반]만 만들고, 다른 탭은 눌렀을 때 만든 뒤 계속 유지한다.
+  final Set<int> _visitedTabs = {0};
+
+  void _markTabVisited() {
+    // 스와이프 중에는 index가 아직 안 바뀌므로 애니메이션 값으로 목적지를 본다.
+    // (안 그러면 넘기는 도중 빈 화면이 스쳐 지나간다)
+    final v = _tabController.animation?.value ?? _tabController.index.toDouble();
+    bool changed = false;
+    changed |= _visitedTabs.add(v.floor().clamp(0, 3));
+    changed |= _visitedTabs.add(v.ceil().clamp(0, 3));
+    changed |= _visitedTabs.add(_tabController.index);
+    if (changed && mounted) {
+      setState(() {});
+    }
+  }
 
   @override
   void dispose() {
-    if (identical(_appState.settingsTabReset, _myResetHandler)) {
-      _appState.settingsTabReset = null;
-    }
+    _tabController.animation?.removeListener(_markTabVisited);
+    _tabController.removeListener(_markTabVisited);
     _tabController.dispose();
     for (final c in _tabScrolls) {
       c.dispose();
@@ -137,6 +152,367 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
         );
       }
     }
+  }
+
+  // ── NovelAI 계정 목록 ──
+  //  라디오처럼 하나만 활성화된다. 탭하면 그 계정의 토큰으로 갈아끼운다.
+  Widget _buildAccountList(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.people_alt_outlined, color: Colors.deepPurpleAccent, size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                "NovelAI 계정",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+              const Spacer(),
+              Text(
+                "${state.naiAccounts.length}개",
+                style: const TextStyle(color: Colors.white38, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "여러 계정을 등록해 두고 탭해서 바꿀 수 있어요.",
+            style: TextStyle(color: Colors.white38, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          if (state.naiAccounts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                "등록된 계정이 없어요. 아래에서 추가해 주세요.",
+                style: TextStyle(color: Colors.white38, fontSize: 12),
+              ),
+            ),
+          for (int i = 0; i < state.naiAccounts.length; i++) _accountRow(context, state, i),
+          const SizedBox(height: 4),
+          // 현재 연결 상태 — 예전에는 아래 별도 카드에 있었지만 여기로 합쳤다
+          if (state.naiAccounts.isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: state.isApiConnected
+                    ? const Color(0xFF00BFA5).withValues(alpha: 0.12)
+                    : Colors.redAccent.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    state.isApiConnected ? Icons.check_circle_outline : Icons.error_outline,
+                    size: 15,
+                    color: state.isApiConnected ? const Color(0xFF00BFA5) : Colors.redAccent,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    state.isApiConnected ? "서버에 연결됨" : "연결되지 않음 (토큰 확인)",
+                    style: TextStyle(
+                      color: state.isApiConnected ? const Color(0xFF00BFA5) : Colors.redAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _showAccountDialog(context, state, null),
+                  icon: const Icon(Icons.add, size: 16, color: Colors.deepPurpleAccent),
+                  label: const Text(
+                    "계정 추가",
+                    style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.deepPurpleAccent),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  // 계정이 하나뿐이면 지울 수 없다 (토큰이 아예 사라지는 것 방지)
+                  onPressed: state.naiAccounts.length > 1
+                      ? () => _showRemoveAccountDialog(context, state)
+                      : null,
+                  icon: Icon(
+                    Icons.remove,
+                    size: 16,
+                    color: state.naiAccounts.length > 1 ? Colors.redAccent : Colors.white24,
+                  ),
+                  label: Text(
+                    "계정 삭제",
+                    style: TextStyle(
+                      color: state.naiAccounts.length > 1 ? Colors.redAccent : Colors.white24,
+                      fontSize: 13,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: BorderSide(
+                      color: state.naiAccounts.length > 1 ? Colors.redAccent : Colors.white12,
+                    ),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 계정 삭제 — 어느 계정을 지울지 목록에서 고른다.
+  //  쓰던 계정을 바꾸지 않고도 다른 계정을 지울 수 있어야 해서 목록 방식으로 둔다.
+  void _showRemoveAccountDialog(BuildContext context, AppState state) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("삭제할 계정 선택", style: TextStyle(color: Colors.white, fontSize: 16)),
+        contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: state.naiAccounts.length,
+            itemBuilder: (c, i) {
+              final acc = state.naiAccounts[i];
+              final isActive = state.activeAccountIndex == i;
+              return ListTile(
+                dense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                leading: Icon(
+                  isActive ? Icons.radio_button_checked : Icons.person_outline,
+                  size: 18,
+                  color: isActive ? Colors.deepPurpleAccent : Colors.white38,
+                ),
+                title: Text(
+                  acc.label.isEmpty ? "계정 ${i + 1}" : acc.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                ),
+                subtitle: Text(
+                  acc.token.isEmpty ? "토큰 없음" : acc.maskedToken,
+                  style: TextStyle(
+                    color: acc.token.isEmpty ? Colors.redAccent : Colors.white38,
+                    fontSize: 11,
+                  ),
+                ),
+                trailing: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _confirmRemoveAccount(context, state, i);
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 실제 삭제 전 한 번 더 확인
+  void _confirmRemoveAccount(BuildContext context, AppState state, int index) {
+    if (index < 0 || index >= state.naiAccounts.length) {
+      return;
+    }
+    final acc = state.naiAccounts[index];
+    final isActive = state.activeAccountIndex == index;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("계정 삭제", style: TextStyle(color: Colors.white, fontSize: 16)),
+        content: Text(
+          isActive
+              ? "'${acc.label}' 계정을 지울까요?\n지금 쓰는 계정이라 다른 계정으로 전환돼요."
+              : "'${acc.label}' 계정을 지울까요?",
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              // 삭제 후 계정 전환·잔액 조회가 이어지므로 끝까지 진행시킨다
+              state.removeAccount(index);
+            },
+            child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _accountRow(BuildContext context, AppState state, int index) {
+    final acc = state.naiAccounts[index];
+    final isActive = state.activeAccountIndex == index;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        onTap: isActive ? null : () => state.switchAccount(index),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: isActive
+                ? Colors.deepPurpleAccent.withValues(alpha: 0.15)
+                : const Color(0xFF161616),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: isActive ? Colors.deepPurpleAccent : Colors.white12),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                isActive ? Icons.radio_button_checked : Icons.radio_button_off,
+                size: 18,
+                color: isActive ? Colors.deepPurpleAccent : Colors.white24,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      acc.label.isEmpty ? "계정 ${index + 1}" : acc.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: isActive ? Colors.white : Colors.white70,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      acc.token.isEmpty ? "토큰 없음" : acc.maskedToken,
+                      style: TextStyle(
+                        color: acc.token.isEmpty ? Colors.redAccent : Colors.white38,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // 잔액 (확인한 적 있을 때만)
+              if (acc.anlas >= 0) ...[
+                const Icon(Icons.toll, size: 13, color: Colors.orangeAccent),
+                const SizedBox(width: 3),
+                Text(
+                  "${acc.anlas}",
+                  style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
+                ),
+                const SizedBox(width: 6),
+              ],
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white38),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: () => _showAccountDialog(context, state, index),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 계정 추가/수정 다이얼로그. index가 null이면 추가.
+  void _showAccountDialog(BuildContext context, AppState state, int? index) {
+    final isEdit = index != null;
+    final acc = isEdit ? state.naiAccounts[index] : null;
+    final labelCtrl = TextEditingController(text: acc?.label ?? '');
+    final tokenCtrl = TextEditingController(text: acc?.token ?? '');
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: Text(
+          isEdit ? "계정 수정" : "계정 추가",
+          style: const TextStyle(color: Colors.white, fontSize: 16),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: labelCtrl,
+              maxLength: 12,
+              style: const TextStyle(color: Colors.white),
+              decoration: _settingsInputDecoration("이름 (예: 본계정)", Icons.label_outline),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: tokenCtrl,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              decoration: _settingsInputDecoration("NovelAI 토큰", Icons.vpn_key_outlined),
+            ),
+          ],
+        ),
+        actions: [
+          // 마지막 하나는 지울 수 없다
+          if (isEdit && state.naiAccounts.length > 1)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                state.removeAccount(index);
+              },
+              child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            onPressed: () {
+              if (isEdit) {
+                state.updateAccount(index, label: labelCtrl.text, token: tokenCtrl.text);
+              } else {
+                state.addAccount(labelCtrl.text, tokenCtrl.text);
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text("저장", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        labelCtrl.dispose();
+        tokenCtrl.dispose();
+      });
+    });
   }
 
   InputDecoration _settingsInputDecoration(String hint, IconData icon, {Widget? suffixIcon}) {
@@ -445,6 +821,7 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // KeepAlive 필수 호출
     final state = context.watch<AppState>();
 
     // Gelbooru API 미인증 시 기본 열림 (최초 1회)
@@ -477,10 +854,10 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
           child: TabBarView(
             controller: _tabController,
             children: [
-              _tabScroll(_generalSection(context, state), _tabScrolls[0]),
-              _tabScroll(_storageSection(context, state), _tabScrolls[1]),
-              _tabScroll(_apiSection(context, state), _tabScrolls[2]),
-              _tabScroll(_miscSection(context, state), _tabScrolls[3]),
+              _lazyTab(0, () => _generalSection(context, state), _tabScrolls[0]),
+              _lazyTab(1, () => _storageSection(context, state), _tabScrolls[1]),
+              _lazyTab(2, () => _apiSection(context, state), _tabScrolls[2]),
+              _lazyTab(3, () => _miscSection(context, state), _tabScrolls[3]),
             ],
           ),
         ),
@@ -605,6 +982,14 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
         ],
       ),
     );
+  }
+
+  // 방문한 탭만 내용을 만든다. 아직 안 본 탭은 빈 화면으로 자리만 잡는다.
+  Widget _lazyTab(int index, List<Widget> Function() build, ScrollController controller) {
+    if (!_visitedTabs.contains(index)) {
+      return const SizedBox.shrink();
+    }
+    return _tabScroll(build(), controller);
   }
 
   Widget _tabScroll(List<Widget> children, ScrollController controller) {
@@ -1571,131 +1956,11 @@ class _SettingsTabState extends State<SettingsTab> with SingleTickerProviderStat
 
   List<Widget> _apiSection(BuildContext context, AppState state) {
     return [
-      // NovelAi API 토큰 설정 (미연결 시)
-      if (!state.isApiConnected) ...[
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.white10),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                "NovelAi API 토큰 설정",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              const Text(
-                "API 토큰 입력이 필요합니다.",
-                style: TextStyle(color: Colors.redAccent, fontSize: 12),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: state.apiTokenController,
-                style: const TextStyle(color: Colors.white),
-                decoration: _settingsInputDecoration("NovelAI 토큰을 붙여넣으세요", Icons.vpn_key_outlined),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    state.apiToken = state.apiTokenController.text.trim();
-                    if (state.apiToken.isNotEmpty) {
-                      await state.fetchAnlas();
-                      state.isApiConnected = true;
-                      await state.saveAllSettings();
-                      state.refreshUI();
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          duration: const Duration(milliseconds: 2400),
-                          content: Text("계정 정보(Anlas/구독 등급) 동기화 완료!"),
-                        ),
-                      );
-                    } else {
-                      state.isApiConnected = false;
-                      await state.saveAllSettings();
-                      state.refreshUI();
-                      if (!context.mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          duration: const Duration(milliseconds: 2400),
-                          content: Text("API 토큰을 입력해주세요."),
-                        ),
-                      );
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurpleAccent,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: const Text(
-                    "토큰 저장 및 연결",
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-      ],
-
-      // API 연결 상태 (연결됨일 때만)
-      if (state.isApiConnected) ...[
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.tealAccent.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Colors.tealAccent.withValues(alpha: 0.3)),
-          ),
-          child: const Column(
-            children: [
-              Icon(Icons.check_circle_outline, color: Colors.tealAccent, size: 40),
-              SizedBox(height: 8),
-              Text(
-                "NovelAI 서버에 연결되어 있습니다.",
-                style: TextStyle(
-                  color: Colors.tealAccent,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-
-        // 연결 해제 버튼
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed: () {
-              state.apiToken = "";
-              state.apiTokenController.clear();
-              state.isApiConnected = false;
-              state.currentAnlas = 0;
-              state.subscriptionTier = 0;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-            icon: const Icon(Icons.logout, color: Colors.redAccent),
-            label: const Text("연결 해제", style: TextStyle(color: Colors.redAccent)),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              side: const BorderSide(color: Colors.redAccent),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-      ],
+      // ── NovelAI 계정 목록 ──
+      //  V5의 시간당 한도 때문에 계정을 번갈아 쓰는 경우가 생겼다.
+      //  여러 토큰을 보관해 두고 탭 한 번으로 갈아끼운다.
+      _buildAccountList(context, state),
+      const SizedBox(height: 16),
 
       // ✅ 2번: Gelbooru API 설정 (접기/펴기)
       Container(

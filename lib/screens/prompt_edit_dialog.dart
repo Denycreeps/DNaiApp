@@ -23,6 +23,20 @@ void showPromptEditDialog(
 }) {
   FocusNode focusNode = FocusNode();
   final String initialText = controller.text;
+  // ⚠️ 타이머는 다이얼로그가 열려 있는 동안 유지돼야 하므로 builder 바깥에 둔다.
+  //    (StatefulBuilder 안에 두면 리빌드마다 새로 만들어져 디바운스가 동작하지 않는다)
+  Timer? tagDebounce;
+  Timer? saveDebounce;
+  // 자동완성 후보를 만든 시점의 커서 위치.
+  // 사용자가 다른 곳으로 커서를 옮기면 그 후보는 더 이상 유효하지 않다.
+  //  (옮긴 뒤 후보를 누르면 엉뚱한 위치에 태그가 끼어드는 문제가 있었다)
+  int suggestionAnchor = -1;
+
+  // 커서가 후보를 만든 위치에서 벗어나면 후보를 지운다.
+  //  탭·핸들 드래그·키보드 이동을 모두 잡으려면 컨트롤러 리스너가 확실하다.
+  //  (텍스트가 바뀐 경우는 onChanged가 처리하므로 여기선 위치만 본다)
+  String lastKnownText = controller.text;
+  void Function()? cursorWatcher;
 
   showDialog(
     context: context,
@@ -31,19 +45,40 @@ void showPromptEditDialog(
 
       return StatefulBuilder(
         builder: (BuildContext context, StateSetter setModalState) {
+          // 커서 감시자 등록 (한 번만)
+          if (cursorWatcher == null) {
+            cursorWatcher = () {
+              if (suggestionAnchor < 0) {
+                return;
+              }
+              // 텍스트가 바뀐 경우는 타이핑이므로 onChanged가 처리한다
+              if (controller.text != lastKnownText) {
+                lastKnownText = controller.text;
+                return;
+              }
+              // 텍스트는 그대로인데 커서만 움직였다 → 후보 무효
+              if (controller.selection.baseOffset != suggestionAnchor) {
+                setModalState(() {
+                  suggestions = [];
+                  suggestionAnchor = -1;
+                });
+              }
+            };
+            controller.addListener(cursorWatcher!);
+          }
+
           focusNode.addListener(() {
             if (!focusNode.hasFocus) {
               Future.delayed(const Duration(milliseconds: 150), () {
                 if (ctx.mounted) {
                   setModalState(() {
                     suggestions.clear();
+                    suggestionAnchor = -1;
                   });
                 }
               });
             }
           });
-
-          Timer? tagDebounce;
 
           void onTextChanged() {
             String text = controller.text;
@@ -71,6 +106,7 @@ void showPromptEditDialog(
             if (currentWord.isEmpty) {
               setModalState(() {
                 suggestions = [];
+                suggestionAnchor = -1;
               });
               return;
             }
@@ -85,6 +121,7 @@ void showPromptEditDialog(
 
               setModalState(() {
                 suggestions = matches;
+                suggestionAnchor = controller.selection.baseOffset;
               });
               return;
             }
@@ -113,12 +150,16 @@ void showPromptEditDialog(
               final nowWord = (nowLastDel == -1 ? nowBefore : nowBefore.substring(nowLastDel + 1))
                   .trimLeft();
               if (nowWord != capturedWord || nowWord.isEmpty) {
-                setModalState(() => suggestions = []);
+                setModalState(() {
+                  suggestions = [];
+                  suggestionAnchor = -1;
+                });
                 return;
               }
               List<String> matches = smartMatchTags(state.searchTags, currentWord);
               setModalState(() {
                 suggestions = matches;
+                suggestionAnchor = controller.selection.baseOffset;
               });
             });
           }
@@ -170,9 +211,21 @@ void showPromptEditDialog(
                       controller: controller,
                       focusNode: focusNode,
                       onChanged: (_) {
+                        // 타이핑마다 하던 무거운 작업을 정리했다.
+                        //  · saveAllSettings()는 설정 100여 개를 디스크에 쓰므로
+                        //    입력이 멈춘 뒤(500ms) 한 번만 실행한다.
+                        //  · 뒤쪽 탭 갱신(refreshUI)은 입력창이 화면을 덮고 있어
+                        //    보이지 않으므로 창을 닫을 때만 한다.
+                        //    (컨트롤러가 AppState 소유라 값 자체는 이미 반영돼 있다)
+                        // onTextChanged 안에서 필요한 만큼만 setModalState를 부른다
+                        // (여기서 또 부르면 매 글자마다 불필요한 리빌드가 한 번 더 생긴다)
+                        lastKnownText = controller.text;
                         onTextChanged();
-                        state.saveAllSettings();
-                        state.refreshUI();
+                        saveDebounce?.cancel();
+                        saveDebounce = Timer(
+                          const Duration(milliseconds: 500),
+                          () => state.saveAllSettings(),
+                        );
                       },
                       maxLines: null,
                       expands: true,
@@ -283,7 +336,15 @@ void showPromptEditDialog(
       );
     },
   ).then((_) {
+    if (cursorWatcher != null) {
+      controller.removeListener(cursorWatcher!);
+    }
     focusNode.dispose();
+    // 대기 중인 저장이 있으면 취소하고 즉시 저장 (놓치지 않게)
+    saveDebounce?.cancel();
+    tagDebounce?.cancel();
+    state.saveAllSettings();
+    state.refreshUI(); // 창이 닫혔으니 이제 뒤쪽 화면을 갱신
     onClosed?.call();
   });
 }

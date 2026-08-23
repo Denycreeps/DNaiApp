@@ -25,10 +25,8 @@ class NaiModels {
   static const String furryV3 = 'nai-diffusion-furry-3';
   static const String v2 = 'nai-diffusion-2'; // infill 접미사 예외 처리용 (레거시)
 
-  // ---- v5 (정식 출시 전 · 임시 테스트용) ----
-  // ⚠️ 실제 API 문자열이 공개되지 않았다. 출시되면 이 값을 실제 문자열로 교체할 것.
-  //    지금은 UI에서 '선택만' 가능하게 두는 용도이며, 실제 생성은 보장되지 않는다.
-  static const String v5Test = 'nai-diffusion-5-test';
+  // ---- v5 ----
+  static const String v5Full = 'nai-diffusion-5-full';
 }
 
 /// 한 모델이 지원하는 기능 / 제약을 나타낸다.
@@ -84,6 +82,27 @@ class ModelCaps {
   /// V4/V4.5: ~512 (T5 토크나이저). 값이 0이면 "미확인/해당없음".
   final int maxPromptTokens;
 
+  /// 캐릭터 프롬프트 최대 개수 (V4.5=6, V5=32)
+  final int maxCharacters;
+
+  /// CFG(Guidance) 상한. V5는 10까지만 허용된다.
+  final double maxCfgScale;
+
+  /// 스텝 상한 (검증 기준)
+  final int maxSteps;
+
+  /// 노이즈 스케줄을 고를 수 있는지. V5는 Karras로 고정이라 false.
+  final bool allowsSchedulerChoice;
+
+  /// 총 픽셀 상한 (width * height)
+  final int maxPixels;
+
+  /// 투명 배경(알파 채널)을 지원하는지. V5부터 가능.
+  final bool supportsTransparency;
+
+  /// 캐릭터 위치를 자유 좌표로 찍을 수 있는지 (V5). false면 5x5 그리드.
+  final bool usesFreePositioning;
+
   /// 업스케일 입력 최대 픽셀 수(width * height). 0이면 미확인/제한없음.
   /// ⚠️ 현재 정확한 공식 수치를 확보하지 못했다. 확인 후 채울 것.
   final int maxUpscalePixels;
@@ -105,6 +124,13 @@ class ModelCaps {
     required this.usesV4Prompt,
     required this.usesEncodeVibe,
     required this.maxPromptTokens,
+    this.maxCharacters = 6,
+    this.maxCfgScale = 25.0,
+    this.maxSteps = 50,
+    this.allowsSchedulerChoice = true,
+    this.maxPixels = 3145728,
+    this.supportsTransparency = false,
+    this.usesFreePositioning = false,
     required this.maxUpscalePixels,
     this.serverModelIdOverride,
     this.isPlaceholder = false,
@@ -124,6 +150,13 @@ class ModelCaps {
     bool? usesV4Prompt,
     bool? usesEncodeVibe,
     int? maxPromptTokens,
+    int? maxCharacters,
+    double? maxCfgScale,
+    int? maxSteps,
+    bool? allowsSchedulerChoice,
+    int? maxPixels,
+    bool? supportsTransparency,
+    bool? usesFreePositioning,
     int? maxUpscalePixels,
     bool? isPlaceholder,
   }) {
@@ -140,6 +173,13 @@ class ModelCaps {
       usesV4Prompt: usesV4Prompt ?? this.usesV4Prompt,
       usesEncodeVibe: usesEncodeVibe ?? this.usesEncodeVibe,
       maxPromptTokens: maxPromptTokens ?? this.maxPromptTokens,
+      maxCharacters: maxCharacters ?? this.maxCharacters,
+      maxCfgScale: maxCfgScale ?? this.maxCfgScale,
+      maxSteps: maxSteps ?? this.maxSteps,
+      allowsSchedulerChoice: allowsSchedulerChoice ?? this.allowsSchedulerChoice,
+      maxPixels: maxPixels ?? this.maxPixels,
+      supportsTransparency: supportsTransparency ?? this.supportsTransparency,
+      usesFreePositioning: usesFreePositioning ?? this.usesFreePositioning,
       maxUpscalePixels: maxUpscalePixels ?? this.maxUpscalePixels,
       isPlaceholder: isPlaceholder ?? this.isPlaceholder,
     );
@@ -169,27 +209,29 @@ const ModelCaps _v45Full = ModelCaps(
   isPlaceholder: false,
 );
 
-// V5 (임시 테스트). 출시 전이라 스펙 대부분이 미확정.
-// 확정된 것: Vibe / Precise Reference 는 초기 버전에서 사용 불가.
-// 그 외 요청 포맷·인페인트는 당분간 V4.5와 동일한 방식으로 처리한다.
-const ModelCaps _v5Test = ModelCaps(
-  id: NaiModels.v5Test,
-  // 실제 v5 API 문자열이 공개되지 않았으므로, 서버로는 V4.5 Full을 보낸다.
-  // (선택만 가능하게 하려는 목적 — 인페인트도 자동으로 V4.5와 동일 방식으로 진행됨)
-  // ⚠️ v5 정식 출시 후 이 override를 제거하고 실제 문자열로 교체할 것.
-  serverModelIdOverride: NaiModels.v45Full,
-  displayName: 'NovelAI v5 test',
-  supportsVibe: false, // V5 초기 버전 미지원 (확정)
-  supportsPrecise: false, // V5 초기 버전 미지원 (확정)
-  supportsInpaint: true, // V4.5와 동일 방식으로 진행
+// V5 Full. 32채널 VAE·알파 투명도 지원, 더 긴 프롬프트.
+// 요청 포맷(v4_prompt)과 인페인트 방식은 V4.5와 동일하다.
+// Vibe / Precise Reference 는 초기 버전에서 사용 불가.
+const ModelCaps _v5Full = ModelCaps(
+  id: NaiModels.v5Full,
+  displayName: 'NovelAI v5 Full',
+  supportsVibe: false, // V5 초기 버전 미지원
+  supportsPrecise: false, // V5 초기 버전 미지원
+  supportsInpaint: true,
   supportsImg2img: true,
   supportsUpscale: true,
-  supportsVarietyPlus: false, // V5 동작 여부 미확인 → 막아둠 (확인되면 true로)
-  usesV4Prompt: true, // 당분간 V4.5와 동일 포맷
+  supportsVarietyPlus: true, // skip_cfg_above_sigma 사용 확인됨
+  usesV4Prompt: true, // V4.5와 동일 포맷
   usesEncodeVibe: false, // Vibe 미지원
-  maxPromptTokens: 512, // V4.5 기준 (미확정)
-  maxUpscalePixels: 0, // 미확인
-  isPlaceholder: true, // 출시 후 실제 스펙으로 교체 필요
+  maxPromptTokens: 1471, // V5는 프롬프트 상한이 크게 늘었다 (V4.5는 512)
+  maxCharacters: 32, // V4.5는 6개, V5는 32개 슬롯
+  maxCfgScale: 10.0, // V5 Guidance 상한
+  maxSteps: 50,
+  allowsSchedulerChoice: false, // V5는 Karras 고정 (공식 UI에서도 선택기 숨김)
+  maxPixels: 3145728,
+  supportsTransparency: true, // 32채널 VAE가 알파를 네이티브 지원
+  usesFreePositioning: true, // 그리드 대신 캔버스에서 자유 배치
+  maxUpscalePixels: 1024 * 1024,
 );
 
 /// 모델 문자열 → ModelCaps 매핑 테이블.
@@ -212,7 +254,7 @@ final Map<String, ModelCaps> _capsTable = {
   ),
 
   // ---- V5 (임시 테스트) ----
-  NaiModels.v5Test: _v5Test,
+  NaiModels.v5Full: _v5Full,
 };
 
 /// 알 수 없는 모델 문자열에 대한 안전 기본값.
@@ -234,7 +276,7 @@ ModelCaps modelCapsFor(String model) {
   //    가장 구체적인 것부터 검사한다.
   // v5 계열 (4-5 / 4.5 는 V4.5이므로 먼저 걸러야 한다)
   if (!model.contains('4-5') && !model.contains('4.5') && model.contains('5')) {
-    return _v5Test.copyWith(id: model);
+    return _v5Full.copyWith(id: model);
   }
   if (model.contains('4-5') || model.contains('4.5')) {
     return _v45Full.copyWith(id: model);

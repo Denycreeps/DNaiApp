@@ -25,6 +25,7 @@ import '../app_theme.dart';
 import 'nai_character.dart';
 import 'model_caps.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'nai_account.dart';
 
 // i2i 작업 이미지가 바뀔 때 마스킹(_strokes)을 어떻게 처리할지.
 // 1회용 소비 신호 대신 이 값을 함께 세팅하여 build 타이밍 문제를 방지한다.
@@ -69,6 +70,51 @@ int estimateTokenCount(String prompt) {
     return 0;
   }
   return (prompt.trim().length / 3.1).round();
+}
+
+// 베이스 프롬프트(선행 + 긍정 + 후행)의 토큰 수
+int estimateBaseTokens(AppState state) {
+  final combined = [
+    state.prefixController.text,
+    state.positiveController.text,
+    state.suffixController.text,
+  ].where((t) => t.trim().isNotEmpty).join(', ');
+  return estimateTokenCount(combined);
+}
+
+// 활성 캐릭터 프롬프트만의 토큰 수
+int estimateCharacterTokens(AppState state) {
+  final parts = <String>[];
+  for (final c in state.characters) {
+    if (!c.isActive) {
+      continue;
+    }
+    parts.add(c.positive);
+  }
+  if (parts.isEmpty) {
+    return 0;
+  }
+  return estimateTokenCount(parts.where((t) => t.trim().isNotEmpty).join(', '));
+}
+
+// 토큰 표시용 문자열. 캐릭터가 있으면 얼마나 차지하는지 구분해서 보여준다.
+//   캐릭터 없음: "256 / 512"
+//   캐릭터 있음: "312 (256+56) / 512"
+String buildTokenLabel(AppState state, int maxTokens) {
+  final base = estimateBaseTokens(state);
+  final chars = estimateCharacterTokens(state);
+  if (chars == 0) {
+    return "$base / $maxTokens";
+  }
+  return "${base + chars} ($base+$chars) / $maxTokens";
+}
+
+// 현재 프롬프트의 총 토큰 수 (선행 + 긍정 + 후행 + 활성 캐릭터).
+// NovelAI V4/V4.5는 "base prompt + 모든 character prompts를 합쳐서" ~512 토큰 제한이므로
+// 캐릭터 프롬프트도 반드시 합산해야 실제 한도와 맞는다.
+//   https://docs.novelai.net/en/image/models/
+int estimateTotalTokens(AppState state) {
+  return estimateBaseTokens(state) + estimateCharacterTokens(state);
 }
 
 List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
@@ -1779,6 +1825,9 @@ class AppState extends ChangeNotifier {
   bool removeClothes = false;
   // 의상 상태/동작 태그 제거 (unworn, torn, grab 등)
   bool removeClothingEvents = false;
+  // 중복 태그 정리: 구체적인 태그가 있으면 그것이 함의하는 상위 태그를 제거
+  //   예: "plaid skirt"가 있으면 "skirt"는 중복이므로 삭제 → 토큰 절약
+  bool removeImpliedTags = false;
 
   // 캐릭터 탭에서 선택된 캐릭터를 한 번 더 눌러 ON/OFF 하는 기능
   // (자주 탭하는 사람은 오조작이 잦다는 의견이 있어 끌 수 있게 함)
@@ -2020,6 +2069,147 @@ class AppState extends ChangeNotifier {
   int currentImageWidth = 0;
   int currentImageHeight = 0;
   String apiToken = "";
+
+  // ── NovelAI 계정(토큰) 여러 개 관리 ──
+  //  V5의 시간당 사용 한도 때문에 계정을 번갈아 쓰는 경우가 생겼다.
+  //  apiToken은 '지금 선택된 계정의 토큰'을 담는다 → 전송 코드는 그대로 둔다.
+  List<NaiAccount> naiAccounts = [];
+  int activeAccountIndex = 0;
+
+  NaiAccount? get activeAccount =>
+      (activeAccountIndex >= 0 && activeAccountIndex < naiAccounts.length)
+      ? naiAccounts[activeAccountIndex]
+      : null;
+
+  /// 계정 전환 — 토큰을 갈아끼우고 잔액을 다시 확인한다.
+  Future<void> switchAccount(int index) async {
+    if (index < 0 || index >= naiAccounts.length) {
+      return;
+    }
+    activeAccountIndex = index;
+    apiToken = naiAccounts[index].token;
+    apiTokenController.text = apiToken;
+    isApiConnected = false; // 조회가 성공해야 연결로 본다
+    // ⚠️ 이전 계정의 잔액이 남아 있으면 새 계정 것으로 오해된다 → 먼저 비운다
+    currentAnlas = 0;
+    v5LimitPercent = null;
+    notifyListeners();
+
+    if (apiToken.isEmpty) {
+      naiAccounts[index].anlas = -1; // 토큰이 없으면 '미확인'
+      await saveAllSettings();
+      notifyListeners();
+      return;
+    }
+
+    // 새 계정의 잔액·한도를 확인
+    await fetchAnlas();
+    naiAccounts[index].anlas = isApiConnected ? currentAnlas : -1;
+    if (selectedModel == NaiModels.v5Full) {
+      await fetchV5Limit();
+    }
+    await saveAllSettings();
+    notifyListeners();
+  }
+
+  /// 계정 추가
+  Future<void> addAccount(String label, String token) async {
+    final wasEmpty = naiAccounts.isEmpty;
+    naiAccounts.add(
+      NaiAccount(
+        label: label.trim().isEmpty ? '계정 ${naiAccounts.length + 1}' : label.trim(),
+        token: token.trim(),
+      ),
+    );
+    await saveAllSettings();
+    notifyListeners();
+    // 첫 계정이면 바로 연결한다 (따로 고를 필요 없이)
+    if (wasEmpty) {
+      await switchAccount(0);
+    }
+  }
+
+  /// 계정 수정
+  void updateAccount(int index, {String? label, String? token}) {
+    if (index < 0 || index >= naiAccounts.length) {
+      return;
+    }
+    final acc = naiAccounts[index];
+    if (label != null) {
+      acc.label = label.trim();
+    }
+    if (token != null) {
+      final changed = acc.token != token.trim();
+      acc.token = token.trim();
+      if (changed) {
+        acc.anlas = -1; // 토큰이 바뀌었으니 잔액은 다시 확인해야 한다
+      }
+      if (index == activeAccountIndex) {
+        apiToken = acc.token;
+        apiTokenController.text = acc.token;
+        if (changed) {
+          // 잔액이 낡은 채로 남으면 생성 시 '포인트 소모' 경고가 잘못 뜬다
+          currentAnlas = 0;
+          isApiConnected = false;
+          v5LimitPercent = null;
+          notifyListeners();
+          // 새 토큰으로 즉시 확인
+          fetchAnlas().then((_) {
+            acc.anlas = isApiConnected ? currentAnlas : -1;
+            saveAllSettings();
+            notifyListeners();
+          });
+        }
+      }
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
+  /// 계정 삭제 — 마지막 하나는 남긴다.
+  Future<void> removeAccount(int index) async {
+    if (naiAccounts.length <= 1 || index < 0 || index >= naiAccounts.length) {
+      return;
+    }
+    final wasActive = index == activeAccountIndex;
+    naiAccounts.removeAt(index);
+
+    // 남은 계정 중 어디를 쓸지 정한다
+    int next = activeAccountIndex;
+    if (next >= naiAccounts.length) {
+      next = naiAccounts.length - 1;
+    } else if (index < activeAccountIndex) {
+      next--;
+    }
+
+    // 지운 게 쓰던 계정이면, 사용자가 직접 고른 것과 똑같이 전환한다.
+    //  (그래야 Anlas·연결 상태가 제대로 갱신된다)
+    if (wasActive) {
+      activeAccountIndex = -1; // switchAccount가 '같은 인덱스'로 보고 건너뛰지 않게
+      await switchAccount(next);
+      return;
+    }
+
+    activeAccountIndex = next;
+    await saveAllSettings();
+    notifyListeners();
+  }
+
+  /// 예전 버전(토큰 1개)에서 넘어온 데이터를 계정 목록으로 옮긴다.
+  void _migrateSingleToken() {
+    if (naiAccounts.isNotEmpty) {
+      return;
+    }
+    // 토큰이 없으면 빈 계정을 만들지 않는다.
+    //  목록이 비어 있으면 UI가 '계정을 추가해 주세요'를 보여주고,
+    //  첫 계정을 만들면 addAccount가 자동으로 연결한다.
+    if (apiToken.trim().isEmpty) {
+      return;
+    }
+    naiAccounts.add(NaiAccount(label: '계정 1', token: apiToken));
+    activeAccountIndex = 0;
+  }
+
   bool isApiConnected = false;
   int sessionSaveCount = 0;
   int sessionGenerateCount = 0;
@@ -2146,9 +2336,6 @@ class AppState extends ChangeNotifier {
   // i2i 탭이 등록하는 뒤로가기 핸들러. 릴(핸들)이 열려있으면 닫고 true 반환.
   bool Function()? i2iBackHandler;
 
-  // 설정탭이 등록하는 "첫 탭([일반])으로 리셋" 핸들러. main이 설정 진입 시 호출.
-  void Function()? settingsTabReset;
-
   // SAF에 이미지가 저장될 때마다 증가. 갤러리가 이 값 변화를 감지해 자동 갱신한다.
   int gallerySafRevision = 0;
 
@@ -2179,6 +2366,28 @@ class AppState extends ChangeNotifier {
     safBrowseStackNames = [];
   }
 
+  // 현재 폴더의 '이미지 목록만' 빠르게 읽는다 (SAF 조회 1회).
+  //  자동 새로고침처럼 하위 폴더가 바뀔 일이 없을 때 쓰면
+  //  폴더 수와 무관하게 항상 1회 조회로 끝난다.
+  Future<List<({String uri, String name})>> listSafImagesOnly(String dirUri) async {
+    final images = <({String uri, String name})>[];
+    if (!Platform.isAndroid) {
+      return images;
+    }
+    try {
+      final items = await _safUtil.list(dirUri);
+      for (final f in items) {
+        if (!f.isDir && _isSafImageName(f.name)) {
+          images.add((uri: f.uri, name: f.name));
+        }
+      }
+      images.sort((a, b) => b.name.compareTo(a.name));
+    } catch (e) {
+      debugPrint('listSafImagesOnly 실패 ($dirUri): $e');
+    }
+    return images;
+  }
+
   // SAF 디렉토리 1단계 목록 (하위폴더[개수+미리보기refs 포함] + 이미지). 빈 폴더는 제외.
   // 개수를 세는 김에 미리보기 후보(최신 4장)도 같이 뽑아 폴더당 조회를 1회로 줄인다.
   Future<
@@ -2206,21 +2415,36 @@ class AppState extends ChangeNotifier {
         }
       }
       // 각 하위폴더 1회 조회 → 직접 이미지 수 + 하위폴더 유무 + 미리보기 refs (빈 폴더 제외)
-      for (final d in subDirs) {
+      // ⚡ 순차로 돌면 폴더 20개일 때 20번을 기다려야 한다(체감 1초 이상).
+      //    SAF 조회는 I/O 대기라 병렬로 던지면 거의 1회분 시간에 끝난다.
+      //  실패한 폴더는 건너뛰되 나머지 결과는 살린다.
+      //  (list()의 원소 타입을 그대로 쓰기 위해 catch에서 null을 돌려준다)
+      final inners = await Future.wait(
+        subDirs.map((d) async {
+          try {
+            return await _safUtil.list(d.uri);
+          } catch (_) {
+            return null;
+          }
+        }),
+      );
+      for (int i = 0; i < subDirs.length; i++) {
+        final d = subDirs[i];
         int imgCount = 0;
         bool hasSub = false;
         final innerImgs = <({String uri, String name})>[];
-        try {
-          final inner = await _safUtil.list(d.uri);
-          for (final f in inner) {
-            if (f.isDir) {
-              hasSub = true;
-            } else if (_isSafImageName(f.name)) {
-              imgCount++;
-              innerImgs.add((uri: f.uri, name: f.name));
-            }
+        final inner = inners[i];
+        if (inner == null) {
+          continue; // 조회 실패한 폴더는 건너뛴다
+        }
+        for (final f in inner) {
+          if (f.isDir) {
+            hasSub = true;
+          } else if (_isSafImageName(f.name)) {
+            imgCount++;
+            innerImgs.add((uri: f.uri, name: f.name));
           }
-        } catch (_) {}
+        }
         if (imgCount > 0 || hasSub) {
           innerImgs.sort((a, b) => b.name.compareTo(a.name)); // 최신순
           folders.add((
@@ -2601,6 +2825,71 @@ class AppState extends ChangeNotifier {
     return docDir.path;
   }
 
+  // ── 모델별 상세환경 기억 ──
+  //  모델마다 잘 맞는 설정값이 다르다(예: V4.5는 28스텝, V5는 25스텝).
+  //  모델을 바꿀 때 지금 값을 그 모델 앞으로 저장해두고,
+  //  새 모델에서 마지막으로 쓰던 값을 되살린다.
+  //  기록이 없으면 현재 값을 유지한다(첫 전환에서 값이 튀지 않게).
+  Map<String, Map<String, String>> modelSettingProfiles = {};
+
+  Map<String, String> _currentDetailSnapshot() => {
+    'steps': stepsController.text,
+    'cfg': cfgScaleController.text,
+    'rescale': cfgRescaleController.text,
+    'sampler': selectedSampler,
+    'scheduler': selectedScheduler,
+    'resolution': selectedResolution,
+    'resolutionMode': resolutionMode,
+  };
+
+  void _applyDetailSnapshot(Map<String, String> p) {
+    stepsController.text = p['steps'] ?? stepsController.text;
+    cfgScaleController.text = p['cfg'] ?? cfgScaleController.text;
+    cfgRescaleController.text = p['rescale'] ?? cfgRescaleController.text;
+    selectedSampler = p['sampler'] ?? selectedSampler;
+    selectedScheduler = p['scheduler'] ?? selectedScheduler;
+    selectedResolution = p['resolution'] ?? selectedResolution;
+    resolutionMode = p['resolutionMode'] ?? resolutionMode;
+  }
+
+  // 모델별 권장 기본값 (그 모델을 처음 쓸 때만 적용된다).
+  //  공식 UI 기본값 기준 — V5는 스텝 23 / Guidance 7 / karras.
+  static const Map<String, Map<String, String>> _modelDefaults = {
+    NaiModels.v5Full: {
+      'steps': '23',
+      'cfg': '7.0',
+      'rescale': '0.00',
+      'sampler': 'k_euler_ancestral',
+      'scheduler': 'karras',
+    },
+  };
+
+  /// 모델 교체 — 현재 설정을 이전 모델 앞으로 저장하고, 새 모델의 기록을 불러온다.
+  void switchModel(String newModel) {
+    if (newModel == selectedModel) {
+      return;
+    }
+    modelSettingProfiles[selectedModel] = _currentDetailSnapshot();
+    selectedModel = newModel;
+    final saved = modelSettingProfiles[newModel];
+    if (saved != null) {
+      // 그 모델에서 마지막으로 쓰던 값 복원
+      _applyDetailSnapshot(saved);
+    } else {
+      // 처음 쓰는 모델이면 권장 기본값을 적용한다
+      final defaults = _modelDefaults[newModel];
+      if (defaults != null) {
+        _applyDetailSnapshot(defaults);
+      }
+    }
+    // 스케줄러를 못 고르는 모델(V5)은 karras로 맞춘다
+    if (!modelCapsFor(newModel).allowsSchedulerChoice) {
+      selectedScheduler = 'karras';
+    }
+    saveAllSettings();
+    notifyListeners();
+  }
+
   String selectedModel = NaiModels.v45Full;
   String selectedSampler = "k_euler_ancestral";
   String selectedScheduler = "karras";
@@ -2618,6 +2907,15 @@ class AppState extends ChangeNotifier {
   List<NaiCharacter> characters = [NaiCharacter()];
   int selectedCharIndex = 0;
   bool useCharacterPosition = true; // 캐릭터 배치 적용 ON/OFF (그리드 좌표 반영)
+
+  // V5 캐릭터 캔버스 옵션
+  bool charCanvasShowGrid = false; // 정렬용 격자선
+  bool charCanvasSnap = false; // 0.05 단위로 맞추기
+
+  // 투명 배경 (V5 전용).
+  //  켜면 요청에 straight_alpha를 실어 알파 채널이 살아있는 이미지를 받는다.
+  //  ⚠️ JPEG는 알파를 담지 못하므로 PNG나 WebP로 저장해야 의미가 있다.
+  bool transparentBackground = false;
   bool randomCharacterOrder = false; // 캐릭터 순서 랜덤 (배치 적용과 상호 배타)
 
   // 배치 적용 ↔ 랜덤 배치는 동시에 켤 수 없다 (둘 다 끄는 건 가능)
@@ -2675,6 +2973,27 @@ class AppState extends ChangeNotifier {
   String inpaintStatusMessage = ""; // 인페인트 진행 상태 실시간 표시용
 
   int currentAnlas = 0;
+
+  // ── V5 사용 한도 ──
+  //  V5는 시간당 회복되는 사용 한도가 있다.
+  //  아직 조회 API가 공개되지 않아 값을 가져올 수 없으므로, 지금은 표시 자리만 잡아둔다.
+  //  API가 확인되면 fetchV5Limit()에서 v5LimitPercent를 채우면 UI는 그대로 동작한다.
+  //  · null  = 아직 모름 (UI에 "확인중" 표시)
+  //  · 0~100 = 남은 비율(%)
+  double? v5LimitPercent;
+  DateTime? v5LimitCheckedAt;
+
+  /// V5 사용 한도 조회.
+  /// ⚠️ 미구현 — 조회 API가 공개되면 여기서 값을 채운다.
+  ///   Anlas처럼 매번 부르지 않고, 생성 직후·앱 시작 등 필요한 순간에만 호출한다.
+  Future<void> fetchV5Limit() async {
+    // TODO: V5 한도 조회 API가 공개되면 구현
+    //   final res = await _service.getV5Limit(apiKey);
+    //   v5LimitPercent = res.remainingPercent;
+    v5LimitCheckedAt = DateTime.now();
+    notifyListeners();
+  }
+
   int subscriptionTier = 0;
 
   List<Uint8List> historyImages = [];
@@ -2751,6 +3070,19 @@ class AppState extends ChangeNotifier {
 
   double historyThumbnailScrollOffset = 0.0;
   bool scrollToThumbnailEnd = false;
+
+  // 히스토리 목록을 맨 아래로 내려달라는 요청 신호.
+  //  ⚠️ 예전에는 main이 ScrollController를 만들어 HistoryTab에 넘겼는데,
+  //     KeepAlive를 켜면 탭 전환 중 두 인스턴스가 같은 컨트롤러를 붙잡아
+  //     'attached to multiple scroll views' 오류로 앱이 멈췄다.
+  //     컨트롤러는 HistoryTab이 직접 갖고, 요청만 이 값으로 전달한다.
+  int historyScrollToEndRevision = 0;
+
+  void requestHistoryScrollToEnd() {
+    historyScrollToEndRevision++;
+    notifyListeners();
+  }
+
   bool isHistoryGridView = false;
 
   int? requestedTabIndex;
@@ -2826,12 +3158,35 @@ class AppState extends ChangeNotifier {
     }
 
     apiToken = prefs.getString('api_token') ?? "";
+    // 계정 목록 복원 (없으면 기존 단일 토큰을 옮긴다)
+    final accRaw = prefs.getString('naiAccounts');
+    if (accRaw != null && accRaw.isNotEmpty) {
+      try {
+        final list = jsonDecode(accRaw) as List;
+        naiAccounts = list
+            .map((e) => NaiAccount.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+      } catch (_) {}
+    }
+    activeAccountIndex = prefs.getInt('activeAccountIndex') ?? 0;
+    _migrateSingleToken();
+    // 선택된 계정의 토큰을 실제 사용 토큰으로 맞춘다
+    if (activeAccountIndex >= naiAccounts.length) {
+      activeAccountIndex = 0;
+    }
+    if (naiAccounts.isNotEmpty) {
+      apiToken = naiAccounts[activeAccountIndex].token;
+    }
     apiTokenController.text = apiToken;
     // 토큰이 있으면 실제 서버에 검증 (Anlas 조회)
     if (apiToken.isNotEmpty) {
       try {
         _setLoadingStatus("API 연결 확인 중...");
         await fetchAnlas();
+        // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+        if (selectedModel == NaiModels.v5Full) {
+          await fetchV5Limit();
+        }
         isApiConnected = currentAnlas >= 0;
       } catch (_) {
         isApiConnected = false;
@@ -2873,6 +3228,7 @@ class AppState extends ChangeNotifier {
     removeCharacteristics = prefs.getBool('remove_char_traits') ?? false;
     removeClothes = prefs.getBool('remove_clothes') ?? false;
     removeClothingEvents = prefs.getBool('remove_clothing_events') ?? false;
+    removeImpliedTags = prefs.getBool('remove_implied_tags') ?? false;
     charRetapToggle = prefs.getBool('charRetapToggle') ?? true;
     saveFolderByDateOnly = prefs.getBool('saveFolderByDateOnly') ?? false;
     removeColors = prefs.getBool('remove_colors') ?? false;
@@ -2935,6 +3291,9 @@ class AppState extends ChangeNotifier {
     }
     characterTabEnabled = prefs.getBool('characterTabEnabled') ?? true;
     useCharacterPosition = prefs.getBool('useCharacterPosition') ?? true;
+    charCanvasShowGrid = prefs.getBool('charCanvasShowGrid') ?? false;
+    charCanvasSnap = prefs.getBool('charCanvasSnap') ?? false;
+    transparentBackground = prefs.getBool('transparentBackground') ?? false;
     randomCharacterOrder = prefs.getBool('randomCharacterOrder') ?? false;
     if (useCharacterPosition && randomCharacterOrder) {
       randomCharacterOrder = false; // 상호 배타 보정
@@ -2958,6 +3317,15 @@ class AppState extends ChangeNotifier {
       collapsedSections = collapsedJson.toSet();
     }
     selectedModel = prefs.getString('model') ?? NaiModels.v45Full;
+    final profRaw = prefs.getString('modelSettingProfiles');
+    if (profRaw != null && profRaw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(profRaw) as Map<String, dynamic>;
+        modelSettingProfiles = decoded.map(
+          (k, v) => MapEntry(k, Map<String, String>.from(v as Map)),
+        );
+      } catch (_) {}
+    }
     // 제거된 테스트 모델이 저장돼 있으면 실제 v4.5로 교정 (드롭다운 크래시 방지)
     if (selectedModel == "nai-diffusion-4-5-full-test") {
       selectedModel = NaiModels.v45Full;
@@ -3006,6 +3374,10 @@ class AppState extends ChangeNotifier {
     }
 
     await fetchAnlas();
+    // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+    if (selectedModel == NaiModels.v5Full) {
+      await fetchV5Limit();
+    }
     _setLoadingStatus("히스토리 불러오는 중...");
     await _loadHistoryFromLocal();
     await loadReferencesFromLocal();
@@ -3086,6 +3458,8 @@ class AppState extends ChangeNotifier {
     return {
       'version': currentVersion,
       'api_token': apiToken,
+      'naiAccounts': naiAccounts.map((e) => e.toJson()).toList(),
+      'activeAccountIndex': activeAccountIndex,
       'positive': positiveController.text,
       'negative': negativeController.text,
       'prefix': prefixController.text,
@@ -3107,6 +3481,7 @@ class AppState extends ChangeNotifier {
       'custom_height': customHeightController.text,
       'custom_remove': customRemoveController.text,
       'model': selectedModel,
+      'modelSettingProfiles': modelSettingProfiles,
       'sampler': selectedSampler,
       'scheduler': selectedScheduler,
       'resolutionMode': resolutionMode,
@@ -3118,6 +3493,7 @@ class AppState extends ChangeNotifier {
       'remove_char_traits': removeCharacteristics,
       'remove_clothes': removeClothes,
       'remove_clothing_events': removeClothingEvents,
+      'remove_implied_tags': removeImpliedTags,
       'charRetapToggle': charRetapToggle,
       'saveFolderByDateOnly': saveFolderByDateOnly,
       'remove_colors': removeColors,
@@ -3168,6 +3544,9 @@ class AppState extends ChangeNotifier {
       'i2iModeUpscaleEnabled': i2iModeUpscaleEnabled,
       'characterTabEnabled': characterTabEnabled,
       'useCharacterPosition': useCharacterPosition,
+      'charCanvasShowGrid': charCanvasShowGrid,
+      'charCanvasSnap': charCanvasSnap,
+      'transparentBackground': transparentBackground,
       'randomCharacterOrder': randomCharacterOrder,
       'wildcardTabEnabled': wildcardTabEnabled,
       'useGelbooruApiKey': useGelbooruApiKey,
@@ -3228,6 +3607,15 @@ class AppState extends ChangeNotifier {
     // API 토큰 복원
     if (data['api_token'] != null && data['api_token'].toString().isNotEmpty) {
       apiToken = data['api_token'];
+      if (data['naiAccounts'] != null) {
+        try {
+          naiAccounts = (data['naiAccounts'] as List)
+              .map((e) => NaiAccount.fromJson(Map<String, dynamic>.from(e as Map)))
+              .toList();
+          activeAccountIndex = data['activeAccountIndex'] ?? 0;
+        } catch (_) {}
+      }
+      _migrateSingleToken();
       apiTokenController.text = apiToken;
       // 토큰만 복원, 연결 상태는 다음 기동 시 검증
       isApiConnected = false;
@@ -3254,6 +3642,13 @@ class AppState extends ChangeNotifier {
     customHeightController.text = data['custom_height'] ?? '1216';
     customRemoveController.text = data['custom_remove'] ?? '';
     selectedModel = data['model'] ?? NaiModels.v45Full;
+    if (data['modelSettingProfiles'] != null) {
+      try {
+        modelSettingProfiles = (data['modelSettingProfiles'] as Map).map(
+          (k, v) => MapEntry(k as String, Map<String, String>.from(v as Map)),
+        );
+      } catch (_) {}
+    }
     if (selectedModel == "nai-diffusion-4-5-full-test") {
       selectedModel = NaiModels.v45Full;
     }
@@ -3270,6 +3665,7 @@ class AppState extends ChangeNotifier {
     removeCharacteristics = data['remove_char_traits'] ?? false;
     removeClothes = data['remove_clothes'] ?? false;
     removeClothingEvents = data['remove_clothing_events'] ?? false;
+    removeImpliedTags = data['remove_implied_tags'] ?? false;
     charRetapToggle = data['charRetapToggle'] ?? true;
     saveFolderByDateOnly = data['saveFolderByDateOnly'] ?? false;
     removeColors = data['remove_colors'] ?? false;
@@ -3328,6 +3724,9 @@ class AppState extends ChangeNotifier {
     }
     characterTabEnabled = data['characterTabEnabled'] ?? true;
     useCharacterPosition = data['useCharacterPosition'] ?? true;
+    charCanvasShowGrid = data['charCanvasShowGrid'] ?? false;
+    charCanvasSnap = data['charCanvasSnap'] ?? false;
+    transparentBackground = data['transparentBackground'] ?? false;
     randomCharacterOrder = data['randomCharacterOrder'] ?? false;
     if (useCharacterPosition && randomCharacterOrder) {
       randomCharacterOrder = false; // 상호 배타 보정
@@ -3461,7 +3860,11 @@ class AppState extends ChangeNotifier {
   Future<void> saveAllSettings() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('api_token', apiTokenController.text);
+      // 입력창(controller)이 아니라 실제 사용 중인 토큰을 저장한다.
+      //  계정 전환은 apiToken을 바꾸므로 controller가 낡아 있을 수 있다.
+      await prefs.setString('api_token', apiToken);
+      await prefs.setString('naiAccounts', jsonEncode(naiAccounts.map((e) => e.toJson()).toList()));
+      await prefs.setInt('activeAccountIndex', activeAccountIndex);
       await prefs.setString('custom_file_name', customFileNameController.text);
       await prefs.setString('custom_width', customWidthController.text);
       await prefs.setString('custom_height', customHeightController.text);
@@ -3492,6 +3895,7 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('remove_char_traits', removeCharacteristics);
       await prefs.setBool('remove_clothes', removeClothes);
       await prefs.setBool('remove_clothing_events', removeClothingEvents);
+      await prefs.setBool('remove_implied_tags', removeImpliedTags);
       await prefs.setBool('charRetapToggle', charRetapToggle);
       await prefs.setBool('saveFolderByDateOnly', saveFolderByDateOnly);
       await prefs.setBool('remove_colors', removeColors);
@@ -3546,6 +3950,9 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('i2iModeUpscaleEnabled', i2iModeUpscaleEnabled);
       await prefs.setBool('characterTabEnabled', characterTabEnabled);
       await prefs.setBool('useCharacterPosition', useCharacterPosition);
+      await prefs.setBool('charCanvasShowGrid', charCanvasShowGrid);
+      await prefs.setBool('charCanvasSnap', charCanvasSnap);
+      await prefs.setBool('transparentBackground', transparentBackground);
       await prefs.setBool('randomCharacterOrder', randomCharacterOrder);
       await prefs.setBool('wildcardTabEnabled', wildcardTabEnabled);
       await prefs.setStringList('promptSectionOrder', promptSectionOrder);
@@ -3558,6 +3965,7 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('useGelbooruApiKey', useGelbooruApiKey);
       await prefs.setString('resolutionMode', resolutionMode);
       await prefs.setString('model', selectedModel);
+      await prefs.setString('modelSettingProfiles', jsonEncode(modelSettingProfiles));
       await prefs.setString('sampler', selectedSampler);
       await prefs.setString('scheduler', selectedScheduler);
       await prefs.setString('resolution', selectedResolution);
@@ -3619,6 +4027,18 @@ class AppState extends ChangeNotifier {
   }
 
   void refreshUI() => notifyListeners();
+
+  // 설정 저장 디바운스.
+  //  saveAllSettings는 prefs에 100여 개를 쓰므로(수십 ms) 타이핑마다 부르면 버벅인다.
+  //  입력이 멈춘 뒤 한 번만 저장한다.
+  Timer? _saveSettingsDebounce;
+
+  void saveAllSettingsDebounced({int ms = 500}) {
+    _saveSettingsDebounce?.cancel();
+    _saveSettingsDebounce = Timer(Duration(milliseconds: ms), () {
+      saveAllSettings();
+    });
+  }
 
   // ============================================================================
   // 프리셋용 설정 스냅샷
@@ -4065,6 +4485,38 @@ class AppState extends ChangeNotifier {
         .toList();
     List<String> cleanTags = [];
 
+    // 중복(함의) 태그 정리 — 먼저 전체를 훑어 '지울 상위 태그'를 모은다.
+    //  예: "plaid skirt"가 있으면 "skirt"를 지운다.
+    //  ⚠️ 값이 또 다른 키일 수 있어(american flag skirt → print skirt → skirt)
+    //     사슬을 끝까지 따라가야 한다. 계산은 매우 가볍다(0.002ms 수준).
+    final Set<String> impliedToRemove = {};
+    if (removeImpliedTags) {
+      final stack = <String>[];
+      for (final t in rawTags) {
+        final key = t.replaceAll('_', ' ').toLowerCase();
+        if (TagFilters.tagImplications.containsKey(key)) {
+          stack.add(key);
+        }
+      }
+      final visited = <String>{};
+      while (stack.isNotEmpty) {
+        final cur = stack.removeLast();
+        for (final parent in TagFilters.tagImplications[cur] ?? const <String>[]) {
+          if (!visited.add(parent)) {
+            continue;
+          }
+          impliedToRemove.add(parent);
+          if (TagFilters.tagImplications.containsKey(parent)) {
+            stack.add(parent);
+          }
+        }
+      }
+      // 여기서 별도 보호는 하지 않는다.
+      //  impliedToRemove에는 '다른 태그가 함의하는 상위 태그'만 들어 있으므로,
+      //  그 자체가 키여도(american flag skirt → print skirt → skirt) 중복이 맞다.
+      //  프롬프트에 단독으로 있는 태그는 애초에 이 집합에 들어오지 않는다.
+    }
+
     for (String t in rawTags) {
       String cleanTag = t.replaceAll('_', ' ');
       if (t.contains('(') || t.contains(')')) {
@@ -4087,6 +4539,10 @@ class AppState extends ChangeNotifier {
       }
       if (removeClothes &&
           (TagFilters.clothesTags.contains(t) || TagFilters.clothesTags.contains(cleanTag))) {
+        continue;
+      }
+      // 중복(함의) 태그 — 더 구체적인 태그가 이미 있으므로 이건 지운다
+      if (removeImpliedTags && impliedToRemove.contains(cleanTag.toLowerCase())) {
         continue;
       }
       // 의상 상태/동작 (unworn, torn, grab 등) — 의상 제거와 짝으로 쓰면 옷 관련이 깔끔히 정리된다
@@ -4985,6 +5441,8 @@ class AppState extends ChangeNotifier {
         characters: processedCharacters,
         // 모델이 미지원이면 VAR+는 전송하지 않는다
         variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
+        // 투명 배경 (모델이 지원할 때만)
+        transparentBackground: transparentBackground,
         useCharacterPosition: useCharacterPosition,
         randomCharacterOrder: randomCharacterOrder,
         // 정밀 참조가 있으면 vibe 대신 정밀 참조 우선 (기존 동작 그대로, 필터는 위에서 1회)
@@ -5024,6 +5482,10 @@ class AppState extends ChangeNotifier {
       }
 
       await fetchAnlas();
+      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+      if (selectedModel == NaiModels.v5Full) {
+        await fetchV5Limit();
+      }
     } finally {
       if (bgInitialized && Platform.isAndroid) {
         try {
@@ -5141,8 +5603,18 @@ class AppState extends ChangeNotifier {
   // [추가] 엄격한 뮤텍스 잠금을 위한 변수 선언
   bool _isInpaintProcessing = false;
 
-  Future<void> handleInpaintGenerate(BuildContext context, Uint8List maskBytes) async {
-    // 1. 뮤텍스 검사: 앞선 작업 진행 중이라면 다중 클릭 무시
+  // i2i와 인페인트는 흐름이 거의 같다(같은 입력창·같은 뮤텍스·같은 결과 처리).
+  //  예전에는 170줄짜리 함수 두 벌이라 한쪽만 고치면 다른 쪽이 어긋나기 쉬웠다.
+  //  차이나는 부분(마스크·action·강도·캐릭터 전송)만 매개변수로 받고 하나로 합쳤다.
+  Future<void> _runI2iPipeline(
+    BuildContext context, {
+    required String action, // "img2img" 또는 "infill"
+    required String errorTitle,
+    required String resultSource,
+    Uint8List? maskBytes,
+    bool sendCharacters = true,
+  }) async {
+    // 뮤텍스: 앞선 작업이 진행 중이면 중복 클릭을 무시한다
     if (_isInpaintProcessing) {
       debugPrint('이미 처리 중입니다. 중복 요청을 무시합니다.');
       return;
@@ -5151,8 +5623,8 @@ class AppState extends ChangeNotifier {
     if (!isApiConnected) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
+          const SnackBar(
+            duration: Duration(milliseconds: 2400),
             content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
           ),
         );
@@ -5162,165 +5634,8 @@ class AppState extends ChangeNotifier {
     if (targetI2iImage == null || targetI2iMetadata == null) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
-          ),
-        );
-      }
-      return;
-    }
-
-    // 잠금 활성화
-    _isInpaintProcessing = true;
-    isInpaintLoading = true;
-    inpaintStatusMessage = "연결 중...";
-    lastErrorMessage = null;
-    notifyListeners();
-
-    bool bgInitialized = false;
-    try {
-      if (!isSeedLocked || seedController.text.isEmpty) {
-        seedController.text = Random().nextInt(4294967296).toString();
-      }
-
-      unawaited(saveAllSettings()); // 생성과 병렬 저장
-
-      int width = targetI2iMetadata!.width;
-      int height = targetI2iMetadata!.height;
-
-      String combined =
-          "${inpaintPrefixController.text},${inpaintPositiveController.text},${inpaintSuffixController.text}";
-      String step1 = _processWildcards(combined);
-
-      String finalPrompt = _service.sanitizePrompt(step1);
-      finalPrompt = _applyWeightRules(finalPrompt);
-      String finalNegative = _service.sanitizePrompt(
-        _processWildcards(inpaintNegativeController.text),
-      );
-
-      bgInitialized = await _enableBackgroundExecution();
-
-      // API 호출 (내부적으로 Isolate + 백오프가 작동함)
-      final result = await _service.generateImage(
-        positive: finalPrompt,
-        negative: finalNegative,
-        token: apiToken,
-        model: selectedModel,
-        steps: int.tryParse(stepsController.text) ?? 28,
-        sampler: selectedSampler,
-        scheduler: selectedScheduler,
-        isFurry: isFurryMode,
-        width: width,
-        height: height,
-        cfgScale: double.tryParse(cfgScaleController.text) ?? 6.0,
-        cfgRescale: double.tryParse(cfgRescaleController.text) ?? 0.0,
-        seed: int.tryParse(seedController.text) ?? 0,
-        characters: [],
-        image: targetI2iImage,
-        mask: maskBytes,
-        action: "infill",
-        infillStrength: infillStrength,
-        // 모델이 미지원이면 VAR+는 전송하지 않는다
-        variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
-        onStatus: (msg) {
-          inpaintStatusMessage = msg;
-          notifyListeners();
-        },
-      );
-
-      lastErrorMessage = result.error;
-
-      if (result.error != null) {
-        if (context.mounted) {
-          showDialog(
-            context: context,
-            builder: (ctx) => AlertDialog(
-              backgroundColor: const Color(0xFF1E1E1E),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Row(
-                children: [
-                  Icon(Icons.error_outline, color: Colors.redAccent),
-                  SizedBox(width: 8),
-                  Text(
-                    "인페인트 생성 오류",
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              content: Text(result.error!, style: const TextStyle(color: Colors.white70)),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx),
-                  child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
-                ),
-              ],
-            ),
-          );
-        }
-      } else if (result.image != null) {
-        NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
-
-        // ⚠️ 순서 중요: 마스크 처리 방식/이미지 전환을 먼저 정한 뒤 addI2iResult를 호출한다.
-        // addI2iResult가 notifyListeners()를 부르므로, 그 전에 상태가 정해져 있어야
-        // i2i_tab build가 올바르게 판단한다.
-        if (!inpaintNoAutoSwitch) {
-          // 결과를 작업 이미지로 자동 전환 → 이미지 변경 시 자동 해제 설정을 따라 마스크 처리
-          i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
-          targetI2iImage = result.image!;
-          targetI2iMetadata = parsedMeta;
-          recordI2iView(result.image!, parsedMeta); // 본 이미지 기록 추가
-        } else if (inpaintAutoClearMask) {
-          // 자동 전환은 안 하지만 자동 해제는 ON → 이미지는 그대로 두고 마스크만 즉시 해제
-          i2iMaskClearRevision++;
-        }
-        // (자동 전환 OFF + 자동 해제 OFF → 아무것도 안 함, 마스크 유지)
-
-        // 인페인트 결과는 메인 히스토리 대신 i2i 스크래치 릴로 (여기서 notifyListeners 발생)
-        addI2iResult(result.image!, parsedMeta, source: 'inpaint');
-      }
-
-      await fetchAnlas();
-    } catch (e) {
-      debugPrint('인페인트 파이프라인 에러: $e'); //
-    } finally {
-      // 백그라운드 실행 해제 (켰으면 반드시 끔 — 알림이 남지 않도록)
-      if (bgInitialized) {
-        try {
-          await FlutterBackground.disableBackgroundExecution();
-        } catch (_) {}
-      }
-      // 성공/실패 여부와 관계없이 반드시 락 해제
-      _isInpaintProcessing = false;
-      isInpaintLoading = false;
-      inpaintStatusMessage = "";
-      notifyListeners();
-    }
-  }
-
-  Future<void> handleImg2ImgGenerate(BuildContext context) async {
-    // 인페인트와 뮤텍스/로딩 상태를 공유 (i2i 탭에서 동시에 실행될 수 없음)
-    if (_isInpaintProcessing) {
-      debugPrint('이미 처리 중입니다. 중복 요청을 무시합니다.');
-      return;
-    }
-
-    if (!isApiConnected) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
-          ),
-        );
-      }
-      return;
-    }
-    if (targetI2iImage == null || targetI2iMetadata == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
+          const SnackBar(
+            duration: Duration(milliseconds: 2400),
             content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
           ),
         );
@@ -5342,34 +5657,33 @@ class AppState extends ChangeNotifier {
 
       unawaited(saveAllSettings()); // 생성과 병렬 저장
 
-      int width = targetI2iMetadata!.width;
-      int height = targetI2iMetadata!.height;
+      final int width = targetI2iMetadata!.width;
+      final int height = targetI2iMetadata!.height;
 
       // i2i 탭의 프롬프트 입력란을 그대로 사용 (인페인트와 공유)
-      String combined =
+      final String combined =
           "${inpaintPrefixController.text},${inpaintPositiveController.text},${inpaintSuffixController.text}";
       String finalPrompt = _service.sanitizePrompt(_processWildcards(combined));
       finalPrompt = _applyWeightRules(finalPrompt);
-      String finalNegative = _service.sanitizePrompt(
+      final String finalNegative = _service.sanitizePrompt(
         _processWildcards(inpaintNegativeController.text),
       );
 
       bgInitialized = await _enableBackgroundExecution();
 
-      // 실행 시점의 활성 캐릭터를 그대로 전송 (프롬프트 탭 생성과 동일 처리)
-      List<Map<String, dynamic>> processedCharacters = characters
-          .where((char) => char.isActive)
-          .map((char) {
-            Map<String, dynamic> charJson = char.toJson();
-            if (charJson.containsKey('positive')) {
-              charJson['positive'] = _processWildcards(charJson['positive'].toString());
-            }
-            if (charJson.containsKey('negative')) {
-              charJson['negative'] = _processWildcards(charJson['negative'].toString());
-            }
-            return charJson;
-          })
-          .toList();
+      // 실행 시점의 활성 캐릭터를 그대로 전송 (인페인트는 캐릭터를 보내지 않는다)
+      final List<Map<String, dynamic>> processedCharacters = sendCharacters
+          ? characters.where((char) => char.isActive).map((char) {
+              final Map<String, dynamic> charJson = char.toJson();
+              if (charJson.containsKey('positive')) {
+                charJson['positive'] = _processWildcards(charJson['positive'].toString());
+              }
+              if (charJson.containsKey('negative')) {
+                charJson['negative'] = _processWildcards(charJson['negative'].toString());
+              }
+              return charJson;
+            }).toList()
+          : <Map<String, dynamic>>[];
 
       final result = await _service.generateImage(
         positive: finalPrompt,
@@ -5387,11 +5701,15 @@ class AppState extends ChangeNotifier {
         seed: int.tryParse(seedController.text) ?? 0,
         characters: processedCharacters,
         image: targetI2iImage,
-        action: "img2img",
+        mask: maskBytes,
+        action: action,
         img2imgStrength: img2imgStrength,
         img2imgNoise: img2imgNoise,
+        infillStrength: infillStrength,
         // 모델이 미지원이면 VAR+는 전송하지 않는다
         variancePlus: isVariancePlus && modelCapsFor(selectedModel).supportsVarietyPlus,
+        // 투명 배경 (모델이 지원할 때만)
+        transparentBackground: transparentBackground,
         useCharacterPosition: useCharacterPosition,
         randomCharacterOrder: randomCharacterOrder,
         onStatus: (msg) {
@@ -5409,13 +5727,13 @@ class AppState extends ChangeNotifier {
             builder: (ctx) => AlertDialog(
               backgroundColor: const Color(0xFF1E1E1E),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Row(
+              title: Row(
                 children: [
-                  Icon(Icons.error_outline, color: Colors.redAccent),
-                  SizedBox(width: 8),
+                  const Icon(Icons.error_outline, color: Colors.redAccent),
+                  const SizedBox(width: 8),
                   Text(
-                    "img2img 생성 오류",
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    errorTitle,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                   ),
                 ],
               ),
@@ -5430,25 +5748,36 @@ class AppState extends ChangeNotifier {
           );
         }
       } else if (result.image != null) {
-        NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
+        final NaiMetadata? parsedMeta = extractNovelAIMetadata(result.image!);
 
-        // 인페인트와 동일: 자동 전환 설정을 따르고, 결과는 릴에 추가
+        // ⚠️ 순서 중요: 마스크 처리 방식/이미지 전환을 먼저 정한 뒤 addI2iResult를 호출한다.
+        //    addI2iResult가 notifyListeners()를 부르므로, 그 전에 상태가 정해져 있어야
+        //    i2i_tab build가 올바르게 판단한다.
         if (!inpaintNoAutoSwitch) {
+          // 결과를 작업 이미지로 자동 전환 → 이미지 변경 시 자동 해제 설정을 따라 마스크 처리
           i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
           targetI2iImage = result.image!;
           targetI2iMetadata = parsedMeta;
-          recordI2iView(result.image!, parsedMeta);
+          recordI2iView(result.image!, parsedMeta); // 본 이미지 기록 추가
         } else if (inpaintAutoClearMask) {
+          // 자동 전환은 안 하지만 자동 해제는 ON → 이미지는 그대로 두고 마스크만 즉시 해제
           i2iMaskClearRevision++;
         }
+        // (자동 전환 OFF + 자동 해제 OFF → 아무것도 안 함, 마스크 유지)
 
-        addI2iResult(result.image!, parsedMeta, source: 'img2img');
+        // 결과는 메인 히스토리 대신 i2i 스크래치 릴로 (여기서 notifyListeners 발생)
+        addI2iResult(result.image!, parsedMeta, source: resultSource);
       }
 
       await fetchAnlas();
+      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+      if (selectedModel == NaiModels.v5Full) {
+        await fetchV5Limit();
+      }
     } catch (e) {
-      debugPrint('img2img 파이프라인 에러: $e');
+      debugPrint('$action 파이프라인 에러: $e');
     } finally {
+      // 백그라운드 실행 해제 (켰으면 반드시 끔 — 알림이 남지 않도록)
       if (bgInitialized) {
         try {
           await FlutterBackground.disableBackgroundExecution();
@@ -5456,11 +5785,34 @@ class AppState extends ChangeNotifier {
           debugPrint("백그라운드 해제 오류: $e");
         }
       }
+      // 성공/실패 여부와 관계없이 반드시 락 해제
       _isInpaintProcessing = false;
       isInpaintLoading = false;
       inpaintStatusMessage = "";
       notifyListeners();
     }
+  }
+
+  /// i2i 생성 — 원본 이미지를 참고해 다시 그린다.
+  Future<void> handleImg2ImgGenerate(BuildContext context) {
+    return _runI2iPipeline(
+      context,
+      action: "img2img",
+      errorTitle: "img2img 생성 오류",
+      resultSource: "img2img",
+    );
+  }
+
+  /// 인페인트 생성 — 마스크로 칠한 부분만 다시 그린다.
+  Future<void> handleInpaintGenerate(BuildContext context, Uint8List maskBytes) {
+    return _runI2iPipeline(
+      context,
+      action: "infill",
+      errorTitle: "인페인트 생성 오류",
+      resultSource: "inpaint",
+      maskBytes: maskBytes,
+      sendCharacters: false, // 인페인트는 캐릭터를 보내지 않는다
+    );
   }
 
   Future<void> handleUpscaleGenerate(BuildContext context) async {
@@ -5649,6 +6001,10 @@ class AppState extends ChangeNotifier {
       }
 
       await fetchAnlas();
+      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+      if (selectedModel == NaiModels.v5Full) {
+        await fetchV5Limit();
+      }
     } finally {
       isUpscaleLoading = false;
       notifyListeners();
@@ -5999,6 +6355,15 @@ class AppState extends ChangeNotifier {
       return;
     }
     if (path != null) {
+      // 어디에 무슨 이름으로 저장됐는지 알려준다 (릴에서 꾹 누르지 않고 저장했을 때 특히 유용)
+      final name = path.split(RegExp(r'[/\\]')).last;
+      final where = safRootUri != null ? (safRootName ?? '저장 폴더') : 'DNaiApp';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: const Duration(milliseconds: 2600),
+          content: Text("💾 $where 에 저장했어요\n$name"),
+        ),
+      );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("저장에 실패했습니다.")));
     }
@@ -6600,6 +6965,21 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 파일 존재 여부 확인
   // ============================================================================
+  // 경로별 존재 여부 캐시.
+  //  이 함수는 히스토리 그리드/리스트의 itemBuilder에서 불리므로
+  //  스크롤 한 번에 수십~수백 번 호출된다. 매번 디스크를 두드리면
+  //  스크롤이 눈에 띄게 끊기므로 결과를 기억해 둔다.
+  //  (저장·삭제처럼 파일이 바뀌는 시점에 invalidateFileExistsCache로 비운다)
+  final Map<String, bool> _fileExistsCache = {};
+
+  void invalidateFileExistsCache([String? path]) {
+    if (path == null) {
+      _fileExistsCache.clear();
+    } else {
+      _fileExistsCache.remove(path);
+    }
+  }
+
   bool checkFileExistsSync(int index) {
     if (index < 0 || index >= historyFilePaths.length) {
       return false;
@@ -6608,7 +6988,17 @@ class AppState extends ChangeNotifier {
     if (path == null || path.isEmpty) {
       return false;
     }
-    return File(path).existsSync();
+    final cached = _fileExistsCache[path];
+    if (cached != null) {
+      return cached;
+    }
+    final exists = File(path).existsSync();
+    _fileExistsCache[path] = exists;
+    // 캐시가 무한정 커지지 않게 (히스토리 상한보다 넉넉히)
+    if (_fileExistsCache.length > 300) {
+      _fileExistsCache.remove(_fileExistsCache.keys.first);
+    }
+    return exists;
   }
 
   // ============================================================================
@@ -6644,7 +7034,7 @@ class AppState extends ChangeNotifier {
     // 버전 키워드 매칭 (구체적인 것부터 체크)
     // v5 메타데이터가 v4로 오인되지 않도록 v5를 먼저 검사한다.
     if (lower.contains('v5')) {
-      return NaiModels.v5Test;
+      return NaiModels.v5Full;
     }
     if (lower.contains('v4.5')) {
       return NaiModels.v45Full;
@@ -6734,6 +7124,9 @@ class AppState extends ChangeNotifier {
         }
         if (index < historyFilePaths.length) {
           historyFilePaths[index] = savedPath;
+          if (savedPath != null) {
+            _fileExistsCache[savedPath] = true; // 방금 저장했으므로 존재
+          }
         }
         saveHistoryToLocal();
       } else if (result.error != null && context.mounted) {
@@ -6745,6 +7138,10 @@ class AppState extends ChangeNotifier {
         );
       }
       await fetchAnlas();
+      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
+      if (selectedModel == NaiModels.v5Full) {
+        await fetchV5Limit();
+      }
     } catch (e) {
       debugPrint("재생성 오류: $e");
       if (context.mounted) {
@@ -6782,7 +7179,7 @@ class AppState extends ChangeNotifier {
 
   // PNG 바이트를 WebP(무손실)로 변환하고 원본 메타데이터를 EXIF로 이식한다.
   // 실패하면 null을 반환해 호출부가 원본(PNG)으로 폴백하도록 한다.
-  Future<Uint8List?> _convertToWebpWithMetadata(Uint8List pngBytes) async {
+  Future<Uint8List?> _convertToWebpWithMetadata(Uint8List pngBytes, {bool lossless = false}) async {
     try {
       // 1) 원본 PNG의 파라미터 JSON을 먼저 확보 (변환하면 사라지므로)
       String? metaJson;
@@ -6796,7 +7193,7 @@ class AppState extends ChangeNotifier {
       final encoded = await FlutterImageCompress.compressWithList(
         pngBytes,
         format: CompressFormat.webp,
-        quality: webpLossy ? 95 : 100,
+        quality: (webpLossy && !lossless) ? 95 : 100,
       );
       if (encoded.isEmpty) {
         return null;
@@ -6822,9 +7219,13 @@ class AppState extends ChangeNotifier {
     final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
     String ext = isJpeg ? 'jpg' : 'png';
 
+    // ⚠️ 투명 배경으로 뽑은 이미지는 손실 WebP로 저장하면 알파가 뭉개진다.
+    //    이럴 때는 무손실로 강제해 투명도를 지킨다.
+    final bool forceLossless = transparentBackground;
+
     // 설정이 켜져 있고 PNG일 때만 WebP로 변환 (실패하면 원본 그대로)
     if (saveAsWebp && !isJpeg) {
-      final converted = await _convertToWebpWithMetadata(bytes);
+      final converted = await _convertToWebpWithMetadata(bytes, lossless: forceLossless);
       if (converted != null) {
         bytes = converted;
         ext = 'webp';
@@ -6879,9 +7280,12 @@ class AppState extends ChangeNotifier {
     String ext = isJpeg ? 'jpg' : 'png';
     final messenger = ScaffoldMessenger.of(context); // async gap 전에 캡처
 
+    // ⚠️ 투명 배경 이미지는 손실 WebP로 저장하면 알파가 뭉개진다 → 무손실 강제
+    final bool forceLossless = transparentBackground;
+
     // 자동 저장과 동일하게 WebP 설정을 반영 (실패 시 원본 유지)
     if (saveAsWebp && !isJpeg) {
-      final converted = await _convertToWebpWithMetadata(bytes);
+      final converted = await _convertToWebpWithMetadata(bytes, lossless: forceLossless);
       if (converted != null) {
         bytes = converted;
         ext = 'webp';
@@ -6935,6 +7339,14 @@ class AppState extends ChangeNotifier {
 
   Future<void> fetchAnlas() async {
     if (apiToken.isEmpty) {
+      // 토큰이 없으면 잔액도 없는 상태로 되돌린다
+      currentAnlas = 0;
+      isApiConnected = false;
+      final empty = activeAccount;
+      if (empty != null) {
+        empty.anlas = -1;
+      }
+      notifyListeners();
       return;
     }
     final result = await _service.fetchUserInfo(apiToken);
@@ -6942,6 +7354,11 @@ class AppState extends ChangeNotifier {
       currentAnlas = result['anlas'] ?? 0;
       subscriptionTier = result['tier'] ?? 0;
       isApiConnected = true;
+      // 계정 목록에도 잔액을 기록해 어느 계정이 여유 있는지 보이게 한다
+      final acc = activeAccount;
+      if (acc != null) {
+        acc.anlas = currentAnlas;
+      }
       notifyListeners();
     }
   }

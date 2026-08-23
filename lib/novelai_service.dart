@@ -130,6 +130,17 @@ class NovelAiService {
   static const String _gelbooruProxy = "https://gelbooru-proxy.dnaiapp.workers.dev";
   // ───────────────────────────────────────────────────────────────────────
 
+  // 응답 본문을 UTF-8로 안전하게 읽는다.
+  //  http 패키지의 response.body는 서버가 charset을 명시하지 않으면
+  //  latin-1로 디코드해 한글·일본어가 깨진다. 바이트에서 직접 디코드한다.
+  String _utf8Body(http.Response response) {
+    try {
+      return utf8.decode(response.bodyBytes);
+    } catch (_) {
+      return response.body; // 혹시 UTF-8이 아니면 원래 방식으로
+    }
+  }
+
   String sanitizePrompt(String input) {
     return input.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).join(', ');
   }
@@ -259,7 +270,7 @@ class NovelAiService {
       return 0;
     }
     try {
-      final decoded = jsonDecode(response.body);
+      final decoded = jsonDecode(_utf8Body(response));
       if (decoded['post'] == null) {
         return 0;
       }
@@ -350,7 +361,7 @@ class NovelAiService {
       for (int i = 0; i < results.length; i++) {
         final response = results[i];
         if (response != null && response.statusCode == 200) {
-          List<dynamic> data = jsonDecode(response.body);
+          List<dynamic> data = jsonDecode(_utf8Body(response));
           final Set<String> found = {};
           for (var tagInfo in data) {
             String name = tagInfo['name'];
@@ -622,7 +633,7 @@ class NovelAiService {
           return;
         }
         try {
-          final decoded = jsonDecode(response.body);
+          final decoded = jsonDecode(_utf8Body(response));
           if (decoded['post'] == null) {
             return;
           }
@@ -845,7 +856,10 @@ class NovelAiService {
     try {
       final response = await http.post(
         Uri.parse(encodeVibeUrl),
-        headers: {"Authorization": "Bearer $token", "Content-Type": "application/json"},
+        headers: {
+          "Authorization": "Bearer $token",
+          "Content-Type": "application/json; charset=utf-8",
+        },
         body: jsonEncode({
           "image": base64Image,
           "information_extracted": infoExtracted,
@@ -886,6 +900,7 @@ class NovelAiService {
     double img2imgStrength = 0.5, // img2img: 원본을 얼마나 바꿀지 (낮을수록 원본 충실)
     double img2imgNoise = 0.1, // img2img: 새 디테일 추가량
     bool variancePlus = false,
+    bool transparentBackground = false,
     bool useCharacterPosition = true,
     bool randomCharacterOrder = false, // 캐릭터 순서 랜덤 (배치 적용과 상호 배타)
     List<Map<String, dynamic>>? vibeTransfers,
@@ -910,12 +925,16 @@ class NovelAiService {
         apiModel = "${caps.serverModelId}-inpainting";
       }
 
+      // 모델별 상한을 넘지 않게 정리한다 (V5는 CFG 10, 스텝 50이 상한)
+      final safeCfg = cfgScale.clamp(0.0, caps.maxCfgScale);
+      final safeSteps = steps.clamp(1, caps.maxSteps);
+
       Map<String, dynamic> parameters = {
         "width": width,
         "height": height,
-        "scale": cfgScale,
+        "scale": safeCfg,
         "sampler": sampler,
-        "steps": steps,
+        "steps": safeSteps,
         "seed": seed,
         "n_samples": 1,
       };
@@ -976,7 +995,17 @@ class NovelAiService {
         parameters["variety_plus"] = true;
       }
 
-      if (scheduler != "native") {
+      // 투명 배경 (V5 전용). 알파 채널을 그대로 받는다.
+      //  프롬프트에 "transparent background" 같은 태그도 함께 쓰면 더 잘 먹는다.
+      if (transparentBackground && caps.supportsTransparency) {
+        parameters["straight_alpha"] = true;
+      }
+
+      // V5는 노이즈 스케줄이 Karras로 고정된다 (공식 UI에서도 선택기가 숨겨짐).
+      // 다른 값이 남아 있어도 요청은 karras로 정규화한다.
+      if (!caps.allowsSchedulerChoice) {
+        parameters["noise_schedule"] = "karras";
+      } else if (scheduler != "native") {
         parameters["noise_schedule"] = scheduler;
       }
 
@@ -1013,8 +1042,10 @@ class NovelAiService {
         }
 
         for (var char in orderedCharacters) {
-          double cx = (char['gridX'] * 0.2) + 0.1;
-          double cy = (char['gridY'] * 0.2) + 0.1;
+          // 자유 좌표(posX/posY)가 있으면 그대로 쓰고, 없으면 5x5 그리드에서 환산한다.
+          //  V5는 캔버스 어디든 찍을 수 있어 그리드로는 표현되지 않는다.
+          double cx = (char['posX'] as num?)?.toDouble() ?? ((char['gridX'] * 0.2) + 0.1);
+          double cy = (char['posY'] as num?)?.toDouble() ?? ((char['gridY'] * 0.2) + 0.1);
           var center = {"x": cx, "y": cy};
 
           if ((char['positive'] as String).isNotEmpty) {
@@ -1151,7 +1182,7 @@ class NovelAiService {
                 Uri.parse(apiUrl),
                 headers: {
                   "Authorization": "Bearer $token",
-                  "Content-Type": "application/json",
+                  "Content-Type": "application/json; charset=utf-8",
                   "Accept": "application/zip",
                 },
                 body: jsonEncode(requestBody),
@@ -1169,10 +1200,10 @@ class NovelAiService {
           } else if (response.statusCode == 429) {
             String errorMessage = '';
             try {
-              final errorBody = jsonDecode(response.body);
+              final errorBody = jsonDecode(_utf8Body(response));
               errorMessage = errorBody['message']?.toString().toLowerCase() ?? '';
             } catch (_) {
-              errorMessage = response.body.toLowerCase();
+              errorMessage = _utf8Body(response).toLowerCase();
             }
 
             if (errorMessage.contains('concurrent')) {
@@ -1188,7 +1219,7 @@ class NovelAiService {
             // 500 응답 body를 안전하게 파싱해서 디버그 출력
             String serverMsg = '';
             try {
-              serverMsg = jsonDecode(response.body)['message']?.toString() ?? response.body;
+              serverMsg = jsonDecode(_utf8Body(response))['message']?.toString() ?? response.body;
             } catch (_) {
               serverMsg = response.body;
             }
@@ -1197,7 +1228,7 @@ class NovelAiService {
           } else {
             String errorMsg = response.body;
             try {
-              errorMsg = jsonDecode(response.body)['message']?.toString() ?? response.body;
+              errorMsg = jsonDecode(_utf8Body(response))['message']?.toString() ?? response.body;
             } catch (_) {}
             final code = response.statusCode;
             String friendly;
@@ -1261,7 +1292,7 @@ class NovelAiService {
             Uri.parse(upscaleUrl),
             headers: {
               "Authorization": "Bearer $token",
-              "Content-Type": "application/json",
+              "Content-Type": "application/json; charset=utf-8",
               "Accept": "application/json",
             },
             body: jsonEncode({"image": base64Image, "width": width, "height": height, "scale": 4}),
@@ -1278,7 +1309,7 @@ class NovelAiService {
       } else {
         String errorMsg = "서버 오류";
         try {
-          errorMsg = jsonDecode(response.body)['message'] ?? response.body;
+          errorMsg = jsonDecode(_utf8Body(response))['message'] ?? response.body;
         } catch (_) {
           errorMsg = response.body.isNotEmpty ? response.body : "알 수 없는 오류 발생";
         }
@@ -1298,11 +1329,14 @@ class NovelAiService {
 
       final response = await http.get(
         url,
-        headers: {'Authorization': 'Bearer $cleanToken', 'Content-Type': 'application/json'},
+        headers: {
+          'Authorization': 'Bearer $cleanToken',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
       );
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+        final data = jsonDecode(_utf8Body(response));
 
         int tier = data['tier'] ?? 0;
         int anlas = 0;

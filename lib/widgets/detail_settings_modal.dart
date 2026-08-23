@@ -6,11 +6,7 @@ import '../models/app_state.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 
-const List<String> _models = [
-  NaiModels.v4Full,
-  NaiModels.v45Full,
-  NaiModels.v5Test, // 임시 테스트용 (실제 생성 보장 안 됨)
-];
+const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full, NaiModels.v5Full];
 const List<String> _samplers = [
   "k_euler_ancestral",
   "k_euler",
@@ -45,6 +41,123 @@ void showDetailSettingsModal(BuildContext context) {
     builder: (modalContext) {
       return StatefulBuilder(
         builder: (BuildContext context, StateSetter setModalState) {
+          // VAR+ 토글 (모델이 미지원이면 잠금) — 하단 토글 줄에서 쓴다
+          Widget varPlusToggle() {
+            return GestureDetector(
+              onTap: () {
+                if (!modelCapsFor(state.selectedModel).supportsVarietyPlus) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
+                      ),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                  return;
+                }
+                setModalState(() => state.isVariancePlus = !state.isVariancePlus);
+              },
+              child: Opacity(
+                opacity: modelCapsFor(state.selectedModel).supportsVarietyPlus ? 1.0 : 0.35,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: state.isVariancePlus
+                        ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
+                        : const Color(0xFF2A2A2D),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white24,
+                      width: 1.5,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        "VAR+",
+                        style: TextStyle(
+                          color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white38,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        width: 28,
+                        height: 16,
+                        decoration: BoxDecoration(
+                          color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white24,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: AnimatedAlign(
+                          duration: const Duration(milliseconds: 200),
+                          alignment: state.isVariancePlus
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: Container(
+                            width: 12,
+                            height: 12,
+                            margin: const EdgeInsets.symmetric(horizontal: 2),
+                            decoration: const BoxDecoration(
+                              color: Colors.white,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }
+
+          // 투명 배경(알파) 토글 — V5 전용
+          Widget alphaToggle() {
+            final on = state.transparentBackground;
+            return GestureDetector(
+              onTap: () {
+                setModalState(() => state.transparentBackground = !on);
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                height: 38,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  color: on
+                      ? const Color(0xFF00BFA5).withValues(alpha: 0.22)
+                      : const Color(0xFF2A2A2D),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: on ? const Color(0xFF00BFA5) : Colors.white24),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      on ? Icons.check_box_outlined : Icons.check_box_outline_blank,
+                      size: 16,
+                      color: on ? const Color(0xFF00BFA5) : Colors.white38,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      "알파",
+                      style: TextStyle(
+                        color: on ? const Color(0xFF00BFA5) : Colors.white38,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
+
           Widget buildLabel(String text) => Padding(
             padding: const EdgeInsets.only(bottom: 6, left: 4),
             child: Text(
@@ -104,94 +217,64 @@ void showDetailSettingsModal(BuildContext context) {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       const Text(
-                        "상세 환경 설정",
+                        "상세 환경",
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      // VAR+ 토글 버튼 (모델이 미지원이면 잠금)
-                      GestureDetector(
-                        onTap: () {
-                          if (!modelCapsFor(state.selectedModel).supportsVarietyPlus) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
-                                ),
-                                duration: const Duration(seconds: 2),
+                      const SizedBox(width: 10),
+                      // 모델을 제목 옆에 둔다.
+                      //  아래 설정들이 '이 모델의 값'이라는 게 한눈에 보이도록 한 배치.
+                      //  모델을 바꾸면 그 모델에서 마지막으로 쓰던 설정이 복원된다.
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF2A2A2D),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              // 저장된 모델이 목록에 없으면(예: 제거된 테스트 모델) 기본값으로 폴백
+                              value: _models.contains(state.selectedModel)
+                                  ? state.selectedModel
+                                  : NaiModels.v45Full,
+                              isExpanded: true,
+                              isDense: true,
+                              dropdownColor: const Color(0xFF2A2A2D),
+                              icon: const Icon(
+                                Icons.keyboard_arrow_down_rounded,
+                                color: Colors.grey,
+                                size: 20,
                               ),
-                            );
-                            return;
-                          }
-                          setModalState(() => state.isVariancePlus = !state.isVariancePlus);
-                        },
-                        child: Opacity(
-                          opacity: modelCapsFor(state.selectedModel).supportsVarietyPlus
-                              ? 1.0
-                              : 0.35,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: state.isVariancePlus
-                                  ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
-                                  : const Color(0xFF2A2A2D),
-                              borderRadius: BorderRadius.circular(20),
-                              border: Border.all(
-                                color: state.isVariancePlus
-                                    ? Colors.deepPurpleAccent
-                                    : Colors.white24,
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  "VAR+",
-                                  style: TextStyle(
-                                    color: state.isVariancePlus
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white38,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                AnimatedContainer(
-                                  duration: const Duration(milliseconds: 200),
-                                  width: 28,
-                                  height: 16,
-                                  decoration: BoxDecoration(
-                                    color: state.isVariancePlus
-                                        ? Colors.deepPurpleAccent
-                                        : Colors.white24,
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: AnimatedAlign(
-                                    duration: const Duration(milliseconds: 200),
-                                    alignment: state.isVariancePlus
-                                        ? Alignment.centerRight
-                                        : Alignment.centerLeft,
-                                    child: Container(
-                                      width: 12,
-                                      height: 12,
-                                      margin: const EdgeInsets.symmetric(horizontal: 2),
-                                      decoration: const BoxDecoration(
-                                        color: Colors.white,
-                                        shape: BoxShape.circle,
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              items: _models
+                                  .map(
+                                    (e) => DropdownMenuItem(
+                                      value: e,
+                                      child: Text(
+                                        modelCapsFor(e).isPlaceholder
+                                            ? modelCapsFor(e).displayName
+                                            : e,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                     ),
-                                  ),
-                                ),
-                              ],
+                                  )
+                                  .toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  // 모델별 상세환경을 저장·복원한다
+                                  setModalState(() => state.switchModel(val));
+                                }
+                              },
                             ),
                           ),
                         ),
                       ),
+                      const SizedBox(width: 10),
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -413,78 +496,7 @@ void showDetailSettingsModal(BuildContext context) {
                   ),
                   const SizedBox(height: 12),
 
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 55,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            buildLabel("모델"),
-                            buildInputContainer(
-                              DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  // 저장된 모델이 목록에 없으면(예: 제거된 테스트 모델) 기본값으로 폴백
-                                  value: _models.contains(state.selectedModel)
-                                      ? state.selectedModel
-                                      : NaiModels.v45Full,
-                                  isExpanded: true,
-                                  isDense: true,
-                                  dropdownColor: const Color(0xFF2A2A2D),
-                                  icon: const Icon(
-                                    Icons.keyboard_arrow_down_rounded,
-                                    color: Colors.grey,
-                                    size: 20,
-                                  ),
-                                  style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                  items: _models
-                                      .map(
-                                        (e) => DropdownMenuItem(
-                                          value: e,
-                                          // 테스트 모델은 API 문자열 대신 표시 이름으로 보여준다
-                                          child: Text(
-                                            modelCapsFor(e).isPlaceholder
-                                                ? modelCapsFor(e).displayName
-                                                : e,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      )
-                                      .toList(),
-                                  onChanged: (val) {
-                                    if (val != null) {
-                                      setModalState(() => state.selectedModel = val);
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        flex: 45,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            buildLabel("스텝"),
-                            buildInputContainer(
-                              TextField(
-                                controller: state.stepsController,
-                                keyboardType: TextInputType.number,
-                                style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                decoration: const InputDecoration(
-                                  border: InputBorder.none,
-                                  isCollapsed: true,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                  // 모델은 맨 위(제목 옆)로 옮겼다. 여기는 스텝 + 투명 배경.
                   const SizedBox(height: 12),
 
                   Row(
@@ -537,29 +549,53 @@ void showDetailSettingsModal(BuildContext context) {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             buildLabel("스케줄러"),
-                            buildInputContainer(
-                              DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: state.selectedScheduler,
-                                  isExpanded: true,
-                                  isDense: true,
-                                  dropdownColor: const Color(0xFF2A2A2D),
-                                  icon: const Icon(
-                                    Icons.keyboard_arrow_down_rounded,
-                                    color: Colors.grey,
-                                    size: 20,
+                            // V5는 Karras 고정이라 선택기를 잠근다 (공식 UI도 숨김 처리)
+                            Builder(
+                              builder: (context) {
+                                final caps = modelCapsFor(state.selectedModel);
+                                if (!caps.allowsSchedulerChoice) {
+                                  return buildInputContainer(
+                                    Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.lock_outline,
+                                          size: 14,
+                                          color: Colors.white24,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        const Text(
+                                          "karras (고정)",
+                                          style: TextStyle(color: Colors.white38, fontSize: 13.5),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                                return buildInputContainer(
+                                  DropdownButtonHideUnderline(
+                                    child: DropdownButton<String>(
+                                      value: state.selectedScheduler,
+                                      isExpanded: true,
+                                      isDense: true,
+                                      dropdownColor: const Color(0xFF2A2A2D),
+                                      icon: const Icon(
+                                        Icons.keyboard_arrow_down_rounded,
+                                        color: Colors.grey,
+                                        size: 20,
+                                      ),
+                                      style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                                      items: _schedulers
+                                          .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                                          .toList(),
+                                      onChanged: (val) {
+                                        if (val != null) {
+                                          setModalState(() => state.selectedScheduler = val);
+                                        }
+                                      },
+                                    ),
                                   ),
-                                  style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                  items: _schedulers
-                                      .map((e) => DropdownMenuItem(value: e, child: Text(e)))
-                                      .toList(),
-                                  onChanged: (val) {
-                                    if (val != null) {
-                                      setModalState(() => state.selectedScheduler = val);
-                                    }
-                                  },
-                                ),
-                              ),
+                                );
+                              },
                             ),
                           ],
                         ),
@@ -638,14 +674,36 @@ void showDetailSettingsModal(BuildContext context) {
                   ),
                   const SizedBox(height: 12),
 
+                  // 스텝 · 프롬프트 가이던스 · 리스케일을 한 줄에
                   Row(
                     children: [
                       Expanded(
-                        flex: 55,
+                        flex: 30,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            buildLabel("CFG Scale"),
+                            buildLabel("스텝"),
+                            buildInputContainer(
+                              TextField(
+                                controller: state.stepsController,
+                                keyboardType: TextInputType.number,
+                                style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                                decoration: const InputDecoration(
+                                  border: InputBorder.none,
+                                  isCollapsed: true,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        flex: 35,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            buildLabel("Prompt Guidance"),
                             buildInputContainer(
                               TextField(
                                 controller: state.cfgScaleController,
@@ -660,13 +718,13 @@ void showDetailSettingsModal(BuildContext context) {
                           ],
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 10),
                       Expanded(
-                        flex: 45,
+                        flex: 35,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            buildLabel("CFG Rescale"),
+                            buildLabel("Prompt Rescale"),
                             buildInputContainer(
                               TextField(
                                 controller: state.cfgRescaleController,
@@ -681,6 +739,17 @@ void showDetailSettingsModal(BuildContext context) {
                           ],
                         ),
                       ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  // 하단 토글 줄 — 앞으로 버튼이 더 늘어날 수 있어 Wrap으로 둔다
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      varPlusToggle(),
+                      if (modelCapsFor(state.selectedModel).supportsTransparency) alphaToggle(),
                     ],
                   ),
                 ],
