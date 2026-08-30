@@ -3,8 +3,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/image_metadata.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
+import '../app_theme.dart';
 
 const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full, NaiModels.v5Full];
 const List<String> _samplers = [
@@ -65,11 +67,11 @@ void showDetailSettingsModal(BuildContext context) {
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
                     color: state.isVariancePlus
-                        ? Colors.deepPurpleAccent.withValues(alpha: 0.25)
-                        : const Color(0xFF2A2A2D),
+                        ? AppColors.accent.withValues(alpha: 0.25)
+                        : AppColors.surfaceAlt,
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white24,
+                      color: state.isVariancePlus ? AppColors.accent : Colors.white24,
                       width: 1.5,
                     ),
                   ),
@@ -79,7 +81,7 @@ void showDetailSettingsModal(BuildContext context) {
                       Text(
                         "VAR+",
                         style: TextStyle(
-                          color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white38,
+                          color: state.isVariancePlus ? AppColors.accent : Colors.white38,
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 0.5,
@@ -91,7 +93,7 @@ void showDetailSettingsModal(BuildContext context) {
                         width: 28,
                         height: 16,
                         decoration: BoxDecoration(
-                          color: state.isVariancePlus ? Colors.deepPurpleAccent : Colors.white24,
+                          color: state.isVariancePlus ? AppColors.accent : Colors.white24,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: AnimatedAlign(
@@ -129,11 +131,9 @@ void showDetailSettingsModal(BuildContext context) {
                 height: 38,
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 decoration: BoxDecoration(
-                  color: on
-                      ? const Color(0xFF00BFA5).withValues(alpha: 0.22)
-                      : const Color(0xFF2A2A2D),
+                  color: on ? AppColors.teal.withValues(alpha: 0.22) : AppColors.surfaceAlt,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: on ? const Color(0xFF00BFA5) : Colors.white24),
+                  border: Border.all(color: on ? AppColors.teal : Colors.white24),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -141,13 +141,13 @@ void showDetailSettingsModal(BuildContext context) {
                     Icon(
                       on ? Icons.check_box_outlined : Icons.check_box_outline_blank,
                       size: 16,
-                      color: on ? const Color(0xFF00BFA5) : Colors.white38,
+                      color: on ? AppColors.teal : Colors.white38,
                     ),
                     const SizedBox(width: 6),
                     Text(
                       "알파",
                       style: TextStyle(
-                        color: on ? const Color(0xFF00BFA5) : Colors.white38,
+                        color: on ? AppColors.teal : Colors.white38,
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
                       ),
@@ -175,7 +175,7 @@ void showDetailSettingsModal(BuildContext context) {
             padding: const EdgeInsets.symmetric(horizontal: 12),
             alignment: Alignment.centerLeft,
             decoration: BoxDecoration(
-              color: const Color(0xFF2A2A2D),
+              color: AppColors.surfaceAlt,
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: Colors.white12),
             ),
@@ -193,7 +193,7 @@ void showDetailSettingsModal(BuildContext context) {
               top: 12,
             ),
             decoration: const BoxDecoration(
-              color: Color(0xFF1E1E1E),
+              color: AppColors.surface,
               borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
             ),
             child: SingleChildScrollView(
@@ -232,7 +232,7 @@ void showDetailSettingsModal(BuildContext context) {
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF2A2A2D),
+                            color: AppColors.surfaceAlt,
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(color: Colors.white12),
                           ),
@@ -244,7 +244,7 @@ void showDetailSettingsModal(BuildContext context) {
                                   : NaiModels.v45Full,
                               isExpanded: true,
                               isDense: true,
-                              dropdownColor: const Color(0xFF2A2A2D),
+                              dropdownColor: AppColors.surfaceAlt,
                               icon: const Icon(
                                 Icons.keyboard_arrow_down_rounded,
                                 color: Colors.grey,
@@ -304,22 +304,14 @@ void showDetailSettingsModal(BuildContext context) {
                                         if (resParts.length < 2) {
                                           return "";
                                         }
-                                        var w =
-                                            ((int.tryParse(resParts[0]) ?? 832) * 1.5 / 64)
-                                                .round() *
-                                            64;
-                                        var h =
-                                            ((int.tryParse(resParts[1]) ?? 1216) * 1.5 / 64)
-                                                .round() *
-                                            64;
-                                        while (w * h > 3145728) {
-                                          if (w > h) {
-                                            w -= 64;
-                                          } else {
-                                            h -= 64;
-                                          }
-                                        }
-                                        final anlas = (w * h > 1048576) ? " Anlas" : "";
+                                        final (w, h) = clampResolution(
+                                          ((int.tryParse(resParts[0]) ?? 832) * 1.5).round(),
+                                          ((int.tryParse(resParts[1]) ?? 1216) * 1.5).round(),
+                                          modelCapsFor(state.selectedModel).maxPixels,
+                                        );
+                                        final anlas = (w * h > AppState.kMegapixelCap)
+                                            ? " Anlas"
+                                            : "";
                                         return " → $w x $h$anlas";
                                       }(),
                                       style: TextStyle(
@@ -344,7 +336,7 @@ void showDetailSettingsModal(BuildContext context) {
                                       : "832 x 1216",
                                   isExpanded: true,
                                   isDense: true,
-                                  dropdownColor: const Color(0xFF2A2A2D),
+                                  dropdownColor: AppColors.surfaceAlt,
                                   icon: const Icon(
                                     Icons.keyboard_arrow_down_rounded,
                                     color: Colors.grey,
@@ -416,12 +408,12 @@ void showDetailSettingsModal(BuildContext context) {
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                             decoration: BoxDecoration(
                               color: state.resolutionScale == 1.5
-                                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
-                                  : const Color(0xFF2A2A2D),
+                                  ? AppColors.purple.withValues(alpha: 0.2)
+                                  : AppColors.surfaceAlt,
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
                                 color: state.resolutionScale == 1.5
-                                    ? const Color(0xFF8B5CF6)
+                                    ? AppColors.purple
                                     : Colors.white12,
                                 width: state.resolutionScale == 1.5 ? 1.5 : 1,
                               ),
@@ -430,7 +422,7 @@ void showDetailSettingsModal(BuildContext context) {
                               "1.5x",
                               style: TextStyle(
                                 color: state.resolutionScale == 1.5
-                                    ? const Color(0xFF8B5CF6)
+                                    ? AppColors.purple
                                     : Colors.white54,
                                 fontWeight: FontWeight.bold,
                                 fontSize: 12,
@@ -453,7 +445,7 @@ void showDetailSettingsModal(BuildContext context) {
                                   value: state.resolutionMode,
                                   isExpanded: true,
                                   isDense: true,
-                                  dropdownColor: const Color(0xFF2A2A2D),
+                                  dropdownColor: AppColors.surfaceAlt,
                                   icon: const Icon(
                                     Icons.keyboard_arrow_down_rounded,
                                     color: Colors.grey,
@@ -470,7 +462,7 @@ void showDetailSettingsModal(BuildContext context) {
                                         child: Text(
                                           label,
                                           style: const TextStyle(
-                                            color: Color(0xFF8B5CF6),
+                                            color: AppColors.purple,
                                             fontSize: 13.5,
                                             fontWeight: FontWeight.bold,
                                           ),
@@ -516,7 +508,7 @@ void showDetailSettingsModal(BuildContext context) {
                                       : _samplers.first,
                                   isExpanded: true,
                                   isDense: true,
-                                  dropdownColor: const Color(0xFF2A2A2D),
+                                  dropdownColor: AppColors.surfaceAlt,
                                   icon: const Icon(
                                     Icons.keyboard_arrow_down_rounded,
                                     color: Colors.grey,
@@ -577,7 +569,7 @@ void showDetailSettingsModal(BuildContext context) {
                                       value: state.selectedScheduler,
                                       isExpanded: true,
                                       isDense: true,
-                                      dropdownColor: const Color(0xFF2A2A2D),
+                                      dropdownColor: AppColors.surfaceAlt,
                                       icon: const Icon(
                                         Icons.keyboard_arrow_down_rounded,
                                         color: Colors.grey,
@@ -649,7 +641,7 @@ void showDetailSettingsModal(BuildContext context) {
                                       height: 20,
                                       child: Checkbox(
                                         value: state.isSeedLocked,
-                                        activeColor: Colors.deepPurpleAccent,
+                                        activeColor: AppColors.accent,
                                         shape: RoundedRectangleBorder(
                                           borderRadius: BorderRadius.circular(4),
                                         ),
@@ -779,7 +771,7 @@ void showSaveImageModal(
 
   showModalBottomSheet(
     context: context,
-    backgroundColor: const Color(0xFF1E1E1E),
+    backgroundColor: AppColors.surface,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
@@ -812,7 +804,7 @@ void showSaveImageModal(
             ListTile(
               leading: Icon(
                 alreadySaved ? Icons.check_circle : Icons.download,
-                color: alreadySaved ? Colors.tealAccent : Colors.deepPurpleAccent,
+                color: alreadySaved ? Colors.tealAccent : AppColors.accent,
               ),
               title: Text(
                 alreadySaved ? "이미 저장된 이미지" : "기본 폴더에 저장",
@@ -840,7 +832,7 @@ void showSaveImageModal(
 
             // [추가] i2i 전송 액션 및 탭 이동!
             ListTile(
-              leading: const Icon(Icons.brush, color: Colors.deepPurpleAccent),
+              leading: Icon(Icons.brush, color: AppColors.accent),
               title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
               subtitle: const Text(
                 "i2i 탭으로 이미지를 보내 후가공(인페인트 등)을 진행합니다.",
@@ -864,7 +856,7 @@ void showSaveImageModal(
             ),
 
             ListTile(
-              leading: const Icon(Icons.file_download_outlined, color: Colors.deepPurpleAccent),
+              leading: Icon(Icons.file_download_outlined, color: AppColors.accent),
               title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
               subtitle: const Text(
                 "이 이미지의 프롬프트와 설정을 현재 작업 환경에 불러옵니다.",
@@ -901,31 +893,48 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
   bool addCharactersAsNew = true;
   bool loadSettings = true;
 
+  final int charCount = meta.characterPrompts.length;
+
   showDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (context, setDialogState) {
-        Widget checkItem(
-          String label,
-          bool value,
-          ValueChanged<bool?> onChanged, {
-          double leftPadding = 0,
+        // 항목 한 줄 — 왼쪽 아이콘 + 이름, 오른쪽 스위치
+        Widget row({
+          required IconData icon,
+          required String label,
+          String? trailingText,
+          required bool value,
+          required ValueChanged<bool> onChanged,
         }) {
           return InkWell(
             onTap: () => onChanged(!value),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(10),
             child: Padding(
-              padding: EdgeInsets.only(left: leftPadding, top: 6, bottom: 6),
+              // 손가락으로 누르기 편하게 위아래 여백을 넉넉히
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 11),
               child: Row(
                 children: [
-                  Checkbox(
-                    value: value,
-                    onChanged: onChanged,
-                    activeColor: Colors.deepPurpleAccent,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                  ),
+                  Icon(icon, size: 20, color: value ? AppColors.accent : Colors.white24),
+                  const SizedBox(width: 12),
                   Expanded(
-                    child: Text(label, style: const TextStyle(color: Colors.white, fontSize: 15)),
+                    child: Text(
+                      label,
+                      style: TextStyle(color: value ? Colors.white : Colors.white38, fontSize: 16),
+                    ),
+                  ),
+                  if (trailingText != null) ...[
+                    Text(trailingText, style: const TextStyle(color: Colors.white38, fontSize: 14)),
+                    const SizedBox(width: 8),
+                  ],
+                  SizedBox(
+                    height: 24,
+                    child: Switch(
+                      value: value,
+                      onChanged: onChanged,
+                      activeThumbColor: AppColors.accent,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
                   ),
                 ],
               ),
@@ -934,41 +943,72 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
         }
 
         return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+          contentPadding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          title: Row(
             children: [
-              Icon(Icons.file_download_outlined, color: Colors.deepPurpleAccent),
+              Icon(Icons.file_download_outlined, color: AppColors.accent, size: 20),
               SizedBox(width: 8),
               Text(
-                "프롬프트 불러오기",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                "불러오기",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
               ),
             ],
           ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text("불러올 항목을 선택하세요.", style: TextStyle(color: Colors.white54, fontSize: 13)),
-              const SizedBox(height: 12),
-              checkItem("긍정적 프롬프트", loadPositive, (v) {
-                setDialogState(() => loadPositive = v ?? true);
-              }),
-              checkItem("부정적 프롬프트", loadNegative, (v) {
-                setDialogState(() => loadNegative = v ?? true);
-              }),
-              checkItem("캐릭터 (${meta.characterPrompts.length}개)", loadCharacters, (v) {
-                setDialogState(() => loadCharacters = v ?? true);
-              }),
-              if (loadCharacters && meta.characterPrompts.isNotEmpty)
-                checkItem("└ 새로 추가하기", addCharactersAsNew, (v) {
-                  setDialogState(() => addCharactersAsNew = v ?? true);
-                }, leftPadding: 24),
-              checkItem("상세 설정 (샘플러, 스텝, 시드 등)", loadSettings, (v) {
-                setDialogState(() => loadSettings = v ?? true);
-              }),
-            ],
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                row(
+                  icon: Icons.add_circle_outline,
+                  label: "긍정적 프롬프트",
+                  value: loadPositive,
+                  onChanged: (v) => setDialogState(() => loadPositive = v),
+                ),
+                row(
+                  icon: Icons.remove_circle_outline,
+                  label: "부정적 프롬프트",
+                  value: loadNegative,
+                  onChanged: (v) => setDialogState(() => loadNegative = v),
+                ),
+                row(
+                  icon: Icons.people_alt_outlined,
+                  label: "캐릭터",
+                  trailingText: charCount > 0 ? "$charCount개" : null,
+                  value: loadCharacters,
+                  onChanged: (v) => setDialogState(() => loadCharacters = v),
+                ),
+                // ⚠️ 캐릭터를 끄면 이 줄이 사라져 창 높이가 갑자기 줄고,
+                //    그 바람에 아래 버튼을 잘못 누르게 된다.
+                //    자리는 유지하고 '흐리게 + 반응 없음'으로만 처리한다.
+                IgnorePointer(
+                  ignoring: !loadCharacters || charCount == 0,
+                  child: Opacity(
+                    opacity: (loadCharacters && charCount > 0) ? 1.0 : 0.35,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 22),
+                      child: row(
+                        icon: Icons.playlist_add,
+                        label: "기존 뒤에 추가",
+                        value: addCharactersAsNew,
+                        onChanged: (v) => setDialogState(() => addCharactersAsNew = v),
+                      ),
+                    ),
+                  ),
+                ),
+                row(
+                  icon: Icons.tune,
+                  label: "상세 설정",
+                  value: loadSettings,
+                  onChanged: (v) => setDialogState(() => loadSettings = v),
+                ),
+              ],
+            ),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
@@ -989,8 +1029,8 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
                 );
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurpleAccent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                backgroundColor: AppColors.accent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
               ),
               child: const Text(
                 "불러오기",
@@ -1027,25 +1067,52 @@ void _applyMetadata(
   }
 
   if (characters && meta.characterPrompts.isNotEmpty) {
-    if (!addCharactersAsNew) {
-      state.characters.clear();
-    }
-    int startIndex = state.characters.length;
+    // '새로 추가하기' 켜짐 → 뒤에 이어 붙인다
+    // '새로 추가하기' 꺼짐 → 1번부터 덮어쓴다 (나머지는 그대로 둔다)
+    final int startIndex = addCharactersAsNew ? state.characters.length : 0;
+
     for (int i = 0; i < meta.characterPrompts.length; i++) {
-      state.characters.add(
-        NaiCharacter(
-          name: "캐릭터 ${startIndex + i + 1}",
-          positive: meta.characterPrompts[i],
-          negative: i < meta.characterUndesiredContents.length
-              ? meta.characterUndesiredContents[i]
-              : "",
-        ),
-      );
+      final int slot = startIndex + i;
+      final String positive = meta.characterPrompts[i];
+      final String negative = i < meta.characterUndesiredContents.length
+          ? meta.characterUndesiredContents[i]
+          : "";
+
+      // 덮어쓸 자리가 있으면 그 캐릭터의 내용만 바꾼다.
+      //  (이름·색 같은 사용자 설정은 최대한 살린다)
+      if (slot < state.characters.length) {
+        final ch = state.characters[slot];
+        ch.positive = positive;
+        ch.negative = negative;
+        ch.isActive = true; // 덮어쓴 자리는 켜 둔다
+        if (i < meta.characterCenters.length) {
+          final c = meta.characterCenters[i];
+          if (c.length >= 2) {
+            ch.setPosition(c[0], c[1]);
+          }
+        }
+      } else {
+        // 자리가 모자라면 새로 만든다
+        final ch = NaiCharacter(name: "캐릭터 ${slot + 1}", positive: positive, negative: negative);
+        if (i < meta.characterCenters.length) {
+          final c = meta.characterCenters[i];
+          if (c.length >= 2) {
+            ch.setPosition(c[0], c[1]);
+          }
+        }
+        state.characters.add(ch);
+      }
     }
+
+    // 선택 인덱스가 범위를 벗어나지 않게 보정
+    if (state.selectedCharIndex >= state.characters.length) {
+      state.selectedCharIndex = state.characters.isEmpty ? 0 : state.characters.length - 1;
+    }
+
     applied.add(
       addCharactersAsNew
           ? "캐릭터 ${meta.characterPrompts.length}개 추가"
-          : "캐릭터 ${meta.characterPrompts.length}개",
+          : "캐릭터 ${meta.characterPrompts.length}개 덮어쓰기",
     );
   }
 
@@ -1108,7 +1175,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setDialogState) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text(
           "커스텀 해상도",
@@ -1132,7 +1199,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                         hintText: "가로",
                         hintStyle: const TextStyle(color: Colors.white30),
                         filled: true,
-                        fillColor: const Color(0xFF121212),
+                        fillColor: AppColors.background,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                           borderSide: BorderSide.none,
@@ -1154,7 +1221,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                         hintText: "세로",
                         hintStyle: const TextStyle(color: Colors.white30),
                         filled: true,
-                        fillColor: const Color(0xFF121212),
+                        fillColor: AppColors.background,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                           borderSide: BorderSide.none,
@@ -1168,20 +1235,15 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                       final w = int.tryParse(wCtrl.text);
                       final h = int.tryParse(hCtrl.text);
                       if (w != null && h != null && w > 0 && h > 0) {
-                        // 64px 정렬
-                        var aw = ((w / 64).round() * 64).clamp(64, 9999);
-                        var ah = ((h / 64).round() * 64).clamp(64, 9999);
-                        // 최대 픽셀 제한 (3,145,728px)
-                        while (aw * ah > 3145728) {
-                          if (aw > ah) {
-                            aw -= 64;
-                          } else {
-                            ah -= 64;
-                          }
-                        }
+                        // 64px 정렬 + 모델별 픽셀 상한 (공용 헬퍼)
+                        final (aw, ah) = clampResolution(
+                          w,
+                          h,
+                          modelCapsFor(state.selectedModel).maxPixels,
+                        );
                         final res = "$aw x $ah";
                         final adjusted = (aw != w || ah != h);
-                        final warning = (aw * ah > 1048576) ? " (Anlas 소모)" : "";
+                        final warning = (aw * ah > AppState.kMegapixelCap) ? " (Anlas 소모)" : "";
                         if (!state.customResolutions.contains(res)) {
                           state.customResolutions.add(res);
                           state.saveAllSettings();
@@ -1200,7 +1262,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                       }
                     },
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF8B5CF6),
+                      backgroundColor: AppColors.purple,
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
@@ -1232,17 +1294,17 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                   final pixels =
                       (int.tryParse(parts[0]) ?? 0) *
                       (int.tryParse(parts.length > 1 ? parts[1] : "0") ?? 0);
-                  final consumesAnlas = pixels > 1048576;
+                  final consumesAnlas = pixels > AppState.kMegapixelCap;
                   return Container(
                     margin: const EdgeInsets.only(bottom: 4),
                     decoration: BoxDecoration(
                       color: state.selectedResolution == res
-                          ? const Color(0xFF8B5CF6).withValues(alpha: 0.1)
+                          ? AppColors.purple.withValues(alpha: 0.1)
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: state.selectedResolution == res
-                            ? const Color(0xFF8B5CF6).withValues(alpha: 0.4)
+                            ? AppColors.purple.withValues(alpha: 0.4)
                             : Colors.white12,
                       ),
                     ),
@@ -1293,5 +1355,11 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
         ],
       ),
     ),
-  );
+  ).then((_) {
+    // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      wCtrl.dispose();
+      hCtrl.dispose();
+    });
+  });
 }

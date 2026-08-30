@@ -13,9 +13,14 @@ import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:archive/archive.dart';
 import '../models/app_state.dart';
+import '../models/nai_presets.dart';
+import '../widgets/preset_save_dialog.dart';
+import '../models/preset_models.dart';
+import '../models/text_controllers.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 import 'prompt_edit_dialog.dart';
+import '../app_theme.dart';
 
 // ============================================================================
 // 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
@@ -163,7 +168,7 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
         Container(
           constraints: const BoxConstraints(minHeight: 44, maxHeight: 132),
           decoration: BoxDecoration(
-            border: Border.all(color: Colors.deepPurpleAccent),
+            border: Border.all(color: AppColors.accent),
             borderRadius: BorderRadius.circular(4),
           ),
           child: TextField(
@@ -196,9 +201,9 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
                   margin: const EdgeInsets.only(top: 4),
                   constraints: const BoxConstraints(maxHeight: 150),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
+                    color: AppColors.surface,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
+                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(4),
@@ -290,7 +295,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 right: 16,
               ),
               decoration: const BoxDecoration(
-                color: Color(0xFF1E1E1E),
+                color: AppColors.surface,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
               ),
               child: Column(
@@ -310,7 +315,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   // 타이틀 + 저장 버튼
                   Row(
                     children: [
-                      const Icon(Icons.bookmarks, color: Colors.deepPurpleAccent, size: 24),
+                      Icon(Icons.bookmarks, color: AppColors.accent, size: 24),
                       const SizedBox(width: 8),
                       const Text(
                         "프롬프트 프리셋 관리",
@@ -330,17 +335,17 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           decoration: BoxDecoration(
                             color: Colors.deepPurple.withValues(alpha: 0.3),
                             borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: Colors.deepPurpleAccent),
+                            border: Border.all(color: AppColors.accent),
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.add, color: Colors.deepPurpleAccent, size: 16),
+                              Icon(Icons.add, color: AppColors.accent, size: 16),
                               SizedBox(width: 4),
                               Text(
                                 "저장",
                                 style: TextStyle(
-                                  color: Colors.deepPurpleAccent,
+                                  color: AppColors.accent,
                                   fontSize: 12,
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -355,35 +360,19 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   // 카테고리 탭
                   Row(
                     children: [
-                      _buildCategoryChip(
-                        'positive',
-                        '긍정',
-                        const Color(0xFF00BFA5),
-                        selectedCategory,
-                        (cat) {
-                          setModalState(() => selectedCategory = cat);
-                        },
-                      ),
+                      _buildCategoryChip('positive', '긍정', AppColors.teal, selectedCategory, (cat) {
+                        setModalState(() => selectedCategory = cat);
+                      }),
                       const SizedBox(width: 6),
-                      _buildCategoryChip(
-                        'prefix',
-                        '선행',
-                        const Color(0xFF29B6F6),
-                        selectedCategory,
-                        (cat) {
-                          setModalState(() => selectedCategory = cat);
-                        },
-                      ),
+                      _buildCategoryChip('prefix', '선행', AppColors.blue, selectedCategory, (cat) {
+                        setModalState(() => selectedCategory = cat);
+                      }),
                       const SizedBox(width: 6),
-                      _buildCategoryChip(
-                        'characters',
-                        '캐릭터',
-                        Colors.deepPurpleAccent,
-                        selectedCategory,
-                        (cat) {
-                          setModalState(() => selectedCategory = cat);
-                        },
-                      ),
+                      _buildCategoryChip('characters', '캐릭터', AppColors.accent, selectedCategory, (
+                        cat,
+                      ) {
+                        setModalState(() => selectedCategory = cat);
+                      }),
                       const SizedBox(width: 6),
                       _buildCategoryChip('etc', '기타', Colors.grey, selectedCategory, (cat) {
                         setModalState(() => selectedCategory = cat);
@@ -661,16 +650,13 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                           }
 
                                           return AlertDialog(
-                                            backgroundColor: const Color(0xFF1E1E1E),
+                                            backgroundColor: AppColors.surface,
                                             shape: RoundedRectangleBorder(
                                               borderRadius: BorderRadius.circular(16),
                                             ),
                                             title: Row(
                                               children: [
-                                                const Icon(
-                                                  Icons.info_outline,
-                                                  color: Colors.deepPurpleAccent,
-                                                ),
+                                                Icon(Icons.info_outline, color: AppColors.accent),
                                                 const SizedBox(width: 8),
                                                 Expanded(
                                                   child: GestureDetector(
@@ -799,25 +785,21 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                     ),
                                                     const SizedBox(height: 12),
                                                   ],
-                                                  buildSection(
-                                                    "선행",
-                                                    preset.prefix,
-                                                    const Color(0xFF29B6F6),
-                                                  ),
+                                                  buildSection("선행", preset.prefix, AppColors.blue),
                                                   buildSection(
                                                     "긍정적",
                                                     preset.positive,
-                                                    const Color(0xFF00BFA5),
+                                                    AppColors.teal,
                                                   ),
                                                   buildSection(
                                                     "후행",
                                                     preset.suffix,
-                                                    const Color(0xFFFFA000),
+                                                    AppColors.orange,
                                                   ),
                                                   buildSection(
                                                     "부정적",
                                                     preset.negative,
-                                                    const Color(0xFFFF5252),
+                                                    AppColors.red,
                                                   ),
                                                   if (preset.settings != null)
                                                     buildSection(
@@ -845,7 +827,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                             ? c['name']
                                                             : "캐릭터 ${i + 1}",
                                                         display.isEmpty ? '(비어있음)' : display,
-                                                        Colors.deepPurpleAccent,
+                                                        AppColors.accent,
                                                       );
                                                     }),
                                                   if (preset.prefix.isEmpty &&
@@ -865,7 +847,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                               ElevatedButton(
                                                 onPressed: () => Navigator.pop(ctx),
                                                 style: ElevatedButton.styleFrom(
-                                                  backgroundColor: Colors.deepPurpleAccent,
+                                                  backgroundColor: AppColors.accent,
                                                   shape: RoundedRectangleBorder(
                                                     borderRadius: BorderRadius.circular(8),
                                                   ),
@@ -956,13 +938,13 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         }
                                       },
                                       style: OutlinedButton.styleFrom(
-                                        side: const BorderSide(color: Colors.deepPurpleAccent),
+                                        side: BorderSide(color: AppColors.accent),
                                         padding: const EdgeInsets.symmetric(horizontal: 12),
                                       ),
-                                      child: const Text(
+                                      child: Text(
                                         "적용",
                                         style: TextStyle(
-                                          color: Colors.deepPurpleAccent,
+                                          color: AppColors.accent,
                                           fontWeight: FontWeight.bold,
                                         ),
                                       ),
@@ -1107,7 +1089,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     showDialog(
       context: context,
       builder: (rctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text(
           "이름 변경",
@@ -1121,7 +1103,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             hintText: "새 프리셋 이름",
             hintStyle: const TextStyle(color: Colors.white30),
             filled: true,
-            fillColor: const Color(0xFF121212),
+            fillColor: AppColors.background,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
               borderSide: BorderSide.none,
@@ -1136,7 +1118,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           ),
           ElevatedButton(
             onPressed: () => commit(rctx),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             child: const Text(
               "저장",
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1144,7 +1126,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           ),
         ],
       ),
-    );
+    ).then((_) {
+      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        renameCtrl.dispose();
+      });
+    });
   }
 
   // 프리셋 적용 (선택된 항목만)
@@ -1212,12 +1199,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             Widget chip(MapEntry<String, bool> entry) {
               final color =
                   {
-                    'positive': const Color(0xFF00BFA5),
-                    'negative': const Color(0xFFFF5252),
-                    'prefix': const Color(0xFF29B6F6),
-                    'suffix': const Color(0xFFFFA000),
+                    'positive': AppColors.teal,
+                    'negative': AppColors.red,
+                    'prefix': AppColors.blue,
+                    'suffix': AppColors.orange,
                     'settings': Colors.amber,
-                    'characters': Colors.deepPurpleAccent,
+                    'characters': AppColors.accent,
                   }[entry.key] ??
                   Colors.grey;
 
@@ -1269,7 +1256,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           }
 
           return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: Text(
               "'${preset.name}' 불러오기",
@@ -1310,7 +1297,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     );
                   }
                 },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+                style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
                 child: const Text(
                   "불러오기",
                   style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1363,7 +1350,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     showDialog(
       context: parentContext,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Text(
           "'${preset.name}' 복사",
@@ -1592,7 +1579,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context: parentContext,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Text(
             "내보낼 Vibe 선택",
@@ -1627,16 +1614,16 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
                         color: isSel
-                            ? const Color(0xFF8B5CF6).withValues(alpha: 0.15)
+                            ? AppColors.purple.withValues(alpha: 0.15)
                             : Colors.transparent,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: isSel ? const Color(0xFF8B5CF6) : Colors.white24),
+                        border: Border.all(color: isSel ? AppColors.purple : Colors.white24),
                       ),
                       child: Row(
                         children: [
                           Icon(
                             isSel ? Icons.check_box : Icons.check_box_outline_blank,
-                            color: isSel ? const Color(0xFF8B5CF6) : Colors.white38,
+                            color: isSel ? AppColors.purple : Colors.white38,
                             size: 20,
                           ),
                           const SizedBox(width: 8),
@@ -1680,7 +1667,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           final sorted = selected.toList()..sort();
                           doExport(sorted);
                         },
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
                   child: Text(
                     selected.length <= 1 ? "내보내기" : "${selected.length}개 묶음 내보내기",
                     style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1742,7 +1729,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         child: StatefulBuilder(
           builder: (ctx, setDialogState) {
             return AlertDialog(
-              backgroundColor: const Color(0xFF1E1E1E),
+              backgroundColor: AppColors.surface,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               contentPadding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
               titlePadding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
@@ -1753,8 +1740,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   dividerColor: Colors.transparent,
                   labelPadding: const EdgeInsets.symmetric(horizontal: 4),
                   tabs: [
-                    _buildVibeTab("Vibe", const Color(0xFF8B5CF6)),
-                    _buildVibeTab("Character Ref", const Color(0xFF00BFA5)),
+                    _buildVibeTab("Vibe", AppColors.purple),
+                    _buildVibeTab("Character Ref", AppColors.teal),
                   ],
                 ),
               ),
@@ -1795,7 +1782,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
                                           color: isEnabled
-                                              ? const Color(0xFF8B5CF6).withValues(alpha: 0.5)
+                                              ? AppColors.purple.withValues(alpha: 0.5)
                                               : Colors.white12,
                                         ),
                                       ),
@@ -1853,7 +1840,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                             ? Icons.visibility
                                                             : Icons.visibility_off,
                                                         color: isEnabled
-                                                            ? const Color(0xFF8B5CF6)
+                                                            ? AppColors.purple
                                                             : Colors.white38,
                                                         size: 18,
                                                       ),
@@ -1894,7 +1881,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                               borderRadius: BorderRadius.vertical(
                                                 bottom: Radius.circular(7),
                                               ),
-                                              color: Color(0xFF121212),
+                                              color: AppColors.background,
                                             ),
                                             child: Center(
                                               child: Text(
@@ -2077,7 +2064,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         borderRadius: BorderRadius.circular(8),
                                         border: Border.all(
                                           color: isEnabled
-                                              ? const Color(0xFF8B5CF6).withValues(alpha: 0.5)
+                                              ? AppColors.purple.withValues(alpha: 0.5)
                                               : Colors.white12,
                                         ),
                                       ),
@@ -2135,7 +2122,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                             ? Icons.visibility
                                                             : Icons.visibility_off,
                                                         color: isEnabled
-                                                            ? const Color(0xFF8B5CF6)
+                                                            ? AppColors.purple
                                                             : Colors.white38,
                                                         size: 18,
                                                       ),
@@ -2179,7 +2166,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                               borderRadius: BorderRadius.vertical(
                                                 bottom: Radius.circular(7),
                                               ),
-                                              color: Color(0xFF121212),
+                                              color: AppColors.background,
                                             ),
                                             child: Center(
                                               child: Text(
@@ -2391,7 +2378,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 showDialog(
                                   context: parentContext,
                                   builder: (confirmCtx) => AlertDialog(
-                                    backgroundColor: const Color(0xFF1E1E1E),
+                                    backgroundColor: AppColors.surface,
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(16),
                                     ),
@@ -2485,7 +2472,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text(
             "Reference ${idx + 1} 설정",
@@ -2560,11 +2547,11 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 padding: const EdgeInsets.symmetric(vertical: 8),
                                 decoration: BoxDecoration(
                                   color: isActive
-                                      ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
+                                      ? AppColors.purple.withValues(alpha: 0.2)
                                       : Colors.transparent,
                                   borderRadius: BorderRadius.circular(8),
                                   border: Border.all(
-                                    color: isActive ? const Color(0xFF8B5CF6) : Colors.white24,
+                                    color: isActive ? AppColors.purple : Colors.white24,
                                     width: isActive ? 1.5 : 1,
                                   ),
                                 ),
@@ -2572,7 +2559,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                   child: Text(
                                     t['label']!,
                                     style: TextStyle(
-                                      color: isActive ? const Color(0xFF8B5CF6) : Colors.white54,
+                                      color: isActive ? AppColors.purple : Colors.white54,
                                       fontSize: 11,
                                       fontWeight: FontWeight.bold,
                                     ),
@@ -2595,7 +2582,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     Text(
                       "${(strength * 100).round()}%",
                       style: const TextStyle(
-                        color: Color(0xFF8B5CF6),
+                        color: AppColors.purple,
                         fontWeight: FontWeight.bold,
                         fontSize: 13,
                       ),
@@ -2607,7 +2594,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   min: 0.0,
                   max: 1.0,
                   divisions: 100,
-                  activeColor: const Color(0xFF8B5CF6),
+                  activeColor: AppColors.purple,
                   onChanged: (v) {
                     setDialogState(() => strength = v);
                   },
@@ -2623,7 +2610,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     Text(
                       "${(fidelity * 100).round()}%",
                       style: const TextStyle(
-                        color: Color(0xFF8B5CF6),
+                        color: AppColors.purple,
                         fontWeight: FontWeight.bold,
                         fontSize: 13,
                       ),
@@ -2635,7 +2622,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   min: 0.0,
                   max: 1.0,
                   divisions: 100,
-                  activeColor: const Color(0xFF8B5CF6),
+                  activeColor: AppColors.purple,
                   onChanged: (v) {
                     setDialogState(() => fidelity = v);
                   },
@@ -2658,7 +2645,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 state.saveReferencesToLocal();
                 Navigator.pop(ctx);
               },
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
               child: const Text(
                 "확인",
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -2683,7 +2670,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text(
             "Vibe ${idx + 1} 설정",
@@ -2734,7 +2721,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   Text(
                     "${(strength * 100).round()}%",
                     style: const TextStyle(
-                      color: Color(0xFF8B5CF6),
+                      color: AppColors.purple,
                       fontWeight: FontWeight.bold,
                       fontSize: 13,
                     ),
@@ -2746,7 +2733,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 min: 0.01,
                 max: 1.0,
                 divisions: 99,
-                activeColor: const Color(0xFF8B5CF6),
+                activeColor: AppColors.purple,
                 onChanged: (v) {
                   setDialogState(() => strength = v);
                 },
@@ -2762,7 +2749,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   Text(
                     "${(infoExtracted * 100).round()}%",
                     style: const TextStyle(
-                      color: Color(0xFF8B5CF6),
+                      color: AppColors.purple,
                       fontWeight: FontWeight.bold,
                       fontSize: 13,
                     ),
@@ -2774,7 +2761,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 min: 0.01,
                 max: 1.0,
                 divisions: 99,
-                activeColor: const Color(0xFF8B5CF6),
+                activeColor: AppColors.purple,
                 onChanged: (v) {
                   setDialogState(() => infoExtracted = v);
                 },
@@ -2802,12 +2789,130 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 state.saveReferencesToLocal();
                 Navigator.pop(ctx);
               },
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
               child: const Text(
                 "확인",
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 공식 프리셋 선택 칩 (Quality Tags / UC Preset)
+  //  탭하면 목록이 뜨고, 고른 이름이 칩에 표시된다.
+  Widget _presetChip(AppState state, bool isPositive, Color color) {
+    final options = isPositive
+        ? NaiPresets.qualityFor(state.selectedModel)
+        : NaiPresets.ucFor(state.selectedModel);
+    final current = isPositive ? state.qualityTagsPreset : state.ucPreset;
+    final active = NaiPresets.find(options, current);
+    final isNone = active.tags.isEmpty;
+
+    return GestureDetector(
+      onTap: () => _showPresetPicker(state, isPositive, options, color),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: isNone ? Colors.transparent : color.withValues(alpha: 0.18),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: isNone ? Colors.white24 : color.withValues(alpha: 0.6)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              active.label,
+              style: TextStyle(
+                color: isNone ? Colors.white38 : color,
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(width: 2),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 14,
+              color: isNone ? Colors.white38 : color,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 프리셋 목록 (아래에서 올라오는 시트)
+  void _showPresetPicker(
+    AppState state,
+    bool isPositive,
+    List<NaiPresetOption> options,
+    Color color,
+  ) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Row(
+                children: [
+                  Icon(isPositive ? Icons.auto_awesome : Icons.block, color: color, size: 18),
+                  const SizedBox(width: 8),
+                  Text(
+                    isPositive ? "Quality Tags" : "UC Preset",
+                    style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Divider(height: 1, color: Colors.white12),
+            for (final o in options)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                  (isPositive ? state.qualityTagsPreset : state.ucPreset) == o.label
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  size: 18,
+                  color: (isPositive ? state.qualityTagsPreset : state.ucPreset) == o.label
+                      ? color
+                      : Colors.white24,
+                ),
+                title: Text(o.label, style: const TextStyle(color: Colors.white, fontSize: 14)),
+                // None은 붙는 게 없으니 설명도 두지 않는다
+                subtitle: o.tags.isEmpty
+                    ? null
+                    : Text(
+                        // 부정 프리셋은 공식이 맨 앞에 nsfw를 함께 넣는다
+                        //  (긍정에 nsfw가 있으면 상쇄되므로 빼는데, 그건 전송 때 판단한다)
+                        isPositive ? o.tags : 'nsfw, ${o.tags}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                      ),
+                onTap: () {
+                  setState(() {
+                    if (isPositive) {
+                      state.qualityTagsPreset = o.label;
+                    } else {
+                      state.ucPreset = o.label;
+                    }
+                  });
+                  state.saveAllSettings();
+                  state.refreshUI();
+                  Navigator.pop(ctx);
+                },
+              ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -2821,7 +2926,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     required int index,
   }) {
     final meta = _sectionMeta[sectionId]!;
-    final color = Color(meta['color'] as int);
+    final color = meta['color'] as Color;
     final icon = meta['icon'] as IconData;
     final title = meta['title'] as String;
 
@@ -2857,6 +2962,11 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
               ),
             ),
+            // 긍정/부정 섹션: 공식 프리셋 선택 버튼 (Quality Tags / UC Preset)
+            //  NovelAI 웹이 자동으로 붙여 주는 태그를 여기서 고른다.
+            if (sectionId == 'positive' || sectionId == 'negative')
+              _presetChip(state, sectionId == 'positive', color),
+            if (sectionId == 'positive' || sectionId == 'negative') const SizedBox(width: 6),
             // 가중치 규칙만: 이름 옆 ON/OFF (접혔을 때도 보임)
             if (sectionId == 'weightRules')
               SizedBox(
@@ -2907,7 +3017,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return _buildPromptCardBody(
           context,
           state,
-          color: const Color(0xFF00BFA5),
+          color: AppColors.teal,
           controller: state.positiveController,
           hint: "프롬프트를 입력하세요...",
           icon: Icons.add_circle_outline,
@@ -2917,7 +3027,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return _buildPromptCardBody(
           context,
           state,
-          color: const Color(0xFF29B6F6),
+          color: AppColors.blue,
           controller: state.prefixController,
           hint: "프롬프트를 입력하세요...",
           icon: Icons.arrow_right_alt,
@@ -2927,7 +3037,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return _buildPromptCardBody(
           context,
           state,
-          color: const Color(0xFFFFA000),
+          color: AppColors.orange,
           controller: state.suffixController,
           hint: "프롬프트를 입력하세요...",
           icon: Icons.keyboard_double_arrow_right,
@@ -2937,7 +3047,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return _buildPromptCardBody(
           context,
           state,
-          color: const Color(0xFFFF5252),
+          color: AppColors.red,
           controller: state.negativeController,
           hint: "프롬프트를 입력하세요...",
           icon: Icons.remove_circle_outline,
@@ -2947,12 +3057,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
+            color: AppColors.surface,
             borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
             border: Border(
-              left: BorderSide(color: const Color(0xFF8B5CF6).withValues(alpha: 0.3)),
-              right: BorderSide(color: const Color(0xFF8B5CF6).withValues(alpha: 0.3)),
-              bottom: BorderSide(color: const Color(0xFF8B5CF6).withValues(alpha: 0.3)),
+              left: BorderSide(color: AppColors.purple.withValues(alpha: 0.3)),
+              right: BorderSide(color: AppColors.purple.withValues(alpha: 0.3)),
+              bottom: BorderSide(color: AppColors.purple.withValues(alpha: 0.3)),
             ),
           ),
           child: Wrap(
@@ -3223,7 +3333,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       onTap: () => showPromptEditDialog(context, state, title, icon, color, controller),
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
           border: Border(
             left: BorderSide(color: color.withValues(alpha: 0.3)),
@@ -3299,6 +3409,20 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  // 회복까지 남은 시간을 짧게 (예: 3분, 1시간 12분)
+  String _formatRecoverTime(int sec) {
+    if (sec < 60) {
+      return "+1% 곧";
+    }
+    final m = sec ~/ 60;
+    if (m < 60) {
+      return "+1% $m분";
+    }
+    final h = m ~/ 60;
+    final rm = m % 60;
+    return rm == 0 ? "+1% $h시간" : "+1% $h시간 $rm분";
+  }
+
   // V5 사용 한도 게이지.
   //  V5는 시간당 회복되는 사용 한도가 있어 남은 양을 보여준다.
   //  토큰 게이지 바로 아래에 같은 모양으로 두되, 색을 달리해 구분한다.
@@ -3311,15 +3435,19 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     }
     final pct = state.v5LimitPercent;
     final known = pct != null;
+    // percent는 100을 넘을 수 있다(여유분). 바는 100 기준으로 채운다.
     final ratio = known ? (pct / 100).clamp(0.0, 1.0) : 0.0;
+    final exhausted = state.v5LimitNegative;
     // 남을수록 파랑, 부족할수록 붉게 (토큰 게이지와 색 계열을 다르게 해 구분)
     final color = !known
         ? Colors.white24
+        : exhausted
+        ? const Color(0xFFFF1744)
         : pct <= 10
         ? const Color(0xFFFF1744)
         : pct <= 30
         ? Colors.orangeAccent
-        : const Color(0xFF29B6F6);
+        : AppColors.blue;
     return Padding(
       padding: const EdgeInsets.only(top: 3),
       child: Row(
@@ -3327,9 +3455,21 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           Icon(Icons.hourglass_bottom, size: 14, color: color),
           const SizedBox(width: 4),
           Text(
-            known ? "V5 limit ${pct.toStringAsFixed(0)}%" : "V5 limit 확인중",
+            !known
+                ? "V5 limit 확인중"
+                : exhausted
+                ? "V5 limit 소진 (Anlas 소모)"
+                : "V5 limit ${pct.toStringAsFixed(0)}%",
             style: TextStyle(color: color, fontSize: 11),
           ),
+          // 다음 1% 회복까지 남은 시간 (여유가 적을 때만 보여준다)
+          if (known && !exhausted && pct < 100 && state.v5LimitNextSec > 0) ...[
+            const SizedBox(width: 6),
+            Text(
+              _formatRecoverTime(state.v5LimitNextSec),
+              style: const TextStyle(color: Colors.white38, fontSize: 10),
+            ),
+          ],
           const SizedBox(width: 8),
           Expanded(
             child: ClipRRect(
@@ -3355,17 +3495,17 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 8),
         decoration: BoxDecoration(
-          color: value ? Colors.deepPurpleAccent.withValues(alpha: 0.25) : const Color(0xFF1E1E1E),
+          color: value ? AppColors.accent.withValues(alpha: 0.25) : AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: value ? Colors.deepPurpleAccent : Colors.white24,
+            color: value ? AppColors.accent : Colors.white24,
             width: value ? 1.5 : 1.0,
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 13, color: value ? Colors.deepPurpleAccent : Colors.white54),
+            Icon(icon, size: 13, color: value ? AppColors.accent : Colors.white54),
             const SizedBox(width: 3),
             Text(
               label,
@@ -3392,7 +3532,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       mainAxisSize: MainAxisSize.min,
       children: [
         Theme(
-          data: Theme.of(context).copyWith(unselectedWidgetColor: Colors.deepPurpleAccent),
+          data: Theme.of(context).copyWith(unselectedWidgetColor: AppColors.accent),
           child: Checkbox(
             value: value,
             onChanged: (v) {
@@ -3400,7 +3540,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               state.saveAllSettings();
               state.refreshUI();
             },
-            activeColor: Colors.deepPurpleAccent,
+            activeColor: AppColors.accent,
             checkColor: Colors.white,
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
@@ -3435,7 +3575,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       final bool? confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Row(
             children: [
@@ -3458,7 +3598,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
               child: const Text(
                 "생성하기",
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -3480,20 +3620,24 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
 
   // 배치/반복 설정 다이얼로그 (기존 UI·2번째 UI 공용)
   void _showBatchSettingsDialog(BuildContext context, AppState state) {
+    // ⚠️ 컨트롤러는 showDialog의 builder '밖'에서 만든다.
+    //    builder 안에서 만들면 라우트가 다시 그려질 때 새 컨트롤러가 생겨
+    //    입력 중이던 값이 날아가고, 정리(dispose) 시점도 잡을 수 없다.
+    final ctrl = TextEditingController(
+      text: state.batchCount <= 0 ? '' : state.batchCount.toString(),
+    );
+    // 같은 프롬프트 반복 횟수 입력용
+    final repeatCtrl = TextEditingController(text: state.repeatSamePromptCount.toString());
+    // 현재 배치가 무한(0)인지 다이얼로그 내부에서 추적
+    bool isInfinite = state.batchCount == 0;
+
     showDialog(
       context: context,
       builder: (ctx) {
-        final ctrl = TextEditingController(
-          text: state.batchCount <= 0 ? '' : state.batchCount.toString(),
-        );
-        // 현재 배치가 무한(0)인지 다이얼로그 내부에서 추적
-        bool isInfinite = state.batchCount == 0;
-        // 같은 프롬프트 반복 횟수 입력용
-        final repeatCtrl = TextEditingController(text: state.repeatSamePromptCount.toString());
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             return AlertDialog(
-              backgroundColor: const Color(0xFF1E1E1E),
+              backgroundColor: AppColors.surface,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               title: const Text(
                 "배치 생성 횟수",
@@ -3523,7 +3667,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           hintText: isInfinite ? "무한 생성 중 (터치 시 해제)" : "1~999",
                           hintStyle: const TextStyle(color: Colors.white38),
                           filled: true,
-                          fillColor: const Color(0xFF121212),
+                          fillColor: AppColors.background,
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(8),
                             borderSide: BorderSide.none,
@@ -3546,7 +3690,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                         scale: 0.85,
                         child: Switch(
                           value: state.autoNextPromptInBatch,
-                          activeThumbColor: const Color(0xFF8B5CF6),
+                          activeThumbColor: AppColors.purple,
                           onChanged: (v) {
                             setDialogState(() {
                               state.autoNextPromptInBatch = v;
@@ -3584,7 +3728,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                             isDense: true,
                             contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                             filled: true,
-                            fillColor: const Color(0xFF121212),
+                            fillColor: AppColors.background,
                             border: OutlineInputBorder(
                               borderRadius: BorderRadius.circular(6),
                               borderSide: BorderSide.none,
@@ -3604,7 +3748,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                         scale: 0.85,
                         child: Switch(
                           value: state.repeatSamePromptEnabled,
-                          activeThumbColor: const Color(0xFF8B5CF6),
+                          activeThumbColor: AppColors.purple,
                           onChanged: state.autoNextPromptInBatch
                               ? (v) {
                                   setDialogState(() {
@@ -3636,7 +3780,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     }
                     Navigator.pop(ctx);
                   },
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
                   child: const Text("확인", style: TextStyle(color: Colors.white)),
                 ),
               ],
@@ -3644,7 +3788,13 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           },
         );
       },
-    );
+    ).then((_) {
+      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        ctrl.dispose();
+        repeatCtrl.dispose();
+      });
+    });
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -3671,8 +3821,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         // 빨강은 '초과'에만 쓴다 (보이면 바로 넘친 걸 알 수 있게)
         ? const Color(0xFFFF1744)
         : ratio > 0.88
-        ? const Color(0xFFFFA000) // 주황
-        : (ratio > 0.68 ? const Color(0xFFFFD54F) : const Color(0xFF00BFA5)); // 노랑
+        ? AppColors
+              .orange // 주황
+        : (ratio > 0.68 ? const Color(0xFFFFD54F) : AppColors.teal); // 노랑
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -3683,12 +3834,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           // 아랫줄과 열을 맞추기 위해 [정사각 버튼][간격][넓은 버튼] 구조를 공유한다
           Row(
             children: [
-              const Icon(Icons.toll, color: Color(0xFFFFA000), size: 14),
+              const Icon(Icons.toll, color: AppColors.orange, size: 14),
               const SizedBox(width: 4),
               Text(
                 "${state.currentAnlas}",
                 style: const TextStyle(
-                  color: Color(0xFFFFA000),
+                  color: AppColors.orange,
                   fontWeight: FontWeight.bold,
                   fontSize: 12,
                 ),
@@ -3699,7 +3850,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 icon: state.isRandomLocked ? Icons.lock : Icons.lock_open,
                 tooltip: "랜덤 잠금",
                 active: state.isRandomLocked,
-                color: const Color(0xFFFFA000),
+                color: AppColors.orange,
                 onTap: () {
                   state.isRandomLocked = !state.isRandomLocked;
                   state.saveAllSettings();
@@ -3711,7 +3862,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 icon: state.isAutoSave ? Icons.save : Icons.save_outlined,
                 tooltip: "자동 저장",
                 active: state.isAutoSave,
-                color: const Color(0xFF00BFA5),
+                color: AppColors.teal,
                 onTap: () {
                   state.isAutoSave = !state.isAutoSave;
                   state.saveAllSettings();
@@ -3749,7 +3900,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               // 배수 (탭=순환, 꾹=직접 입력)
               _altIconButton(
                 text: state.batchCount == 0 ? "∞" : "${state.batchCount}x",
-                color: const Color(0xFF8B5CF6),
+                color: AppColors.purple,
                 tooltip: "생성 횟수 (길게 눌러 직접 입력)",
                 onTap: () {
                   setState(() {
@@ -3777,9 +3928,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                       ? "중지 (${state.batchRemaining})"
                       : (state.isLoading ? "생성 중" : "생성"),
                   icon: state.isBatchMode ? Icons.stop_circle : Icons.auto_awesome,
-                  color: const Color(0xFF8B5CF6),
+                  color: AppColors.purple,
                   filled: true,
-                  onTap: (state.isLoading && !state.isBatchMode)
+                  onTap: ((state.isLoading || state.isGenerateBusy) && !state.isBatchMode)
                       ? null
                       : (state.isBatchMode
                             ? () => state.cancelBatch()
@@ -3802,28 +3953,28 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 state,
                 "긍정적 프롬프트",
                 Icons.add_circle_outline,
-                const Color(0xFF00BFA5),
+                AppColors.teal,
                 state.positiveController,
               ),
               child: Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFF00BFA5).withValues(alpha: 0.35)),
+                  border: Border.all(color: AppColors.teal.withValues(alpha: 0.35)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.add_circle_outline, color: Color(0xFF00BFA5), size: 16),
+                        const Icon(Icons.add_circle_outline, color: AppColors.teal, size: 16),
                         const SizedBox(width: 6),
                         const Text(
                           "긍정적 프롬프트",
                           style: TextStyle(
-                            color: Color(0xFF00BFA5),
+                            color: AppColors.teal,
                             fontWeight: FontWeight.bold,
                             fontSize: 13,
                           ),
@@ -3903,7 +4054,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 child: _altGroupButton(
                   icon: Icons.article_outlined,
                   label: "프롬프트 관리",
-                  color: const Color(0xFF8B5CF6),
+                  color: AppColors.purple,
                   badge: _sectionBadge(state, _altManageSectionIds),
                   onTap: () => _openPromptManageSheet(context, state),
                 ),
@@ -3913,7 +4064,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 child: _altGroupButton(
                   icon: Icons.search,
                   label: "검색 도구",
-                  color: const Color(0xFFFFA000),
+                  color: AppColors.orange,
                   // 검색 중이면 진행 상황을, 아니면 남은 프롬프트 수를 표시
                   busy: state.isGelbooruLoading,
                   badge: state.isGelbooruLoading
@@ -3944,7 +4095,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 child: _altGroupButton(
                   icon: Icons.auto_awesome,
                   label: "NAI 도구",
-                  color: const Color(0xFF29B6F6),
+                  color: AppColors.blue,
                   badge: _naiToolsBadge(state),
                   onTap: () => _openNaiToolsSheet(context, state),
                 ),
@@ -3982,7 +4133,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: value ? color.withValues(alpha: 0.18) : const Color(0xFF1E1E1E),
+          color: value ? color.withValues(alpha: 0.18) : AppColors.surface,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: value ? color : Colors.white12),
         ),
@@ -4038,7 +4189,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     return Tooltip(
       message: tooltip,
       child: Material(
-        color: const Color(0xFF2A2A35),
+        color: AppColors.surfaceButton,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           // 눌리는 느낌(리플 + 진동)을 주기 위해 Material+InkWell 사용
@@ -4091,7 +4242,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     return SizedBox(
       height: 42,
       child: Material(
-        color: filled ? (enabled ? color : const Color(0xFF2A2A35)) : const Color(0xFF2A2A35),
+        color: filled ? (enabled ? color : AppColors.surfaceButton) : AppColors.surfaceButton,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap == null
@@ -4143,7 +4294,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     return Tooltip(
       message: "$tooltip ${active ? 'ON' : 'OFF'}",
       child: Material(
-        color: active ? color.withValues(alpha: 0.18) : const Color(0xFF1E1E1E),
+        color: active ? color.withValues(alpha: 0.18) : AppColors.surface,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap,
@@ -4364,7 +4515,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       state,
       "프롬프트 관리",
       Icons.article_outlined,
-      const Color(0xFF8B5CF6),
+      AppColors.purple,
       _altManageSectionIds,
     );
   }
@@ -4432,7 +4583,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
   // 그래서 여기서 헤더 배경·테두리를 그려 카드가 잘려 보이지 않게 맞춘다.
   Widget _altPinRow(AppState state, String id) {
     final meta = _sectionMeta[id]!;
-    final color = Color(meta['color'] as int);
+    final color = meta['color'] as Color;
     final pinned = state.pinnedPromptSections.contains(id);
     final collapsed = state.collapsedSections.contains(id);
     return Container(
@@ -4506,7 +4657,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context,
       "NAI 도구",
       Icons.auto_awesome,
-      const Color(0xFF29B6F6),
+      AppColors.blue,
       AnimatedBuilder(
         animation: state,
         // 모델 정보는 시트가 열려 있는 동안 바뀔 수 있으므로 builder 안에서 계산
@@ -4520,7 +4671,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: Colors.white12),
                 ),
@@ -4554,9 +4705,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                         _altInfoChip(Icons.tune, "CFG ${state.cfgScaleController.text}"),
                         _altInfoChip(Icons.grain, state.selectedSampler.replaceAll('k_', '')),
                         if (state.isSeedLocked)
-                          _altInfoChip(Icons.lock, "시드 고정", color: const Color(0xFFFFA000)),
+                          _altInfoChip(Icons.lock, "시드 고정", color: AppColors.orange),
                         if (state.isVariancePlus && caps.supportsVarietyPlus)
-                          _altInfoChip(Icons.shuffle, "VAR+", color: Colors.deepPurpleAccent),
+                          _altInfoChip(Icons.shuffle, "VAR+", color: AppColors.accent),
                       ],
                     ),
                   ],
@@ -4572,7 +4723,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           .where((c) => c.isActive)
                           .map((c) => c.name.isEmpty ? "이름없음" : c.name)
                           .join(", "),
-                color: Colors.deepPurpleAccent,
+                color: AppColors.accent,
                 onTap: () {
                   Navigator.pop(ctx);
                   _openAltCharSheet(context, state);
@@ -4584,7 +4735,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 sub: caps.supportsVibe
                     ? "${state.vibeTransfers.length}개 등록"
                     : "${caps.displayName}에선 사용 불가",
-                color: const Color(0xFF8B5CF6),
+                color: AppColors.purple,
                 enabled: caps.supportsVibe,
                 onTap: () {
                   Navigator.pop(ctx);
@@ -4597,7 +4748,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 sub: caps.supportsPrecise
                     ? "${state.preciseRefs.length}개 등록"
                     : "${caps.displayName}에선 사용 불가",
-                color: const Color(0xFF00BFA5),
+                color: AppColors.teal,
                 enabled: caps.supportsPrecise,
                 onTap: () {
                   Navigator.pop(ctx);
@@ -4608,7 +4759,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 icon: Icons.bookmarks,
                 label: "프리셋 관리",
                 sub: "저장된 설정 불러오기",
-                color: Colors.deepPurpleAccent,
+                color: AppColors.accent,
                 onTap: () {
                   Navigator.pop(ctx);
                   _showPresetBottomSheet(context, state);
@@ -4647,7 +4798,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context,
       "검색 도구",
       Icons.search,
-      const Color(0xFFFFA000),
+      AppColors.orange,
       StatefulBuilder(
         builder: (ctx, setSheet) => AnimatedBuilder(
           animation: state,
@@ -4682,22 +4833,22 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  _altRatingChip("E", "노출", state.ratingE, const Color(0xFFFF5252), (v) {
+                  _altRatingChip("E", "노출", state.ratingE, AppColors.red, (v) {
                     state.ratingE = v;
                     state.saveAllSettings();
                     state.refreshUI();
                   }),
-                  _altRatingChip("Q", "선정", state.ratingQ, const Color(0xFFFFA000), (v) {
+                  _altRatingChip("Q", "선정", state.ratingQ, AppColors.orange, (v) {
                     state.ratingQ = v;
                     state.saveAllSettings();
                     state.refreshUI();
                   }),
-                  _altRatingChip("S", "민감", state.ratingS, const Color(0xFF29B6F6), (v) {
+                  _altRatingChip("S", "민감", state.ratingS, AppColors.blue, (v) {
                     state.ratingS = v;
                     state.saveAllSettings();
                     state.refreshUI();
                   }),
-                  _altRatingChip("G", "전체", state.ratingG, const Color(0xFF00BFA5), (v) {
+                  _altRatingChip("G", "전체", state.ratingG, AppColors.teal, (v) {
                     state.ratingG = v;
                     state.saveAllSettings();
                     state.refreshUI();
@@ -4709,7 +4860,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: Colors.white12),
                 ),
@@ -4719,7 +4870,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                       child: _altSearchStat(
                         "검색됨",
                         "${state.gelbooruPrompts.length}",
-                        const Color(0xFFFFA000),
+                        AppColors.orange,
                       ),
                     ),
                     Container(width: 1, height: 28, color: Colors.white12),
@@ -4764,9 +4915,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     ),
                   ),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFFFA000),
+                    backgroundColor: AppColors.orange,
                     foregroundColor: Colors.black87,
-                    disabledBackgroundColor: const Color(0xFF2A2A35),
+                    disabledBackgroundColor: AppColors.surfaceButton,
                     disabledForegroundColor: Colors.white54,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
@@ -4786,7 +4937,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       context,
       "캐릭터",
       Icons.people_alt,
-      Colors.deepPurpleAccent,
+      AppColors.accent,
       AnimatedBuilder(
         animation: state,
         builder: (ctx, _) {
@@ -4819,9 +4970,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: isOn ? Colors.deepPurpleAccent : Colors.white12),
+        border: Border.all(color: isOn ? AppColors.accent : Colors.white12),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4833,7 +4984,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 icon: Icon(
                   isOn ? Icons.visibility : Icons.visibility_off,
                   // 색은 항상 상태를 나타낸다 (설정과 무관)
-                  color: isOn ? Colors.deepPurpleAccent : Colors.grey,
+                  color: isOn ? AppColors.accent : Colors.grey,
                   size: 20,
                 ),
                 onPressed: state.charRetapToggle
@@ -4973,7 +5124,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
+            color: AppColors.surface,
             borderRadius: BorderRadius.circular(10),
             border: Border.all(color: color.withValues(alpha: 0.3)),
           ),
@@ -5040,7 +5191,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       bool? confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: const Row(
             children: [
@@ -5063,7 +5214,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B5CF6)),
+              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
               child: const Text(
                 "생성하기",
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -5104,7 +5255,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 children: [
                   // Anlas를 살짝 오른쪽으로 (뒤 간격을 줄여 총폭은 동일)
                   const SizedBox(width: 8),
-                  const Icon(Icons.toll, color: Color(0xFFFFA000), size: 16),
+                  const Icon(Icons.toll, color: AppColors.orange, size: 16),
                   const SizedBox(width: 4),
                   // Anlas 자릿수가 커져도 그룹 폭을 넘지 않게
                   Flexible(
@@ -5113,7 +5264,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        color: Color(0xFFFFA000),
+                        color: AppColors.orange,
                         fontWeight: FontWeight.bold,
                         fontSize: 14,
                       ),
@@ -5127,7 +5278,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               icon: state.isRandomLocked ? Icons.lock : Icons.lock_open,
               tooltip: "랜덤 잠금",
               active: state.isRandomLocked,
-              color: const Color(0xFFFFA000),
+              color: AppColors.orange,
               onTap: () {
                 state.isRandomLocked = !state.isRandomLocked;
                 state.saveAllSettings();
@@ -5139,7 +5290,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               icon: state.isAutoSave ? Icons.save : Icons.save_outlined,
               tooltip: "자동 저장",
               active: state.isAutoSave,
-              color: const Color(0xFF00BFA5),
+              color: AppColors.teal,
               onTap: () {
                 state.isAutoSave = !state.isAutoSave;
                 state.saveAllSettings();
@@ -5221,8 +5372,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               onPressed: () => _showPresetBottomSheet(context, state),
               style: OutlinedButton.styleFrom(
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                backgroundColor: Colors.deepPurpleAccent.withValues(alpha: 0.15),
-                side: BorderSide(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
+                backgroundColor: AppColors.accent.withValues(alpha: 0.15),
+                side: BorderSide(color: AppColors.accent.withValues(alpha: 0.5)),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
                 minimumSize: const Size(78, 42), // A열: 윗줄 Anlas 영역과 같은 폭
@@ -5268,7 +5419,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                         color: locked
                             ? Colors.grey
                             : ((state.vibeTransfers.isNotEmpty || state.preciseRefs.isNotEmpty)
-                                  ? const Color(0xFF8B5CF6)
+                                  ? AppColors.purple
                                   : Colors.grey),
                         size: 24,
                       ),
@@ -5289,7 +5440,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 height: 42,
                 child: Icon(
                   Icons.settings,
-                  color: state.isGelbooruExpanded ? const Color(0xFF8B5CF6) : Colors.grey,
+                  color: state.isGelbooruExpanded ? AppColors.purple : Colors.grey,
                   size: 24,
                 ),
               ),
@@ -5323,12 +5474,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             height: 42,
             decoration: BoxDecoration(
               color: state.batchCount > 1 || state.batchCount == 0
-                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
+                  ? AppColors.purple.withValues(alpha: 0.2)
                   : Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
                 color: state.batchCount > 1 || state.batchCount == 0
-                    ? const Color(0xFF8B5CF6)
+                    ? AppColors.purple
                     : Colors.white24,
               ),
             ),
@@ -5337,7 +5488,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 state.batchCount == 0 ? "∞" : "${state.batchCount}x",
                 style: TextStyle(
                   color: state.batchCount > 1 || state.batchCount == 0
-                      ? const Color(0xFF8B5CF6)
+                      ? AppColors.purple
                       : Colors.white54,
                   fontWeight: FontWeight.bold,
                   fontSize: state.batchCount == 0
@@ -5359,6 +5510,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           child: ElevatedButton.icon(
             onPressed:
                 (state.isLoading ||
+                    state.isGenerateBusy ||
                     state.isBatchMode ||
                     state.isInpaintLoading ||
                     state.isUpscaleLoading)
@@ -5374,15 +5526,17 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               padding: const EdgeInsets.symmetric(horizontal: 8),
               backgroundColor:
                   (state.isLoading ||
+                      state.isGenerateBusy ||
                       state.isBatchMode ||
                       state.isInpaintLoading ||
                       state.isUpscaleLoading)
                   ? Colors.grey[700]
-                  : const Color(0xFF8B5CF6),
+                  : AppColors.purple,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
             ),
             icon:
                 (state.isLoading ||
+                    state.isGenerateBusy ||
                     state.isBatchMode ||
                     state.isInpaintLoading ||
                     state.isUpscaleLoading)
@@ -5458,12 +5612,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             height: 40,
             decoration: BoxDecoration(
               color: state.batchCount > 1 || state.batchCount == 0
-                  ? const Color(0xFF8B5CF6).withValues(alpha: 0.2)
+                  ? AppColors.purple.withValues(alpha: 0.2)
                   : Colors.white.withValues(alpha: 0.05),
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
                 color: state.batchCount > 1 || state.batchCount == 0
-                    ? const Color(0xFF8B5CF6)
+                    ? AppColors.purple
                     : Colors.white24,
               ),
             ),
@@ -5472,7 +5626,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 state.batchCount == 0 ? "∞" : "${state.batchCount}x",
                 style: TextStyle(
                   color: state.batchCount > 1 || state.batchCount == 0
-                      ? const Color(0xFF8B5CF6)
+                      ? AppColors.purple
                       : Colors.white54,
                   fontWeight: FontWeight.bold,
                   fontSize: state.batchCount == 0
@@ -5491,6 +5645,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         ElevatedButton.icon(
           onPressed:
               (state.isLoading ||
+                  state.isGenerateBusy ||
                   state.isBatchMode ||
                   state.isInpaintLoading ||
                   state.isUpscaleLoading)
@@ -5506,15 +5661,17 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             padding: const EdgeInsets.symmetric(horizontal: 8),
             backgroundColor:
                 (state.isLoading ||
+                    state.isGenerateBusy ||
                     state.isBatchMode ||
                     state.isInpaintLoading ||
                     state.isUpscaleLoading)
                 ? Colors.grey[700]
-                : const Color(0xFF8B5CF6),
+                : AppColors.purple,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
           ),
           icon:
               (state.isLoading ||
+                  state.isGenerateBusy ||
                   state.isBatchMode ||
                   state.isInpaintLoading ||
                   state.isUpscaleLoading)
@@ -5549,15 +5706,15 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       children: [
         OutlinedButton.icon(
           onPressed: () => _showPresetBottomSheet(context, state),
-          icon: const Icon(Icons.bookmarks, color: Colors.deepPurpleAccent, size: 16),
+          icon: Icon(Icons.bookmarks, color: AppColors.accent, size: 16),
           label: const Text(
             "프리셋 관리",
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
           ),
           style: OutlinedButton.styleFrom(
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            backgroundColor: Colors.deepPurpleAccent.withValues(alpha: 0.15),
-            side: BorderSide(color: Colors.deepPurpleAccent.withValues(alpha: 0.5)),
+            backgroundColor: AppColors.accent.withValues(alpha: 0.15),
+            side: BorderSide(color: AppColors.accent.withValues(alpha: 0.5)),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 0),
             minimumSize: const Size(120, 36),
@@ -5570,7 +5727,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           child: Icon(
             Icons.palette_outlined,
             color: (state.vibeTransfers.isNotEmpty || state.preciseRefs.isNotEmpty)
-                ? const Color(0xFF8B5CF6)
+                ? AppColors.purple
                 : Colors.grey,
             size: 22,
           ),
@@ -5584,7 +5741,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           },
           child: Icon(
             Icons.settings,
-            color: state.isGelbooruExpanded ? const Color(0xFF8B5CF6) : Colors.grey,
+            color: state.isGelbooruExpanded ? AppColors.purple : Colors.grey,
             size: 22,
           ),
         ),
@@ -5603,7 +5760,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     state.saveAllSettings();
                     state.refreshUI();
                   },
-                  activeColor: const Color(0xFF8B5CF6),
+                  activeColor: AppColors.purple,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
@@ -5624,7 +5781,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     state.saveAllSettings();
                     state.refreshUI();
                   },
-                  activeColor: const Color(0xFF8B5CF6),
+                  activeColor: AppColors.purple,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                   materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 ),
@@ -5659,7 +5816,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     // 이게 없으면 섹션을 추가해도 화면에 나타나지 않는다.
     _ensureSectionsPresent(state);
     bool canChangePrompt = !state.isRandomLocked && state.gelbooruPrompts.isNotEmpty;
-    Color promptActionColor = canChangePrompt ? const Color(0xFF8B5CF6) : Colors.grey;
+    Color promptActionColor = canChangePrompt ? AppColors.purple : Colors.grey;
 
     return Stack(
       children: [
@@ -5823,7 +5980,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           ? null
                           : () => state.handleGelbooruSearch(context),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2A2A35),
+                        backgroundColor: AppColors.surfaceButton,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         // 기본 좌우 패딩(24)과 최소폭(88)이 커서 글씨 공간을 잡아먹는다.
                         // 좌우 여백을 줄여 "태그 확인 1200/3200" 같은 긴 문구도 들어가게.
@@ -5864,7 +6021,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   return Material(
                     elevation: 4,
                     color: Colors.transparent,
-                    shadowColor: Colors.deepPurpleAccent.withValues(alpha: 0.4),
+                    shadowColor: AppColors.accent.withValues(alpha: 0.4),
                     borderRadius: BorderRadius.circular(12),
                     child: child,
                   );
@@ -5930,7 +6087,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     // 이게 없으면 섹션을 추가해도 화면에 나타나지 않는다.
     _ensureSectionsPresent(state);
     bool canChangePrompt = !state.isRandomLocked && state.gelbooruPrompts.isNotEmpty;
-    Color promptActionColor = canChangePrompt ? const Color(0xFF8B5CF6) : Colors.grey;
+    Color promptActionColor = canChangePrompt ? AppColors.purple : Colors.grey;
 
     // [보류] 실험용 UI (설정에서 숨겨져 있음)
     if (state.promptAltLayout) {
@@ -6038,7 +6195,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                           ? null
                           : () => state.handleGelbooruSearch(context),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2A2A35),
+                        backgroundColor: AppColors.surfaceButton,
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                         // 기본 좌우 패딩(24)과 최소폭(88)이 커서 글씨 공간을 잡아먹는다.
                         // 좌우 여백을 줄여 "태그 확인 1200/3200" 같은 긴 문구도 들어가게.
@@ -6079,7 +6236,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   return Material(
                     elevation: 4,
                     color: Colors.transparent,
-                    shadowColor: Colors.deepPurpleAccent.withValues(alpha: 0.4),
+                    shadowColor: AppColors.accent.withValues(alpha: 0.4),
                     borderRadius: BorderRadius.circular(12),
                     child: child,
                   );
@@ -6222,15 +6379,22 @@ String _resizePrecise(Uint8List bytes) {
 // ============================================================================
 // 섹션 메타정보 (ID → 제목, 아이콘, 색상)
 // ============================================================================
+//  ⚠️ 'color'는 int가 아니라 Color를 그대로 담는다.
+//     (예전엔 int로 두고 쓸 때마다 Color(...)로 감쌌는데, AppColors와 값이
+//      어긋나도 알아챌 수 없어 Color로 통일했다.)
 const Map<String, Map<String, dynamic>> _sectionMeta = {
-  'positive': {'title': '긍정적 프롬프트', 'icon': Icons.add_circle_outline, 'color': 0xFF00BFA5},
-  'prefix': {'title': '선행 프롬프트', 'icon': Icons.arrow_right_alt, 'color': 0xFF29B6F6},
-  'suffix': {'title': '후행 프롬프트', 'icon': Icons.keyboard_double_arrow_right, 'color': 0xFFFFA000},
-  'negative': {'title': '부정적 프롬프트', 'icon': Icons.remove_circle_outline, 'color': 0xFFFF5252},
-  'removeChips': {'title': '태그 제거', 'icon': Icons.auto_fix_high, 'color': 0xFF8B5CF6},
-  'customRemove': {'title': '개별 제거 프롬프트', 'icon': Icons.delete_outline, 'color': 0xFF9E9E9E},
-  'conditional': {'title': '조건부 트리거', 'icon': Icons.bolt, 'color': 0xFFEC4899},
-  'weightRules': {'title': '가중치 규칙', 'icon': Icons.tune, 'color': 0xFF84CC16},
+  'positive': {'title': '긍정적 프롬프트', 'icon': Icons.add_circle_outline, 'color': AppColors.teal},
+  'prefix': {'title': '선행 프롬프트', 'icon': Icons.arrow_right_alt, 'color': AppColors.blue},
+  'suffix': {
+    'title': '후행 프롬프트',
+    'icon': Icons.keyboard_double_arrow_right,
+    'color': AppColors.orange,
+  },
+  'negative': {'title': '부정적 프롬프트', 'icon': Icons.remove_circle_outline, 'color': AppColors.red},
+  'removeChips': {'title': '태그 제거', 'icon': Icons.auto_fix_high, 'color': AppColors.purple},
+  'customRemove': {'title': '개별 제거 프롬프트', 'icon': Icons.delete_outline, 'color': Color(0xFF9E9E9E)},
+  'conditional': {'title': '조건부 트리거', 'icon': Icons.bolt, 'color': Color(0xFFEC4899)},
+  'weightRules': {'title': '가중치 규칙', 'icon': Icons.tune, 'color': Color(0xFF84CC16)},
 };
 
 // ============================================================================
@@ -6304,7 +6468,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
               width: 30,
               height: 80,
               decoration: const BoxDecoration(
-                color: Color(0xFF8B5CF6),
+                color: AppColors.purple,
                 borderRadius: BorderRadius.horizontal(left: Radius.circular(12)),
               ),
               child: const Column(
@@ -6421,9 +6585,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                           decoration: BoxDecoration(
                             color: const Color(0xFF171717),
                             borderRadius: const BorderRadius.horizontal(left: Radius.circular(16)),
-                            border: Border.all(
-                              color: Colors.deepPurpleAccent.withValues(alpha: 0.4),
-                            ),
+                            border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
                             boxShadow: [
                               BoxShadow(
                                 color: Colors.black.withValues(alpha: 0.4),
@@ -6473,10 +6635,10 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           child: Row(
             children: [
-              const Icon(Icons.people_alt, color: Colors.deepPurpleAccent, size: 18),
+              Icon(Icons.people_alt, color: AppColors.accent, size: 18),
               const SizedBox(width: 8),
               const Expanded(
                 child: Text(
@@ -6510,9 +6672,9 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                     return Container(
                       margin: const EdgeInsets.only(bottom: 6),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
+                        color: AppColors.surface,
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: isOn ? Colors.deepPurpleAccent : Colors.white12),
+                        border: Border.all(color: isOn ? AppColors.accent : Colors.white12),
                       ),
                       child: Row(
                         children: [
@@ -6521,7 +6683,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                             icon: Icon(
                               isOn ? Icons.visibility : Icons.visibility_off,
                               // 색은 항상 상태를 나타낸다 (설정과 무관)
-                              color: isOn ? Colors.deepPurpleAccent : Colors.grey,
+                              color: isOn ? AppColors.accent : Colors.grey,
                               size: 20,
                             ),
                             tooltip: state.charRetapToggle
@@ -6589,7 +6751,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           child: Row(
             children: [
               GestureDetector(
@@ -6692,7 +6854,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(color: color.withValues(alpha: 0.4)),
         ),

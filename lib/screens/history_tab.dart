@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/image_metadata.dart';
 import '../widgets/detail_settings_modal.dart';
 import '../widgets/gallery_view.dart';
 import 'package:image_picker/image_picker.dart';
+import '../app_theme.dart';
 
 // ============================================================================
 // 히스토리 탭 메인 UI
@@ -178,11 +180,11 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   Widget _buildTabButton(int index, String title, Color color) {
     bool isActive = _selectedPromptTab == index;
 
-    Color activeBoxColor = const Color(0xFF00BFA5);
+    Color activeBoxColor = AppColors.teal;
     if (_selectedPromptTab == 1) {
-      activeBoxColor = Colors.deepPurpleAccent;
+      activeBoxColor = AppColors.accent;
     } else if (_selectedPromptTab == 2) {
-      activeBoxColor = const Color(0xFFFF5252);
+      activeBoxColor = AppColors.red;
     } else if (_selectedPromptTab == 3) {
       activeBoxColor = Colors.amber;
     }
@@ -268,7 +270,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
@@ -312,11 +314,11 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.refresh, color: Colors.deepPurpleAccent),
+            Icon(Icons.refresh, color: AppColors.accent),
             SizedBox(width: 8),
             Text(
               "해당 이미지를 새로 생성",
@@ -347,7 +349,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
               Navigator.pop(ctx);
               state.regenerateFromMetadata(context, index);
             },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             child: const Text(
               "새로 생성",
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -364,7 +366,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   void _showBulkDeleteSheet(BuildContext context, AppState state) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -409,7 +411,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   showDialog(
                     context: context,
                     builder: (ctx) => AlertDialog(
-                      backgroundColor: const Color(0xFF1E1E1E),
+                      backgroundColor: AppColors.surface,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       title: const Row(
                         children: [
@@ -643,7 +645,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                           ? Colors.redAccent
                           : isFav
                           ? Colors.amber.withValues(alpha: 0.5)
-                          : Colors.deepPurpleAccent.withValues(alpha: 0.2),
+                          : AppColors.accent.withValues(alpha: 0.2),
                       width: _isSelectMode && _selectedIndices.contains(realIndex)
                           ? 2.5
                           : (isFav ? 1.5 : 1),
@@ -751,9 +753,9 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
         Container(
           height: 480,
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
+            color: AppColors.surface,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+            border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
           ),
           child: isEmpty
               ? const Center(
@@ -866,14 +868,10 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: Colors.black.withValues(alpha: 0.6),
-                            border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                            border: Border.all(color: AppColors.accent, width: 1.5),
                           ),
                           child: IconButton(
-                            icon: const Icon(
-                              Icons.arrow_back_ios_new,
-                              color: Colors.deepPurpleAccent,
-                              size: 24,
-                            ),
+                            icon: Icon(Icons.arrow_back_ios_new, color: AppColors.accent, size: 24),
                             onPressed: _goToPrev,
                           ),
                         ),
@@ -886,14 +884,10 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             color: Colors.black.withValues(alpha: 0.6),
-                            border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                            border: Border.all(color: AppColors.accent, width: 1.5),
                           ),
                           child: IconButton(
-                            icon: const Icon(
-                              Icons.arrow_forward_ios,
-                              color: Colors.deepPurpleAccent,
-                              size: 24,
-                            ),
+                            icon: Icon(Icons.arrow_forward_ios, color: AppColors.accent, size: 24),
                             onPressed: () => _goToNext(images.length),
                           ),
                         ),
@@ -945,14 +939,14 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         margin: const EdgeInsets.only(right: 8),
                         decoration: BoxDecoration(
                           border: Border.all(
-                            color: isSelected ? const Color(0xFF8B5CF6) : Colors.white12,
+                            color: isSelected ? AppColors.purple : Colors.white12,
                             width: isSelected ? 3.5 : 1,
                           ),
                           borderRadius: BorderRadius.circular(8),
                           boxShadow: isSelected
                               ? [
                                   BoxShadow(
-                                    color: const Color(0xFF8B5CF6).withValues(alpha: 0.6),
+                                    color: AppColors.purple.withValues(alpha: 0.6),
                                     blurRadius: 8,
                                     spreadRadius: 1,
                                   ),
@@ -1002,7 +996,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                       },
                 style: OutlinedButton.styleFrom(
                   side: BorderSide(
-                    color: isEmpty ? Colors.grey.withValues(alpha: 0.3) : Colors.deepPurpleAccent,
+                    color: isEmpty ? Colors.grey.withValues(alpha: 0.3) : AppColors.accent,
                     width: 1.5,
                   ),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1046,7 +1040,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   OutlinedButton(
                     onPressed: () => _importPromptOnly(context, state),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFF00BFA5), width: 1.5),
+                      side: const BorderSide(color: AppColors.teal, width: 1.5),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                       minimumSize: const Size(0, 0),
@@ -1058,7 +1052,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         "프롬프트",
                         maxLines: 1,
                         style: TextStyle(
-                          color: Color(0xFF00BFA5),
+                          color: AppColors.teal,
                           fontWeight: FontWeight.bold,
                           fontSize: 13,
                         ),
@@ -1069,7 +1063,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   OutlinedButton(
                     onPressed: () => state.importImageToHistory(context),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                      side: const BorderSide(color: AppColors.purple, width: 1.5),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                       minimumSize: const Size(0, 0),
@@ -1081,7 +1075,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         "히스토리",
                         maxLines: 1,
                         style: TextStyle(
-                          color: Color(0xFF8B5CF6),
+                          color: AppColors.purple,
                           fontWeight: FontWeight.bold,
                           fontSize: 13,
                         ),
@@ -1105,9 +1099,9 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   children: [
                     Row(
                       children: [
-                        _buildTabButton(0, "긍정적", const Color(0xFF00BFA5)),
-                        _buildTabButton(1, "캐릭터", Colors.deepPurpleAccent),
-                        _buildTabButton(2, "부정적", const Color(0xFFFF5252)),
+                        _buildTabButton(0, "긍정적", AppColors.teal),
+                        _buildTabButton(1, "캐릭터", AppColors.accent),
+                        _buildTabButton(2, "부정적", AppColors.red),
                         _buildTabButton(3, "세팅", Colors.amber),
                       ],
                     ),
@@ -1116,7 +1110,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                       width: double.infinity,
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
+                        color: AppColors.surface,
                         border: Border(
                           left: BorderSide(color: currentActiveColor, width: 2),
                           right: BorderSide(color: currentActiveColor, width: 2),
@@ -1180,11 +1174,11 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
 
     // 히스토리 로딩 중이면 로딩 표시
     if (state.isHistoryLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(color: Colors.deepPurpleAccent),
+            CircularProgressIndicator(color: AppColors.accent),
             SizedBox(height: 16),
             Text("히스토리 로딩 중...", style: TextStyle(color: Colors.white54)),
           ],
@@ -1206,14 +1200,14 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     decoration: BoxDecoration(
-                      color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                      color: AppColors.accent.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                      border: Border.all(color: AppColors.accent, width: 1.5),
                     ),
-                    child: const Row(
+                    child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.arrow_back, size: 18, color: Colors.deepPurpleAccent),
+                        Icon(Icons.arrow_back, size: 18, color: AppColors.accent),
                         SizedBox(width: 6),
                         Text(
                           "히스토리",
@@ -1363,11 +1357,11 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
         : (_currentIndex >= images.length ? images.length - 1 : _currentIndex);
     NaiMetadata? currentMetadata = isEmpty ? null : _getMetadataForIndex(displayIndex);
 
-    Color currentActiveColor = const Color(0xFF00BFA5);
+    Color currentActiveColor = AppColors.teal;
     if (_selectedPromptTab == 1) {
-      currentActiveColor = Colors.deepPurpleAccent;
+      currentActiveColor = AppColors.accent;
     } else if (_selectedPromptTab == 2) {
-      currentActiveColor = const Color(0xFFFF5252);
+      currentActiveColor = AppColors.red;
     } else if (_selectedPromptTab == 3) {
       currentActiveColor = Colors.amber;
     }
@@ -1395,7 +1389,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF1E1E1E),
+                            color: AppColors.surface,
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(color: Colors.white24),
                           ),
@@ -1434,7 +1428,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                                 showDialog(
                                   context: context,
                                   builder: (ctx) => AlertDialog(
-                                    backgroundColor: const Color(0xFF1E1E1E),
+                                    backgroundColor: AppColors.surface,
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(16),
                                     ),
@@ -1491,7 +1485,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
                             color: _selectedIndices.isEmpty
-                                ? const Color(0xFF1E1E1E)
+                                ? AppColors.surface
                                 : Colors.redAccent.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(
@@ -1543,9 +1537,9 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           decoration: BoxDecoration(
-                            color: Colors.deepPurpleAccent.withValues(alpha: 0.15),
+                            color: AppColors.accent.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.deepPurpleAccent, width: 1.5),
+                            border: Border.all(color: AppColors.accent, width: 1.5),
                           ),
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -1553,7 +1547,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                               Icon(
                                 isGridView ? Icons.view_carousel_outlined : Icons.grid_view_rounded,
                                 size: 18,
-                                color: Colors.deepPurpleAccent,
+                                color: AppColors.accent,
                               ),
                               const SizedBox(width: 6),
                               Text(
@@ -1632,7 +1626,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                             decoration: BoxDecoration(
                               color: _showFavoritesOnly
                                   ? Colors.amber.withValues(alpha: 0.2)
-                                  : const Color(0xFF1E1E1E),
+                                  : AppColors.surface,
                               borderRadius: BorderRadius.circular(20),
                               border: Border.all(
                                 color: _showFavoritesOnly ? Colors.amber : Colors.white24,
@@ -1654,7 +1648,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF1E1E1E),
+                                color: AppColors.surface,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(color: Colors.white24),
                               ),
@@ -1671,14 +1665,14 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                         OutlinedButton(
                           onPressed: () => state.importImageToHistory(context),
                           style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: Color(0xFF8B5CF6), width: 1.5),
+                            side: const BorderSide(color: AppColors.purple, width: 1.5),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           ),
                           child: const Text(
                             "불러오기",
                             style: TextStyle(
-                              color: Color(0xFF8B5CF6),
+                              color: AppColors.purple,
                               fontWeight: FontWeight.bold,
                               fontSize: 12,
                             ),

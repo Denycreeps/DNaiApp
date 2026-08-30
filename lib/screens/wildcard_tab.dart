@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/preset_models.dart';
+import '../app_theme.dart';
 
 class WildcardTab extends StatefulWidget {
   const WildcardTab({super.key});
@@ -113,7 +115,7 @@ class _WildcardTabState extends State<WildcardTab> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: const Text(
           "새 와일드카드 생성",
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -121,14 +123,12 @@ class _WildcardTabState extends State<WildcardTab> {
         content: TextField(
           controller: nameController,
           style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: "이름 입력 (예: 의상, 배경)",
             hintStyle: TextStyle(color: Colors.white30),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.deepPurpleAccent),
-            ),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
             focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.deepPurpleAccent, width: 2),
+              borderSide: BorderSide(color: AppColors.accent, width: 2),
             ),
           ),
         ),
@@ -138,7 +138,7 @@ class _WildcardTabState extends State<WildcardTab> {
             child: const Text("취소", style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             onPressed: () {
               String newName = nameController.text.trim();
               if (newName.isNotEmpty) {
@@ -153,7 +153,12 @@ class _WildcardTabState extends State<WildcardTab> {
           ),
         ],
       ),
-    );
+    ).then((_) {
+      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        nameController.dispose();
+      });
+    });
   }
 
   void _showEditNameDialog(BuildContext context, AppState state) {
@@ -163,7 +168,7 @@ class _WildcardTabState extends State<WildcardTab> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: const Text(
           "이름 수정",
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -171,14 +176,12 @@ class _WildcardTabState extends State<WildcardTab> {
         content: TextField(
           controller: nameController,
           style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: "새 이름 입력",
             hintStyle: TextStyle(color: Colors.white30),
-            enabledBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.deepPurpleAccent),
-            ),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
             focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: Colors.deepPurpleAccent, width: 2),
+              borderSide: BorderSide(color: AppColors.accent, width: 2),
             ),
           ),
         ),
@@ -188,7 +191,7 @@ class _WildcardTabState extends State<WildcardTab> {
             child: const Text("취소", style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             onPressed: () {
               state.wildcards[state.selectedWildcardIndex].name = nameController.text.trim();
               state.saveAllSettings();
@@ -199,7 +202,12 @@ class _WildcardTabState extends State<WildcardTab> {
           ),
         ],
       ),
-    );
+    ).then((_) {
+      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        nameController.dispose();
+      });
+    });
   }
 
   @override
@@ -242,10 +250,10 @@ class _WildcardTabState extends State<WildcardTab> {
                   height: 44,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    border: Border.all(color: Colors.deepPurpleAccent, width: 2),
-                    color: Colors.deepPurpleAccent.withValues(alpha: 0.1),
+                    border: Border.all(color: AppColors.accent, width: 2),
+                    color: AppColors.accent.withValues(alpha: 0.1),
                   ),
-                  child: const Icon(Icons.add, size: 28, color: Colors.deepPurpleAccent),
+                  child: Icon(Icons.add, size: 28, color: AppColors.accent),
                 ),
               ),
               const SizedBox(width: 12),
@@ -254,19 +262,16 @@ class _WildcardTabState extends State<WildcardTab> {
                   height: 44,
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF1E1E1E),
-                    border: Border.all(
-                      color: Colors.deepPurpleAccent.withValues(alpha: 0.5),
-                      width: 2,
-                    ),
+                    color: AppColors.surface,
+                    border: Border.all(color: AppColors.accent.withValues(alpha: 0.5), width: 2),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: DropdownButtonHideUnderline(
                     child: DropdownButton<int>(
                       value: state.selectedWildcardIndex,
                       isExpanded: true,
-                      dropdownColor: const Color(0xFF1E1E1E),
-                      icon: const Icon(Icons.keyboard_arrow_down, color: Colors.deepPurpleAccent),
+                      dropdownColor: AppColors.surface,
+                      icon: Icon(Icons.keyboard_arrow_down, color: AppColors.accent),
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 15,
@@ -303,14 +308,14 @@ class _WildcardTabState extends State<WildcardTab> {
                   );
                 },
                 style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.deepPurpleAccent),
+                  side: BorderSide(color: AppColors.accent),
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   minimumSize: const Size(0, 44),
                 ),
-                child: const Text(
+                child: Text(
                   "복사",
-                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold),
                 ),
               ),
               const SizedBox(width: 4),
@@ -319,7 +324,7 @@ class _WildcardTabState extends State<WildcardTab> {
                   showDialog(
                     context: context,
                     builder: (ctx) => AlertDialog(
-                      backgroundColor: const Color(0xFF1E1E1E),
+                      backgroundColor: AppColors.surface,
                       title: const Text(
                         "삭제 확인",
                         style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -351,7 +356,7 @@ class _WildcardTabState extends State<WildcardTab> {
                 onTap: () => _showEditNameDialog(context, state),
                 child: const Padding(
                   padding: EdgeInsets.all(8.0),
-                  child: Icon(Icons.edit, color: Color(0xFF29B6F6), size: 22),
+                  child: Icon(Icons.edit, color: AppColors.blue, size: 22),
                 ),
               ),
             ],
@@ -360,9 +365,9 @@ class _WildcardTabState extends State<WildcardTab> {
           Container(
             height: 420,
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
+              color: AppColors.surface,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF00BFA5).withValues(alpha: 0.5)),
+              border: Border.all(color: AppColors.teal.withValues(alpha: 0.5)),
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -370,17 +375,17 @@ class _WildcardTabState extends State<WildcardTab> {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF00BFA5).withValues(alpha: 0.15),
+                    color: AppColors.teal.withValues(alpha: 0.15),
                     borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
                   ),
                   child: const Row(
                     children: [
-                      Icon(Icons.view_list, color: Color(0xFF00BFA5), size: 20),
+                      Icon(Icons.view_list, color: AppColors.teal, size: 20),
                       SizedBox(width: 8),
                       Text(
                         "랜덤 프롬프트 목록 (줄바꿈으로 구분)",
                         style: TextStyle(
-                          color: Color(0xFF00BFA5),
+                          color: AppColors.teal,
                           fontWeight: FontWeight.bold,
                           fontSize: 15,
                         ),
@@ -413,8 +418,8 @@ class _WildcardTabState extends State<WildcardTab> {
                                     fontSize: 13,
                                   ),
                                 ),
-                                backgroundColor: const Color(0xFF00BFA5).withValues(alpha: 0.2),
-                                side: const BorderSide(color: Color(0xFF00BFA5), width: 1.5),
+                                backgroundColor: AppColors.teal.withValues(alpha: 0.2),
+                                side: const BorderSide(color: AppColors.teal, width: 1.5),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(8),
                                 ),
@@ -456,9 +461,9 @@ class _WildcardTabState extends State<WildcardTab> {
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: const Color(0xFF00BFA5).withValues(alpha: 0.1),
+              color: AppColors.teal.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF00BFA5).withValues(alpha: 0.3)),
+              border: Border.all(color: AppColors.teal.withValues(alpha: 0.3)),
             ),
             child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -466,7 +471,7 @@ class _WildcardTabState extends State<WildcardTab> {
                 Text(
                   "💡 가중치(확률) 가이드",
                   style: TextStyle(
-                    color: Color(0xFF00BFA5),
+                    color: AppColors.teal,
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
                   ),

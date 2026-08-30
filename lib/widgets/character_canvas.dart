@@ -1,6 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import '../models/nai_character.dart';
+import '../app_theme.dart';
 
 /// 캐릭터 위치를 캔버스에서 직접 지정하는 위젯 (V5용).
 ///
@@ -16,6 +19,18 @@ class CharacterCanvas extends StatefulWidget {
   final double aspectRatio; // 생성 해상도 비율 (예: 832/1216)
   final bool showGrid; // 정렬용 격자선
   final bool snapToGrid; // 0.05 단위로 맞추기
+
+  /// 격자 칸 수 (가로/세로 따로). 2면 가운데 1줄이 생긴다.
+  final int gridCols;
+  final int gridRows;
+
+  /// 배경으로 깔 이미지 (선택).
+  ///  공식처럼 실제 그림을 보면서 위치를 잡을 수 있게 한다.
+  ///  null이면 빈 캔버스로 그린다.
+  final Uint8List? backgroundImage;
+
+  /// 배경 이미지의 투명도 (0.0~1.0). 마커가 묻히지 않게 살짝 흐리게 둔다.
+  final double backgroundOpacity;
   final void Function(int index) onSelect;
   final void Function(int index, double x, double y) onMove;
 
@@ -28,6 +43,10 @@ class CharacterCanvas extends StatefulWidget {
     this.aspectRatio = 832 / 1216,
     this.showGrid = false,
     this.snapToGrid = false,
+    this.gridCols = 5,
+    this.gridRows = 5,
+    this.backgroundImage,
+    this.backgroundOpacity = 0.45,
   });
 
   @override
@@ -42,8 +61,8 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
 
   // 마커 색상 — 캐릭터 번호로 구분한다
   static const List<Color> _palette = [
-    Color(0xFF8B5CF6), // 보라
-    Color(0xFF00BFA5), // 청록
+    AppColors.purple, // 보라
+    AppColors.teal, // 청록
     Color(0xFFFF7043), // 주황
     Color(0xFF42A5F5), // 파랑
     Color(0xFFEC407A), // 분홍
@@ -52,7 +71,14 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
     Color(0xFF26C6DA), // 하늘
   ];
 
-  Color _colorOf(int i) => _palette[i % _palette.length];
+  // 사용자가 정한 색이 있으면 그걸 쓰고, 없으면 번호별 기본 팔레트
+  Color _colorOf(int i) {
+    final custom = widget.characters[i].colorArgb;
+    if (custom != null) {
+      return Color(custom);
+    }
+    return _palette[i % _palette.length];
+  }
 
   double _snap(double v) {
     if (!widget.snapToGrid) {
@@ -164,18 +190,39 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
             },
             child: Stack(
               children: [
-                // 배경
+                // 배경 — 실제 생성될 그림의 영역을 나타낸다.
+                //  이미지가 있으면 그걸 깔고, 없으면 회색 판으로 둔다.
                 Positioned.fill(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF161616),
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.white12),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceAlt, // 작업 영역(회색)
+                        border: Border.all(color: Colors.white24),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: widget.backgroundImage == null
+                          ? null
+                          : Opacity(
+                              opacity: widget.backgroundOpacity,
+                              child: Image.memory(
+                                widget.backgroundImage!,
+                                fit: BoxFit.cover,
+                                // 작게만 보이므로 원본을 통째로 디코드하지 않는다
+                                cacheWidth: 512,
+                                gaplessPlayback: true,
+                              ),
+                            ),
                     ),
                   ),
                 ),
                 // 격자선 (정렬용, 선택)
-                if (widget.showGrid) Positioned.fill(child: CustomPaint(painter: _GridPainter())),
+                if (widget.showGrid)
+                  Positioned.fill(
+                    child: CustomPaint(
+                      painter: _GridPainter(cols: widget.gridCols, rows: widget.gridRows),
+                    ),
+                  ),
                 // 캐릭터 마커
                 for (int i = 0; i < widget.characters.length; i++)
                   if (widget.characters[i].isActive)
@@ -255,21 +302,30 @@ class _EagerPanRecognizer extends PanGestureRecognizer {
 ///     예전에 중앙선을 따로 그렸더니 선이 몰려 보여서 뺐다.
 ///  (공식은 Thirds / Phi / 2~12칸 Grid를 지원한다 — 필요해지면 여기서 확장)
 class _GridPainter extends CustomPainter {
-  static const int _divisions = 5;
+  /// 칸 수 (2면 가운데 1줄). 가로·세로를 따로 정한다.
+  final int cols;
+  final int rows;
+
+  const _GridPainter({required this.cols, required this.rows});
 
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.08)
+      ..color = Colors.white.withValues(alpha: 0.10)
       ..strokeWidth = 1;
-    for (int i = 1; i < _divisions; i++) {
-      final x = size.width * i / _divisions;
-      final y = size.height * i / _divisions;
+    // 세로선 (칸을 나누는 선은 칸 수보다 하나 적다)
+    for (int i = 1; i < cols; i++) {
+      final x = size.width * i / cols;
       canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    // 가로선
+    for (int i = 1; i < rows; i++) {
+      final y = size.height * i / rows;
       canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _GridPainter oldDelegate) =>
+      oldDelegate.cols != cols || oldDelegate.rows != rows;
 }

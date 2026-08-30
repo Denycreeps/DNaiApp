@@ -16,6 +16,9 @@ class NaiCharacter {
 
   bool isActive; // 캐릭터 활성화(ON/OFF) 상태 저장
 
+  /// 마커·칩 색 (ARGB). null이면 번호에 따른 기본 팔레트를 쓴다.
+  int? colorArgb;
+
   NaiCharacter({
     this.name = "",
     this.positive = "",
@@ -25,6 +28,7 @@ class NaiCharacter {
     this.posX,
     this.posY,
     this.isActive = true, // 기본값은 무조건 ON(true)
+    this.colorArgb,
   });
 
   /// 실제 전송에 쓸 좌표 (0.0~1.0).
@@ -50,6 +54,7 @@ class NaiCharacter {
     'posX': posX,
     'posY': posY,
     'isActive': isActive,
+    'colorArgb': colorArgb,
   };
 
   factory NaiCharacter.fromJson(Map<String, dynamic> json) => NaiCharacter(
@@ -61,5 +66,6 @@ class NaiCharacter {
     posX: (json['posX'] as num?)?.toDouble(),
     posY: (json['posY'] as num?)?.toDouble(),
     isActive: json['isActive'] ?? true,
+    colorArgb: json['colorArgb'] as int?,
   );
 }

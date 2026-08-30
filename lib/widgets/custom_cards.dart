@@ -1,5 +1,6 @@
 // lib/widgets/custom_cards.dart
 import 'package:flutter/material.dart';
+import '../app_theme.dart';
 
 // 1. 공통 프롬프트 입력 카드 (긍정, 부정 등)
 class CustomPromptCard extends StatelessWidget {
@@ -25,7 +26,7 @@ class CustomPromptCard extends StatelessWidget {
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: color.withValues(alpha: 0.3)),
         ),
@@ -93,13 +94,13 @@ class CustomFilterSwitch extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.deepPurpleAccent.withValues(alpha: 0.05),
+        color: AppColors.accent.withValues(alpha: 0.05),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.2)),
+        border: Border.all(color: AppColors.accent.withValues(alpha: 0.2)),
       ),
       child: Row(
         children: [
-          const Icon(Icons.auto_fix_high, color: Colors.deepPurpleAccent, size: 20),
+          Icon(Icons.auto_fix_high, color: AppColors.accent, size: 20),
           const SizedBox(width: 12),
           Expanded(
             child: Text(
@@ -111,7 +112,7 @@ class CustomFilterSwitch extends StatelessWidget {
               ),
             ),
           ),
-          Switch(value: value, onChanged: onChanged, activeThumbColor: Colors.deepPurpleAccent),
+          Switch(value: value, onChanged: onChanged, activeThumbColor: AppColors.accent),
         ],
       ),
     );

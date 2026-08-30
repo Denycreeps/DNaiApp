@@ -3,6 +3,7 @@ import 'dart:math'; // max (커서 위치 계산)
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
 import '../utils/prompt_utils.dart';
+import '../app_theme.dart';
 
 // ══════════════════════════════════════════════════════════════════════
 // 프롬프트 입력 다이얼로그 (공용)
@@ -176,7 +177,7 @@ void showPromptEditDialog(
 
           return Dialog(
             insetPadding: PromptUtils.promptEditorDialogInsets,
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             child: Padding(
               padding: const EdgeInsets.all(16.0),
@@ -205,7 +206,7 @@ void showPromptEditDialog(
                     decoration: BoxDecoration(
                       border: Border.all(color: color.withValues(alpha: 0.5)),
                       borderRadius: BorderRadius.circular(12),
-                      color: const Color(0xFF121212),
+                      color: AppColors.background,
                     ),
                     child: TextField(
                       controller: controller,

@@ -6,7 +6,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/app_state.dart';
+import '../models/text_controllers.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../app_theme.dart';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -40,6 +42,29 @@ class _SettingsTabState extends State<SettingsTab>
   //  처음에는 [일반]만 만들고, 다른 탭은 눌렀을 때 만든 뒤 계속 유지한다.
   final Set<int> _visitedTabs = {0};
 
+  // API 탭에 들어오면 계정 상태를 한 번 확인한다.
+  //  ⚠️ _markTabVisited는 스와이프 애니메이션에도 물려 있어 한 프레임에도 여러 번
+  //     불린다. 가드가 없으면 addPostFrameCallback이 수십 개 쌓인다.
+  //     실제 API 호출은 refreshAllAccountQuotas가 '5분 이내 확인분은 건너뛰기'로
+  //     한 번 더 걸러 준다.
+  bool _apiQuotaChecked = false;
+
+  void _refreshAccountsOnApiTab() {
+    if (_apiQuotaChecked || !mounted) {
+      return;
+    }
+    if (_appState.naiAccounts.isEmpty) {
+      return;
+    }
+    _apiQuotaChecked = true;
+    // 빌드 도중 notifyListeners가 불리지 않도록 프레임 뒤로 미룬다
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _appState.refreshAllAccountQuotas();
+      }
+    });
+  }
+
   void _markTabVisited() {
     // 스와이프 중에는 index가 아직 안 바뀌므로 애니메이션 값으로 목적지를 본다.
     // (안 그러면 넘기는 도중 빈 화면이 스쳐 지나간다)
@@ -50,6 +75,9 @@ class _SettingsTabState extends State<SettingsTab>
     changed |= _visitedTabs.add(_tabController.index);
     if (changed && mounted) {
       setState(() {});
+    }
+    if (_tabController.index == 2) {
+      _refreshAccountsOnApiTab();
     }
   }
 
@@ -71,7 +99,7 @@ class _SettingsTabState extends State<SettingsTab>
   Future<void> _exportSettings(BuildContext context, AppState state) async {
     final choice = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -87,14 +115,16 @@ class _SettingsTabState extends State<SettingsTab>
             ListTile(
               leading: const Icon(Icons.folder, color: Color(0xFFFFC107)),
               title: const Text("폴더에 저장", style: TextStyle(color: Colors.white)),
-              subtitle: const Text(
-                "DNaiApp/settings 폴더에 저장 (앱 재시작해도 유지)",
-                style: TextStyle(color: Colors.white38, fontSize: 11),
+              subtitle: Text(
+                state.safRootUri != null
+                    ? "저장 폴더의 settings 안에 저장 (파일 앱에서 열람 가능)"
+                    : "⚠️ 저장 폴더 미설정 — 가져오기로 다시 못 읽습니다",
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
               ),
               onTap: () => Navigator.pop(ctx, 'folder'),
             ),
             ListTile(
-              leading: const Icon(Icons.share, color: Color(0xFF8B5CF6)),
+              leading: const Icon(Icons.share, color: AppColors.purple),
               title: const Text("공유하기", style: TextStyle(color: Colors.white)),
               subtitle: const Text(
                 "다른 앱으로 전송 (드라이브, 메신저 등)",
@@ -126,18 +156,33 @@ class _SettingsTabState extends State<SettingsTab>
       final fileName = "DNaiApp_Settings_$dateStr.json";
 
       if (choice == 'folder') {
-        final base = await state.getGalleryBasePath();
-        final settingsDir = Directory('$base/settings');
-        if (!await settingsDir.exists()) {
-          await settingsDir.create(recursive: true);
-        }
-        final file = File('${settingsDir.path}/$fileName');
-        await file.writeAsString(jsonStr);
+        // SAF 폴더에 저장한다.
+        //  ⚠️ 예전처럼 /Android/data/<패키지>/files 아래에 쓰면 저장은 되지만,
+        //     안드로이드 11부터 문서 선택기가 그 경로를 볼 수 없어서
+        //     '가져오기'를 눌러도 파일이 나타나지 않는다.
+        final shown = await state.saveSettingsViaSaf(fileName, jsonStr);
         if (!context.mounted) {
           return;
         }
+        if (shown == null) {
+          // 저장 폴더가 없으면 조용히 실패하지 말고 공유로 대체 (파일을 잃지 않게)
+          final dir = await getTemporaryDirectory();
+          final file = File('${dir.path}/$fileName');
+          await file.writeAsString(jsonStr);
+          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+          if (!context.mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              duration: Duration(seconds: 5),
+              content: Text("저장 폴더가 없어 공유로 내보냈습니다. 설정에서 저장 폴더를 지정해 주세요."),
+            ),
+          );
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(duration: const Duration(seconds: 5), content: Text("저장 완료: ${file.path}")),
+          SnackBar(duration: const Duration(seconds: 5), content: Text("저장 완료: $shown")),
         );
       } else {
         final dir = await getTemporaryDirectory();
@@ -154,13 +199,24 @@ class _SettingsTabState extends State<SettingsTab>
     }
   }
 
+  // 남은 할당량에 따른 색. 넉넉/보통/부족을 한눈에 구분한다.
+  static Color _quotaColor(double percent) {
+    if (percent >= 50) {
+      return AppColors.teal;
+    }
+    if (percent >= 20) {
+      return Colors.amber;
+    }
+    return Colors.redAccent;
+  }
+
   // ── NovelAI 계정 목록 ──
   //  라디오처럼 하나만 활성화된다. 탭하면 그 계정의 토큰으로 갈아끼운다.
   Widget _buildAccountList(BuildContext context, AppState state) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white10),
       ),
@@ -169,7 +225,7 @@ class _SettingsTabState extends State<SettingsTab>
         children: [
           Row(
             children: [
-              const Icon(Icons.people_alt_outlined, color: Colors.deepPurpleAccent, size: 18),
+              Icon(Icons.people_alt_outlined, color: AppColors.accent, size: 18),
               const SizedBox(width: 8),
               const Text(
                 "NovelAI 계정",
@@ -180,12 +236,27 @@ class _SettingsTabState extends State<SettingsTab>
                 "${state.naiAccounts.length}개",
                 style: const TextStyle(color: Colors.white38, fontSize: 12),
               ),
+              if (state.naiAccounts.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                // 전체 계정 잔액·할당량 다시 확인
+                state.isRefreshingAccounts
+                    ? const Padding(
+                        padding: EdgeInsets.all(6),
+                        child: SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38),
+                        ),
+                      )
+                    : IconButton(
+                        icon: const Icon(Icons.refresh, size: 18, color: Colors.white38),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                        tooltip: '모든 계정 다시 확인',
+                        onPressed: () => state.refreshAllAccountQuotas(force: true),
+                      ),
+              ],
             ],
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            "여러 계정을 등록해 두고 탭해서 바꿀 수 있어요.",
-            style: TextStyle(color: Colors.white38, fontSize: 12),
           ),
           const SizedBox(height: 12),
           if (state.naiAccounts.isEmpty)
@@ -206,7 +277,7 @@ class _SettingsTabState extends State<SettingsTab>
               margin: const EdgeInsets.only(bottom: 8),
               decoration: BoxDecoration(
                 color: state.isApiConnected
-                    ? const Color(0xFF00BFA5).withValues(alpha: 0.12)
+                    ? AppColors.teal.withValues(alpha: 0.12)
                     : Colors.redAccent.withValues(alpha: 0.10),
                 borderRadius: BorderRadius.circular(10),
               ),
@@ -216,13 +287,13 @@ class _SettingsTabState extends State<SettingsTab>
                   Icon(
                     state.isApiConnected ? Icons.check_circle_outline : Icons.error_outline,
                     size: 15,
-                    color: state.isApiConnected ? const Color(0xFF00BFA5) : Colors.redAccent,
+                    color: state.isApiConnected ? AppColors.teal : Colors.redAccent,
                   ),
                   const SizedBox(width: 6),
                   Text(
                     state.isApiConnected ? "서버에 연결됨" : "연결되지 않음 (토큰 확인)",
                     style: TextStyle(
-                      color: state.isApiConnected ? const Color(0xFF00BFA5) : Colors.redAccent,
+                      color: state.isApiConnected ? AppColors.teal : Colors.redAccent,
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
                     ),
@@ -235,13 +306,10 @@ class _SettingsTabState extends State<SettingsTab>
               Expanded(
                 child: OutlinedButton.icon(
                   onPressed: () => _showAccountDialog(context, state, null),
-                  icon: const Icon(Icons.add, size: 16, color: Colors.deepPurpleAccent),
-                  label: const Text(
-                    "계정 추가",
-                    style: TextStyle(color: Colors.deepPurpleAccent, fontSize: 13),
-                  ),
+                  icon: Icon(Icons.add, size: 16, color: AppColors.accent),
+                  label: Text("계정 추가", style: TextStyle(color: AppColors.accent, fontSize: 13)),
                   style: OutlinedButton.styleFrom(
-                    side: const BorderSide(color: Colors.deepPurpleAccent),
+                    side: BorderSide(color: AppColors.accent),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
                 ),
@@ -286,7 +354,7 @@ class _SettingsTabState extends State<SettingsTab>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: const Text("삭제할 계정 선택", style: TextStyle(color: Colors.white, fontSize: 16)),
         contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
         content: SizedBox(
@@ -303,7 +371,7 @@ class _SettingsTabState extends State<SettingsTab>
                 leading: Icon(
                   isActive ? Icons.radio_button_checked : Icons.person_outline,
                   size: 18,
-                  color: isActive ? Colors.deepPurpleAccent : Colors.white38,
+                  color: isActive ? AppColors.accent : Colors.white38,
                 ),
                 title: Text(
                   acc.label.isEmpty ? "계정 ${i + 1}" : acc.label,
@@ -347,7 +415,7 @@ class _SettingsTabState extends State<SettingsTab>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: const Text("계정 삭제", style: TextStyle(color: Colors.white, fontSize: 16)),
         content: Text(
           isActive
@@ -384,18 +452,16 @@ class _SettingsTabState extends State<SettingsTab>
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
-            color: isActive
-                ? Colors.deepPurpleAccent.withValues(alpha: 0.15)
-                : const Color(0xFF161616),
+            color: isActive ? AppColors.accent.withValues(alpha: 0.15) : const Color(0xFF161616),
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: isActive ? Colors.deepPurpleAccent : Colors.white12),
+            border: Border.all(color: isActive ? AppColors.accent : Colors.white12),
           ),
           child: Row(
             children: [
               Icon(
                 isActive ? Icons.radio_button_checked : Icons.radio_button_off,
                 size: 18,
-                color: isActive ? Colors.deepPurpleAccent : Colors.white24,
+                color: isActive ? AppColors.accent : Colors.white24,
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -423,16 +489,46 @@ class _SettingsTabState extends State<SettingsTab>
                   ],
                 ),
               ),
-              // 잔액 (확인한 적 있을 때만)
-              if (acc.anlas >= 0) ...[
-                const Icon(Icons.toll, size: 13, color: Colors.orangeAccent),
-                const SizedBox(width: 3),
-                Text(
-                  "${acc.anlas}",
-                  style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              // [Anlas · 할당량 · 갱신시각] 을 한 줄로 나열한다.
+              //  ⚠️ 이름/토큰 칸이 Expanded라 여기 폭이 넓어지면 이름이 밀려 잘린다.
+              //     그래서 각 항목은 확인된 것만 내보낸다.
+              if (acc.anlas >= 0 || acc.limitPercent != null || acc.checkedAgo != null)
+                Padding(
+                  padding: const EdgeInsets.only(right: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (acc.anlas >= 0) ...[
+                        const Icon(Icons.toll, size: 15, color: Colors.orangeAccent),
+                        const SizedBox(width: 3),
+                        Text(
+                          "${acc.anlas}",
+                          style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                        ),
+                      ],
+                      if (acc.limitPercent != null) ...[
+                        const SizedBox(width: 8),
+                        Icon(Icons.bolt, size: 15, color: _quotaColor(acc.limitPercent!)),
+                        const SizedBox(width: 2),
+                        Text(
+                          "${acc.limitPercent!.round()}%",
+                          style: TextStyle(
+                            color: _quotaColor(acc.limitPercent!),
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                      if (acc.checkedAgo != null) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          acc.checkedAgo!,
+                          style: const TextStyle(color: Colors.white30, fontSize: 12),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                const SizedBox(width: 6),
-              ],
               IconButton(
                 icon: const Icon(Icons.edit_outlined, size: 18, color: Colors.white38),
                 padding: EdgeInsets.zero,
@@ -456,7 +552,7 @@ class _SettingsTabState extends State<SettingsTab>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: Text(
           isEdit ? "계정 수정" : "계정 추가",
           style: const TextStyle(color: Colors.white, fontSize: 16),
@@ -493,7 +589,7 @@ class _SettingsTabState extends State<SettingsTab>
             child: const Text("취소", style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             onPressed: () {
               if (isEdit) {
                 state.updateAccount(index, label: labelCtrl.text, token: tokenCtrl.text);
@@ -519,17 +615,17 @@ class _SettingsTabState extends State<SettingsTab>
     return InputDecoration(
       hintText: hint,
       hintStyle: const TextStyle(color: Colors.white30),
-      prefixIcon: Icon(icon, color: Colors.deepPurpleAccent),
+      prefixIcon: Icon(icon, color: AppColors.accent),
       suffixIcon: suffixIcon,
       filled: true,
-      fillColor: const Color(0xFF121212),
+      fillColor: AppColors.background,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
         borderSide: BorderSide.none,
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
-        borderSide: const BorderSide(color: Colors.deepPurpleAccent),
+        borderSide: BorderSide(color: AppColors.accent),
       ),
     );
   }
@@ -555,8 +651,8 @@ class _SettingsTabState extends State<SettingsTab>
         label,
         style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold),
       ),
-      backgroundColor: Colors.deepPurpleAccent.withValues(alpha: 0.2),
-      side: const BorderSide(color: Colors.deepPurpleAccent, width: 1.5),
+      backgroundColor: AppColors.accent.withValues(alpha: 0.2),
+      side: BorderSide(color: AppColors.accent, width: 1.5),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       onPressed: () => _insertTextAtCursor(controller, tag),
     );
@@ -594,7 +690,7 @@ class _SettingsTabState extends State<SettingsTab>
     IconData? icon,
     Color? activeColor,
   }) {
-    final Color accent = activeColor ?? Colors.deepPurpleAccent;
+    final Color accent = activeColor ?? AppColors.accent;
     return GestureDetector(
       onTap: () => onChanged(!value),
       child: AnimatedContainer(
@@ -639,18 +735,83 @@ class _SettingsTabState extends State<SettingsTab>
   }
 
   // 1줄짜리 ON/OFF 토글 타일 (통일된 형태)
+  // 액센트 색 선택 타일.
+  //  자유 컬러 피커가 아니라 고정 팔레트를 쓴다.
+  //  (긍정=청록 / 선행=파랑 / 후행=주황 / 부정=빨강 / 캐릭터=보라 처럼
+  //   의미가 정해진 색과 겹치면 UI에서 구분이 안 되기 때문)
+  Widget _accentPickerTile(AppState state) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: const BoxDecoration(color: AppColors.surface),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.color_lens, color: AppColors.accent, size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                "액센트 색",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "버튼·아이콘·강조 표시에 쓰이는 색이에요.",
+            style: TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: AppColors.accentPalette.map((opt) {
+              final bool selected = state.themeAccent == opt.color.toARGB32();
+              return GestureDetector(
+                onTap: () => state.setThemeAccent(opt.color.toARGB32()),
+                child: Tooltip(
+                  message: opt.name,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 150),
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: opt.color,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: selected ? Colors.white : Colors.white24,
+                        width: selected ? 3 : 1,
+                      ),
+                      boxShadow: selected
+                          ? [BoxShadow(color: opt.color.withValues(alpha: 0.5), blurRadius: 8)]
+                          : null,
+                    ),
+                    child: selected ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _toggleTile({
     required IconData icon,
     required String title,
     required bool value,
     required ValueChanged<bool> onChanged,
-    Color color = Colors.deepPurpleAccent,
+    // ⚠️ AppColors.accent는 런타임에 바뀌는 값이라 기본 파라미터 값으로 못 쓴다
+    //    (기본값은 컴파일 타임 상수여야 함). null로 받고 본문에서 채운다.
+    Color? color,
     BorderRadius? radius,
   }) {
+    color ??= AppColors.accent;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppColors.surface,
         borderRadius: radius,
         border: Border.all(color: Colors.white10),
       ),
@@ -694,7 +855,7 @@ class _SettingsTabState extends State<SettingsTab>
     required String title,
     required bool value,
     required ValueChanged<bool> onChanged,
-    Color color = const Color(0xFF8B5CF6),
+    Color color = AppColors.purple,
   }) {
     return Padding(
       padding: const EdgeInsets.only(left: 24),
@@ -747,7 +908,7 @@ class _SettingsTabState extends State<SettingsTab>
     final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
@@ -769,7 +930,7 @@ class _SettingsTabState extends State<SettingsTab>
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, "copy"),
-            child: const Text("복사만", style: TextStyle(color: Color(0xFF00BFA5))),
+            child: const Text("복사만", style: TextStyle(color: AppColors.teal)),
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, "move"),
@@ -791,7 +952,7 @@ class _SettingsTabState extends State<SettingsTab>
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         content: Row(
           children: [
             const CircularProgressIndicator(color: Color(0xFFFFC107)),
@@ -835,10 +996,10 @@ class _SettingsTabState extends State<SettingsTab>
     return Column(
       children: [
         Material(
-          color: const Color(0xFF121212),
+          color: AppColors.background,
           child: TabBar(
             controller: _tabController,
-            indicatorColor: Colors.deepPurpleAccent,
+            indicatorColor: AppColors.accent,
             labelColor: Colors.white,
             unselectedLabelColor: Colors.white54,
             labelStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
@@ -885,7 +1046,7 @@ class _SettingsTabState extends State<SettingsTab>
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white10),
       ),
@@ -894,11 +1055,7 @@ class _SettingsTabState extends State<SettingsTab>
         children: [
           Row(
             children: [
-              Icon(
-                Icons.search,
-                color: hasKey ? Colors.deepPurpleAccent : Colors.white24,
-                size: 20,
-              ),
+              Icon(Icons.search, color: hasKey ? AppColors.accent : Colors.white24, size: 20),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -909,7 +1066,7 @@ class _SettingsTabState extends State<SettingsTab>
               Text(
                 hasKey ? "${state.gelbooruSearchPages}" : "40",
                 style: TextStyle(
-                  color: hasKey ? Colors.deepPurpleAccent : Colors.white38,
+                  color: hasKey ? AppColors.accent : Colors.white38,
                   fontWeight: FontWeight.bold,
                   fontSize: 15,
                 ),
@@ -925,7 +1082,7 @@ class _SettingsTabState extends State<SettingsTab>
             min: 40,
             max: 120,
             divisions: 16, // 40,45,...,120
-            activeColor: Colors.deepPurpleAccent,
+            activeColor: AppColors.accent,
             label: "${state.gelbooruSearchPages}",
             onChanged: hasKey
                 ? (v) {
@@ -1033,7 +1190,7 @@ class _SettingsTabState extends State<SettingsTab>
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               child: Row(
                 children: [
-                  Icon(icon, color: Colors.deepPurpleAccent, size: 18),
+                  Icon(icon, color: AppColors.accent, size: 18),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -1213,7 +1370,7 @@ class _SettingsTabState extends State<SettingsTab>
           _toggleTile(
             icon: Icons.history_toggle_off,
             title: "i2i용 히스토리 비활성화",
-            color: const Color(0xFF8B5CF6),
+            color: AppColors.purple,
             value: state.i2iHistoryDisabled,
             onChanged: (val) {
               state.i2iHistoryDisabled = val;
@@ -1269,12 +1426,12 @@ class _SettingsTabState extends State<SettingsTab>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
+              color: AppColors.surface,
               border: Border.all(color: Colors.white10),
             ),
             child: Row(
               children: [
-                const Icon(Icons.timer_outlined, color: Colors.deepPurpleAccent, size: 20),
+                Icon(Icons.timer_outlined, color: AppColors.accent, size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   "연속 생성 딜레이",
@@ -1283,8 +1440,8 @@ class _SettingsTabState extends State<SettingsTab>
                 const SizedBox(width: 8),
                 Text(
                   "${state.batchDelay.toStringAsFixed(1)}초",
-                  style: const TextStyle(
-                    color: Colors.deepPurpleAccent,
+                  style: TextStyle(
+                    color: AppColors.accent,
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
                   ),
@@ -1295,9 +1452,9 @@ class _SettingsTabState extends State<SettingsTab>
                       trackHeight: 3,
                       thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
                       overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                      activeTrackColor: Colors.deepPurpleAccent,
+                      activeTrackColor: AppColors.accent,
                       inactiveTrackColor: Colors.white12,
-                      thumbColor: Colors.deepPurpleAccent,
+                      thumbColor: AppColors.accent,
                     ),
                     child: Slider(
                       value: state.batchDelay,
@@ -1319,12 +1476,12 @@ class _SettingsTabState extends State<SettingsTab>
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
+              color: AppColors.surface,
               border: Border.all(color: Colors.white10),
             ),
             child: Row(
               children: [
-                const Icon(Icons.format_size, color: Colors.deepPurpleAccent, size: 20),
+                Icon(Icons.format_size, color: AppColors.accent, size: 20),
                 const SizedBox(width: 8),
                 const Text(
                   "프롬프트 입력 폰트 크기",
@@ -1333,8 +1490,8 @@ class _SettingsTabState extends State<SettingsTab>
                 const SizedBox(width: 8),
                 Text(
                   state.promptEditorFontSize.toStringAsFixed(0),
-                  style: const TextStyle(
-                    color: Colors.deepPurpleAccent,
+                  style: TextStyle(
+                    color: AppColors.accent,
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
                   ),
@@ -1345,9 +1502,9 @@ class _SettingsTabState extends State<SettingsTab>
                       trackHeight: 3,
                       thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
                       overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                      activeTrackColor: Colors.deepPurpleAccent,
+                      activeTrackColor: AppColors.accent,
                       inactiveTrackColor: Colors.white12,
-                      thumbColor: Colors.deepPurpleAccent,
+                      thumbColor: AppColors.accent,
                     ),
                     child: Slider(
                       value: state.promptEditorFontSize,
@@ -1379,6 +1536,15 @@ class _SettingsTabState extends State<SettingsTab>
         ],
       ),
 
+      // ── 테마 ──
+      _settingGroup(
+        state,
+        id: 'theme',
+        title: "테마",
+        icon: Icons.palette_outlined,
+        children: [_accentPickerTile(state)],
+      ),
+
       const SizedBox(height: 16),
       // 검색 페이지 수 (API 키 있을 때만 조절 가능) — 독립 카드
       _searchPagesTile(state),
@@ -1392,7 +1558,7 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white10),
         ),
@@ -1401,7 +1567,7 @@ class _SettingsTabState extends State<SettingsTab>
           children: [
             Row(
               children: [
-                const Icon(Icons.tab, color: Colors.deepPurpleAccent, size: 15),
+                Icon(Icons.tab, color: AppColors.accent, size: 15),
                 const SizedBox(width: 6),
                 const Text(
                   "탭 표시 설정",
@@ -1438,7 +1604,7 @@ class _SettingsTabState extends State<SettingsTab>
 
             Row(
               children: [
-                const Icon(Icons.dashboard_customize, color: Color(0xFF00BFA5), size: 15),
+                const Icon(Icons.dashboard_customize, color: AppColors.teal, size: 15),
                 const SizedBox(width: 6),
                 const Text(
                   "i2i 모드 표시 설정",
@@ -1453,14 +1619,14 @@ class _SettingsTabState extends State<SettingsTab>
                 state.i2iModeInpaintEnabled,
                 (v) => state.setI2iModeEnabled('inpaint', v),
                 icon: Icons.format_paint,
-                activeColor: const Color(0xFF00BFA5),
+                activeColor: AppColors.teal,
               ),
               _tabChip(
                 "모자이크",
                 state.i2iModeMosaicEnabled,
                 (v) => state.setI2iModeEnabled('mosaic', v),
                 icon: Icons.grid_on,
-                activeColor: Colors.deepPurpleAccent,
+                activeColor: AppColors.accent,
               ),
               _tabChip(
                 "img2img",
@@ -1474,7 +1640,7 @@ class _SettingsTabState extends State<SettingsTab>
                 state.i2iModeUpscaleEnabled,
                 (v) => state.setI2iModeEnabled('upscale', v),
                 icon: Icons.high_quality,
-                activeColor: const Color(0xFFFFA000),
+                activeColor: AppColors.orange,
               ),
             ]),
 
@@ -1484,7 +1650,7 @@ class _SettingsTabState extends State<SettingsTab>
 
             Row(
               children: [
-                const Icon(Icons.view_agenda, color: Color(0xFF8B5CF6), size: 15),
+                const Icon(Icons.view_agenda, color: AppColors.purple, size: 15),
                 const SizedBox(width: 6),
                 const Text(
                   "프롬프트 창 표시 설정",
@@ -1504,35 +1670,29 @@ class _SettingsTabState extends State<SettingsTab>
                 'positive',
                 "긍정적",
                 Icons.add_circle_outline,
-                const Color(0xFF00BFA5),
+                AppColors.teal,
               ),
-              _promptSectionChip(
-                state,
-                'prefix',
-                "선행",
-                Icons.arrow_right_alt,
-                const Color(0xFF29B6F6),
-              ),
+              _promptSectionChip(state, 'prefix', "선행", Icons.arrow_right_alt, AppColors.blue),
               _promptSectionChip(
                 state,
                 'suffix',
                 "후행",
                 Icons.keyboard_double_arrow_right,
-                const Color(0xFFFFA000),
+                AppColors.orange,
               ),
               _promptSectionChip(
                 state,
                 'negative',
                 "부정적",
                 Icons.remove_circle_outline,
-                const Color(0xFFFF5252),
+                AppColors.red,
               ),
               _promptSectionChip(
                 state,
                 'removeChips',
                 "태그 제거",
                 Icons.auto_fix_high,
-                const Color(0xFF8B5CF6),
+                AppColors.purple,
               ),
               _promptSectionChip(
                 state,
@@ -1609,7 +1769,7 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white10),
         ),
@@ -1624,7 +1784,7 @@ class _SettingsTabState extends State<SettingsTab>
               },
               child: Row(
                 children: [
-                  const Icon(Icons.folder_special, color: Color(0xFF00BFA5), size: 20),
+                  const Icon(Icons.folder_special, color: AppColors.teal, size: 20),
                   const SizedBox(width: 8),
                   const Text(
                     "저장 폴더 (SAF)",
@@ -1648,7 +1808,7 @@ class _SettingsTabState extends State<SettingsTab>
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF121212),
+                  color: AppColors.background,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -1656,7 +1816,7 @@ class _SettingsTabState extends State<SettingsTab>
                     Icon(
                       state.safRootUri != null ? Icons.check_circle : Icons.remove_circle_outline,
                       size: 16,
-                      color: state.safRootUri != null ? const Color(0xFF00BFA5) : Colors.white30,
+                      color: state.safRootUri != null ? AppColors.teal : Colors.white30,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
@@ -1689,8 +1849,8 @@ class _SettingsTabState extends State<SettingsTab>
                       icon: const Icon(Icons.create_new_folder_outlined, size: 18),
                       label: const Text("폴더 선택"),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: const Color(0xFF00BFA5),
-                        side: const BorderSide(color: Color(0xFF00BFA5)),
+                        foregroundColor: AppColors.teal,
+                        side: const BorderSide(color: AppColors.teal),
                       ),
                     ),
                   ),
@@ -1743,7 +1903,7 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white10),
         ),
@@ -1758,7 +1918,7 @@ class _SettingsTabState extends State<SettingsTab>
               },
               child: Row(
                 children: [
-                  const Icon(Icons.edit_document, color: Colors.deepPurpleAccent, size: 20),
+                  Icon(Icons.edit_document, color: AppColors.accent, size: 20),
                   const SizedBox(width: 8),
                   const Text(
                     "파일 이름",
@@ -1813,7 +1973,7 @@ class _SettingsTabState extends State<SettingsTab>
                     );
                   },
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurpleAccent,
+                    backgroundColor: AppColors.accent,
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
@@ -1833,15 +1993,15 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Row(
+            Row(
               children: [
-                Icon(Icons.photo_library_outlined, color: Colors.deepPurpleAccent, size: 18),
+                Icon(Icons.photo_library_outlined, color: AppColors.accent, size: 18),
                 SizedBox(width: 8),
                 Text(
                   "현재 생성된 이미지",
@@ -1851,11 +2011,7 @@ class _SettingsTabState extends State<SettingsTab>
             ),
             Text(
               "${state.sessionGenerateCount} 장",
-              style: const TextStyle(
-                color: Colors.deepPurpleAccent,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
+              style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 14),
             ),
           ],
         ),
@@ -1866,16 +2022,16 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+          border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Row(
+            Row(
               children: [
-                Icon(Icons.sync_alt, color: Colors.deepPurpleAccent, size: 18),
+                Icon(Icons.sync_alt, color: AppColors.accent, size: 18),
                 SizedBox(width: 8),
                 Text(
                   "설정 백업",
@@ -1966,7 +2122,7 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: Colors.white10),
         ),
@@ -2125,7 +2281,7 @@ class _SettingsTabState extends State<SettingsTab>
         child: Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E1E1E),
+            color: AppColors.surface,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: Colors.white12),
           ),
@@ -2149,7 +2305,7 @@ class _SettingsTabState extends State<SettingsTab>
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFF1E1E1E),
+          color: AppColors.surface,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: Colors.white10),
         ),
@@ -2159,9 +2315,9 @@ class _SettingsTabState extends State<SettingsTab>
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.sync, color: Colors.deepPurpleAccent, size: 20),
+                    Icon(Icons.sync, color: AppColors.accent, size: 20),
                     SizedBox(width: 8),
                     Text(
                       "기동 시 업데이트 확인",
@@ -2175,8 +2331,8 @@ class _SettingsTabState extends State<SettingsTab>
                 ),
                 Switch(
                   value: state.autoCheckUpdate,
-                  activeThumbColor: Colors.deepPurpleAccent,
-                  activeTrackColor: Colors.deepPurpleAccent.withValues(alpha: 0.5),
+                  activeThumbColor: AppColors.accent,
+                  activeTrackColor: AppColors.accent.withValues(alpha: 0.5),
                   onChanged: (val) {
                     state.autoCheckUpdate = val;
                     state.saveAllSettings();
@@ -2199,7 +2355,7 @@ class _SettingsTabState extends State<SettingsTab>
                             value: state.downloadProgress,
                             minHeight: 8,
                             backgroundColor: Colors.white12,
-                            valueColor: const AlwaysStoppedAnimation(Colors.deepPurpleAccent),
+                            valueColor: AlwaysStoppedAnimation(AppColors.accent),
                           ),
                         ),
                         const SizedBox(height: 8),
@@ -2222,7 +2378,7 @@ class _SettingsTabState extends State<SettingsTab>
                         ),
                       ),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.deepPurpleAccent,
+                        backgroundColor: AppColors.accent,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                       ),
@@ -2270,11 +2426,11 @@ class _SettingsTabState extends State<SettingsTab>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: [
-            const Icon(Icons.system_update, color: Colors.deepPurpleAccent, size: 24),
+            Icon(Icons.system_update, color: AppColors.accent, size: 24),
             const SizedBox(width: 8),
             Text(
               "v${state.latestVersion} 업데이트",
@@ -2332,7 +2488,7 @@ class _SettingsTabState extends State<SettingsTab>
               "업데이트",
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
             ),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
           ),
         ],
       ),

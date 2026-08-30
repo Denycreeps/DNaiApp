@@ -12,12 +12,17 @@ import 'screens/character_tab.dart';
 import 'screens/wildcard_tab.dart';
 import 'screens/settings_tab.dart';
 import 'widgets/detail_settings_modal.dart';
+import 'utils/qwen_tokenizer.dart';
 
 void main() {
   // ── [디버그] 잡히지 않은 오류를 로그로 남긴다 ──
   //  화면이 튕기거나 흰 화면이 될 때 원인을 확인하기 위한 장치.
   //  문제가 해결되면 지워도 되지만, 남겨두면 앞으로도 도움이 된다.
   WidgetsFlutterBinding.ensureInitialized();
+  // V5 토큰 카운터용 Qwen 사전을 미리 읽어 둔다.
+  //  await 하지 않는다 — 1MB 파싱 때문에 첫 화면이 늦어질 이유가 없고,
+  //  끝나기 전에는 QwenTokenizer가 알아서 근사값을 돌려준다.
+  QwenTokenizer.ensureLoaded();
   FlutterError.onError = (details) {
     debugPrint('════════ Flutter 오류 ════════');
     debugPrint('${details.exception}');
@@ -50,7 +55,7 @@ void main() {
         theme: ThemeData(
           brightness: Brightness.dark,
           primarySwatch: Colors.deepPurple,
-          scaffoldBackgroundColor: const Color(0xFF121212),
+          scaffoldBackgroundColor: AppColors.background,
           useMaterial3: true,
           fontFamily: 'Pretendard',
         ),
@@ -108,11 +113,11 @@ class _NovelAiAppState extends State<NovelAiApp>
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: [
-            const Icon(Icons.system_update, color: Colors.deepPurpleAccent, size: 24),
+            Icon(Icons.system_update, color: AppColors.accent, size: 24),
             const SizedBox(width: 8),
             Text(
               "v${state.latestVersion} 업데이트",
@@ -131,8 +136,8 @@ class _NovelAiAppState extends State<NovelAiApp>
             children: [
               Text(
                 "v${AppState.currentVersion} → v${state.latestVersion}",
-                style: const TextStyle(
-                  color: Colors.deepPurpleAccent,
+                style: TextStyle(
+                  color: AppColors.accent,
                   fontSize: 14,
                   fontWeight: FontWeight.bold,
                 ),
@@ -151,7 +156,7 @@ class _NovelAiAppState extends State<NovelAiApp>
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF121212),
+                    color: AppColors.background,
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Column(
@@ -196,7 +201,7 @@ class _NovelAiAppState extends State<NovelAiApp>
                 style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.deepPurpleAccent,
+                backgroundColor: AppColors.accent,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               ),
             ),
@@ -239,8 +244,14 @@ class _NovelAiAppState extends State<NovelAiApp>
       return content;
     }
 
-    // 캐릭터/와일드카드 탭은 이미지 미표시
-    if (tabIndex == 3 || tabIndex == 4) {
+    // 캐릭터 탭은 내부에서 높이를 스스로 나눠 쓴다(상단 편집 + 하단 Position).
+    //  여기서 스크롤로 감싸면 화면에 딱 맞는데도 위아래로 밀려 어색하다.
+    if (tabIndex == 3) {
+      return content;
+    }
+
+    // 와일드카드 탭은 목록이 길어질 수 있어 스크롤을 유지한다
+    if (tabIndex == 4) {
       return SingleChildScrollView(child: Column(children: [content, const SizedBox(height: 80)]));
     }
 
@@ -253,9 +264,9 @@ class _NovelAiAppState extends State<NovelAiApp>
               width: double.infinity,
               margin: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: const Color(0xFF1E1E1E),
+                color: AppColors.surface,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.deepPurpleAccent.withValues(alpha: 0.3)),
+                border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
               ),
               child: _buildImageArea(state),
             ),
@@ -273,7 +284,7 @@ class _NovelAiAppState extends State<NovelAiApp>
     // 초기 로딩 중에는 로딩 화면으로 조작 차단 (프리징/크래시 방지)
     if (!state.isAppReady) {
       return Scaffold(
-        backgroundColor: const Color(0xFF121212),
+        backgroundColor: AppColors.background,
         body: Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -283,7 +294,7 @@ class _NovelAiAppState extends State<NovelAiApp>
                 height: 44,
                 child: CircularProgressIndicator(
                   strokeWidth: 3,
-                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8B5CF6)),
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.purple),
                 ),
               ),
               const SizedBox(height: 20),
@@ -454,7 +465,7 @@ class _NovelAiAppState extends State<NovelAiApp>
         child: Scaffold(
           appBar: AppBar(
             toolbarHeight: 0,
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             bottom: TabBar(
               controller: _tabController,
               labelPadding: EdgeInsets.zero,
@@ -544,12 +555,12 @@ class _NovelAiAppState extends State<NovelAiApp>
                       child: ElevatedButton.icon(
                         onPressed: () => showDetailSettingsModal(context),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2A2A35),
+                          backgroundColor: AppColors.surfaceButton,
                           padding: const EdgeInsets.symmetric(horizontal: 24),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                           elevation: 4,
                         ),
-                        icon: const Icon(Icons.tune, color: Colors.deepPurpleAccent, size: 18),
+                        icon: Icon(Icons.tune, color: AppColors.accent, size: 18),
                         label: const Text(
                           "상세 환경",
                           style: TextStyle(

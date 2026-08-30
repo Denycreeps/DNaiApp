@@ -2,8 +2,11 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
+import '../models/image_metadata.dart';
+import 'preset_save_dialog.dart';
 import '../models/nai_character.dart';
 import 'detail_settings_modal.dart';
+import '../app_theme.dart';
 
 // 갤러리 뷰: 폴더를 탐색하고 이미지를 실제 갤러리 앱처럼 보여준다.
 // - 폴더 우선 표시 (상단), 그 아래 이미지
@@ -681,7 +684,7 @@ class GalleryViewState extends State<GalleryView> {
     }
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -700,7 +703,7 @@ class GalleryViewState extends State<GalleryView> {
             // SAF 저장 폴더 (지정돼 있으면 최상단)
             if (widget.state.safRootUri != null)
               ListTile(
-                leading: const Icon(Icons.folder_special, color: Color(0xFF00BFA5)),
+                leading: const Icon(Icons.folder_special, color: AppColors.teal),
                 title: Text(
                   widget.state.safRootName ?? "SAF 폴더",
                   style: const TextStyle(color: Colors.white, fontSize: 14),
@@ -786,7 +789,7 @@ class GalleryViewState extends State<GalleryView> {
                           child: Text(
                             c.name,
                             style: TextStyle(
-                              color: isLast ? Colors.white : Colors.deepPurpleAccent,
+                              color: isLast ? Colors.white : AppColors.accent,
                               fontSize: 13,
                               fontWeight: isLast ? FontWeight.bold : FontWeight.normal,
                             ),
@@ -807,9 +810,9 @@ class GalleryViewState extends State<GalleryView> {
         const Divider(height: 1, color: Colors.white12),
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+              ? Center(child: CircularProgressIndicator(color: AppColors.accent))
               : RefreshIndicator(
-                  color: Colors.deepPurpleAccent,
+                  color: AppColors.accent,
                   backgroundColor: const Color(0xFF2A2A2A),
                   // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
                   onRefresh: () async {
@@ -888,7 +891,7 @@ class GalleryViewState extends State<GalleryView> {
                       )
                     else
                       const SizedBox(width: 12),
-                    const Icon(Icons.folder_special, size: 16, color: Color(0xFF00BFA5)),
+                    const Icon(Icons.folder_special, size: 16, color: AppColors.teal),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -917,9 +920,9 @@ class GalleryViewState extends State<GalleryView> {
         const Divider(height: 1, color: Colors.white12),
         Expanded(
           child: _loading
-              ? const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent))
+              ? Center(child: CircularProgressIndicator(color: AppColors.accent))
               : RefreshIndicator(
-                  color: Colors.deepPurpleAccent,
+                  color: AppColors.accent,
                   backgroundColor: const Color(0xFF2A2A2A),
                   // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
                   onRefresh: () async {
@@ -987,7 +990,7 @@ class GalleryViewState extends State<GalleryView> {
     return Container(
       padding: EdgeInsets.fromLTRB(12, 8, 12, 8 + bottomInset),
       decoration: const BoxDecoration(
-        color: Color(0xFF1E1E1E),
+        color: AppColors.surface,
         border: Border(top: BorderSide(color: Colors.white12)),
       ),
       child: Row(
@@ -1277,7 +1280,7 @@ class GalleryViewState extends State<GalleryView> {
       future: _safViewerFutures.putIfAbsent(item.uri, () => _loadFullSafBytes(item.uri)),
       builder: (ctx, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const Center(child: CircularProgressIndicator(color: Colors.deepPurpleAccent));
+          return Center(child: CircularProgressIndicator(color: AppColors.accent));
         }
         final bytes = snap.data;
         if (bytes == null) {
@@ -1356,7 +1359,7 @@ class GalleryViewState extends State<GalleryView> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
+              color: AppColors.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: Colors.white24),
             ),
@@ -1388,7 +1391,7 @@ class GalleryViewState extends State<GalleryView> {
           child: Container(
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
-              color: const Color(0xFF1E1E1E),
+              color: AppColors.surface,
               shape: BoxShape.circle,
               border: Border.all(color: hasSel ? Colors.white54 : Colors.white24),
             ),
@@ -1405,7 +1408,7 @@ class GalleryViewState extends State<GalleryView> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-              color: hasSel ? Colors.redAccent.withValues(alpha: 0.2) : const Color(0xFF1E1E1E),
+              color: hasSel ? Colors.redAccent.withValues(alpha: 0.2) : AppColors.surface,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(color: hasSel ? Colors.redAccent : Colors.white24),
             ),
@@ -1463,7 +1466,7 @@ class GalleryViewState extends State<GalleryView> {
     }
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1480,7 +1483,7 @@ class GalleryViewState extends State<GalleryView> {
             ),
             const Divider(height: 1, color: Colors.white12),
             ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined, color: Color(0xFF8B5CF6)),
+              leading: const Icon(Icons.add_photo_alternate_outlined, color: AppColors.purple),
               title: Text("히스토리 목록에 추가 ($count장)", style: const TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -1552,7 +1555,7 @@ class GalleryViewState extends State<GalleryView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
@@ -1616,7 +1619,7 @@ class GalleryViewState extends State<GalleryView> {
   ]) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1635,7 +1638,7 @@ class GalleryViewState extends State<GalleryView> {
             ),
             const Divider(height: 1, color: Colors.white12),
             ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined, color: Color(0xFF8B5CF6)),
+              leading: const Icon(Icons.add_photo_alternate_outlined, color: AppColors.purple),
               title: const Text("히스토리 목록에 추가", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -1643,7 +1646,7 @@ class GalleryViewState extends State<GalleryView> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.brush, color: Colors.deepPurpleAccent),
+              leading: Icon(Icons.brush, color: AppColors.accent),
               title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -1652,7 +1655,7 @@ class GalleryViewState extends State<GalleryView> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.bookmark_add_outlined, color: Color(0xFF00BFA5)),
+              leading: const Icon(Icons.bookmark_add_outlined, color: AppColors.teal),
               title: const Text("프리셋에 프롬프트 저장", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -1660,7 +1663,7 @@ class GalleryViewState extends State<GalleryView> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.download_outlined, color: Color(0xFF8B5CF6)),
+              leading: const Icon(Icons.download_outlined, color: AppColors.purple),
               title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
@@ -1844,7 +1847,7 @@ class GalleryViewState extends State<GalleryView> {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
+          backgroundColor: AppColors.surface,
           title: Row(
             children: [
               const Icon(Icons.info_outline, color: Color(0xFFFFC107), size: 20),
@@ -1871,7 +1874,7 @@ class GalleryViewState extends State<GalleryView> {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text("닫기", style: TextStyle(color: Colors.deepPurpleAccent)),
+              child: Text("닫기", style: TextStyle(color: AppColors.accent)),
             ),
           ],
         ),
@@ -1885,7 +1888,7 @@ class GalleryViewState extends State<GalleryView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         title: const Row(
           children: [
             Icon(Icons.delete_outline, color: Colors.redAccent),
@@ -2240,7 +2243,7 @@ class GalleryViewState extends State<GalleryView> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [

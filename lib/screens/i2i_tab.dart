@@ -6,6 +6,8 @@ import 'package:image/image.dart' as img;
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
 import 'prompt_edit_dialog.dart';
+import '../models/model_caps.dart';
+import '../app_theme.dart';
 
 class I2iTab extends StatefulWidget {
   const I2iTab({super.key});
@@ -179,13 +181,13 @@ class _I2iTabState extends State<I2iTab>
   Color _getMosaicTypeColor() {
     switch (_mosaicType) {
       case 'pixel':
-        return Colors.deepPurpleAccent;
+        return AppColors.accent;
       case 'blur':
         return Colors.blueAccent;
       case 'line':
         return Colors.grey;
       default:
-        return Colors.deepPurpleAccent;
+        return AppColors.accent;
     }
   }
 
@@ -396,25 +398,22 @@ class _I2iTabState extends State<I2iTab>
               height: 40,
               decoration: BoxDecoration(
                 color: _mosaicPreviewImage != null
-                    ? Colors.deepPurpleAccent.withValues(alpha: 0.2)
+                    ? AppColors.accent.withValues(alpha: 0.2)
                     : Colors.transparent,
                 border: Border.all(
-                  color: _mosaicPreviewImage != null ? Colors.deepPurpleAccent : Colors.white24,
+                  color: _mosaicPreviewImage != null ? AppColors.accent : Colors.white24,
                   width: 1.5,
                 ),
                 borderRadius: BorderRadius.circular(8),
               ),
               child: _isPreviewLoading
-                  ? const Padding(
+                  ? Padding(
                       padding: EdgeInsets.all(10),
-                      child: CircularProgressIndicator(
-                        color: Colors.deepPurpleAccent,
-                        strokeWidth: 2,
-                      ),
+                      child: CircularProgressIndicator(color: AppColors.accent, strokeWidth: 2),
                     )
                   : Icon(
                       _mosaicPreviewImage != null ? Icons.visibility : Icons.visibility_outlined,
-                      color: _mosaicPreviewImage != null ? Colors.deepPurpleAccent : Colors.white54,
+                      color: _mosaicPreviewImage != null ? AppColors.accent : Colors.white54,
                       size: 18,
                     ),
             ),
@@ -498,16 +497,28 @@ class _I2iTabState extends State<I2iTab>
   // 모드 개수가 몇 개든 전체 영역(과 실행 버튼)의 크기는 변하지 않는다.
   //  4개 → 2×2 / 3개 → 가로 3개 / 2개 → 가로 2개 / 1개 → 크게 1개
   List<Widget> _buildModeChipRows(AppState state, {bool singleRow = false}) {
-    const specs = [
-      ('inpaint', '인페인트', Icons.format_paint, Color(0xFF00BFA5)),
-      ('mosaic', '모자이크', Icons.grid_on, Colors.deepPurpleAccent),
-      ('img2img', 'img2img', Icons.auto_fix_high, Color(0xFF3B82F6)),
-      ('upscale', '업스케일', Icons.high_quality, Color(0xFFFFA000)),
+    // 모델이 지원하지 않는 모드는 아예 내보내지 않는다.
+    //  (지금 쓰는 V4/V4.5/V5는 셋 다 지원하므로 화면 변화는 없다.
+    //   미지원 모델이 추가될 때 이 한 곳만 보면 되도록 캡으로 연결해 둔다.)
+    final caps = modelCapsFor(state.selectedModel);
+    bool modeSupported(String id) => switch (id) {
+      // 모자이크는 인페인트 파이프라인을 그대로 쓴다
+      'inpaint' || 'mosaic' => caps.supportsInpaint,
+      'img2img' => caps.supportsImg2img,
+      'upscale' => caps.supportsUpscale,
+      _ => true,
+    };
+    // ⚠️ AppColors.accent는 런타임에 바뀌므로 const 리스트에 담을 수 없다 → final
+    final specs = [
+      ('inpaint', '인페인트', Icons.format_paint, AppColors.teal),
+      ('mosaic', '모자이크', Icons.grid_on, AppColors.accent),
+      ('img2img', 'img2img', Icons.auto_fix_high, const Color(0xFF3B82F6)),
+      ('upscale', '업스케일', Icons.high_quality, AppColors.orange),
     ];
     final enabled = state.enabledI2iModes;
     final active = [
       for (final s in specs)
-        if (enabled.contains(s.$1)) s,
+        if (enabled.contains(s.$1) && modeSupported(s.$1)) s,
     ];
     if (active.isEmpty) {
       return [];
@@ -539,15 +550,15 @@ class _I2iTabState extends State<I2iTab>
   Color _getExecuteColor() {
     switch (_i2iMode) {
       case 'inpaint':
-        return const Color(0xFF00BFA5);
+        return AppColors.teal;
       case 'mosaic':
-        return Colors.deepPurpleAccent;
+        return AppColors.accent;
       case 'upscale':
         return Colors.amber[700]!;
       case 'img2img':
         return const Color(0xFF3B82F6); // 파랑
       default:
-        return const Color(0xFF00BFA5);
+        return AppColors.teal;
     }
   }
 
@@ -692,7 +703,7 @@ class _I2iTabState extends State<I2iTab>
       builder: (ctx) => StatefulBuilder(
         builder: (context, setModalState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             title: Text(
               title,
               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -704,7 +715,7 @@ class _I2iTabState extends State<I2iTab>
                   value: tempSize,
                   min: 5.0,
                   max: 100.0,
-                  activeColor: Colors.deepPurpleAccent,
+                  activeColor: AppColors.accent,
                   onChanged: (val) {
                     setModalState(() => tempSize = val);
                   },
@@ -783,9 +794,9 @@ class _I2iTabState extends State<I2iTab>
                   });
                   Navigator.pop(ctx);
                 },
-                child: const Text(
+                child: Text(
                   "확인",
-                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -1189,11 +1200,8 @@ class _I2iTabState extends State<I2iTab>
           width: btnW,
           height: btnH,
           decoration: BoxDecoration(
-            color: isSelected ? Colors.deepPurpleAccent.withValues(alpha: 0.3) : Colors.transparent,
-            border: Border.all(
-              color: isSelected ? Colors.deepPurpleAccent : Colors.white24,
-              width: 1.5,
-            ),
+            color: isSelected ? AppColors.accent.withValues(alpha: 0.3) : Colors.transparent,
+            border: Border.all(color: isSelected ? AppColors.accent : Colors.white24, width: 1.5),
             borderRadius: BorderRadius.circular(8),
           ),
           child: Column(
@@ -1306,7 +1314,7 @@ class _I2iTabState extends State<I2iTab>
       builder: (ctx) => StatefulBuilder(
         builder: (context, setModalState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             title: Text(
               isNoise ? "img2img 노이즈" : "img2img 강도",
               style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1369,7 +1377,7 @@ class _I2iTabState extends State<I2iTab>
             context: context,
             builder: (ctx) => StatefulBuilder(
               builder: (ctx, setDialogState) => AlertDialog(
-                backgroundColor: const Color(0xFF1E1E1E),
+                backgroundColor: AppColors.surface,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 title: const Text(
                   "모자이크 강도",
@@ -1380,8 +1388,8 @@ class _I2iTabState extends State<I2iTab>
                   children: [
                     Text(
                       "${_mosaicStrength.round()}",
-                      style: const TextStyle(
-                        color: Colors.deepPurpleAccent,
+                      style: TextStyle(
+                        color: AppColors.accent,
                         fontSize: 24,
                         fontWeight: FontWeight.bold,
                       ),
@@ -1390,7 +1398,7 @@ class _I2iTabState extends State<I2iTab>
                       value: _mosaicStrength,
                       min: 2,
                       max: 50,
-                      activeColor: Colors.deepPurpleAccent,
+                      activeColor: AppColors.accent,
                       onChanged: (v) {
                         setDialogState(() {});
                         setState(() => _mosaicStrength = v);
@@ -1401,7 +1409,7 @@ class _I2iTabState extends State<I2iTab>
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(ctx),
-                    child: const Text("확인", style: TextStyle(color: Colors.deepPurpleAccent)),
+                    child: Text("확인", style: TextStyle(color: AppColors.accent)),
                   ),
                 ],
               ),
@@ -1447,7 +1455,7 @@ class _I2iTabState extends State<I2iTab>
       builder: (ctx) => StatefulBuilder(
         builder: (context, setModalState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
+            backgroundColor: AppColors.surface,
             title: const Text(
               "인페인트 강도",
               style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
@@ -1460,7 +1468,7 @@ class _I2iTabState extends State<I2iTab>
                   min: 0.1,
                   max: 1.0,
                   divisions: 18,
-                  activeColor: Colors.deepPurpleAccent,
+                  activeColor: AppColors.accent,
                   onChanged: (val) {
                     setModalState(() => tempStrength = double.parse(val.toStringAsFixed(2)));
                   },
@@ -1485,9 +1493,9 @@ class _I2iTabState extends State<I2iTab>
                   state.refreshUI();
                   Navigator.pop(ctx);
                 },
-                child: const Text(
+                child: Text(
                   "확인",
-                  style: TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+                  style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
@@ -1511,7 +1519,7 @@ class _I2iTabState extends State<I2iTab>
     final bool isCollapsed = state.collapsedI2iPrompts.contains(cardId);
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
+        color: AppColors.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: color.withValues(alpha: 0.3)),
       ),
@@ -1716,7 +1724,7 @@ class _I2iTabState extends State<I2iTab>
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
                       decoration: BoxDecoration(
-                        color: Colors.deepPurpleAccent,
+                        color: AppColors.accent,
                         borderRadius: const BorderRadius.only(
                           topLeft: Radius.circular(14),
                           bottomLeft: Radius.circular(14),
@@ -1724,7 +1732,7 @@ class _I2iTabState extends State<I2iTab>
                         boxShadow: pulse > 0
                             ? [
                                 BoxShadow(
-                                  color: Colors.deepPurpleAccent.withValues(alpha: 0.85 * pulse),
+                                  color: AppColors.accent.withValues(alpha: 0.85 * pulse),
                                   blurRadius: 22 * pulse,
                                   spreadRadius: 2 * pulse,
                                 ),
@@ -1931,7 +1939,7 @@ class _I2iTabState extends State<I2iTab>
   Color _sourceColor(String source) {
     switch (source) {
       case 'mosaic':
-        return Colors.deepPurpleAccent;
+        return AppColors.accent;
       case 'upscale':
         return Colors.amber[700]!;
       case 'img2img':
@@ -1940,7 +1948,7 @@ class _I2iTabState extends State<I2iTab>
         return Colors.white60;
       case 'inpaint':
       default:
-        return const Color(0xFF00BFA5);
+        return AppColors.teal;
     }
   }
 
@@ -1948,7 +1956,7 @@ class _I2iTabState extends State<I2iTab>
   void _showI2iResultMenu(AppState state, int index) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E1E),
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -1957,7 +1965,7 @@ class _I2iTabState extends State<I2iTab>
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.history, color: Color(0xFF8B5CF6)),
+              leading: const Icon(Icons.history, color: AppColors.purple),
               title: const Text("히스토리로 보내기", style: TextStyle(color: Colors.white)),
               onTap: () async {
                 Navigator.pop(ctx);
@@ -1965,7 +1973,7 @@ class _I2iTabState extends State<I2iTab>
               },
             ),
             ListTile(
-              leading: const Icon(Icons.save_alt, color: Color(0xFF00BFA5)),
+              leading: const Icon(Icons.save_alt, color: AppColors.teal),
               title: const Text("폴더에 저장하기", style: TextStyle(color: Colors.white)),
               onTap: () async {
                 Navigator.pop(ctx);
@@ -2037,7 +2045,7 @@ class _I2iTabState extends State<I2iTab>
                                 // 높이 예산: 테두리2 + 패딩4 + (칩22+마진3)×2줄 = 정확히 56
                                 padding: const EdgeInsets.all(2),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF1E1E1E),
+                                  color: AppColors.surface,
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(color: Colors.white24),
                                 ),
@@ -2058,7 +2066,7 @@ class _I2iTabState extends State<I2iTab>
                     Container(
                       padding: const EdgeInsets.all(2),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
+                        color: AppColors.surface,
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.white24),
                       ),
@@ -2073,7 +2081,7 @@ class _I2iTabState extends State<I2iTab>
                   Expanded(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: const Color(0xFF121212),
+                        color: AppColors.background,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: state.isInpaintLoading ? Colors.amber : Colors.white24,
@@ -2173,7 +2181,7 @@ class _I2iTabState extends State<I2iTab>
                       padding: const EdgeInsets.symmetric(vertical: 10),
                       margin: EdgeInsets.only(bottom: bottomPad),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF1E1E1E),
+                        color: AppColors.surface,
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: Colors.white24),
                       ),
@@ -2216,7 +2224,7 @@ class _I2iTabState extends State<I2iTab>
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 margin: const EdgeInsets.only(bottom: 12),
                 decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E),
+                  color: AppColors.surface,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: Colors.white24),
                 ),
@@ -2242,7 +2250,7 @@ class _I2iTabState extends State<I2iTab>
               state,
               title: "긍정적 프롬프트",
               icon: Icons.add_circle_outline,
-              color: const Color(0xFF00BFA5),
+              color: AppColors.teal,
               controller: state.inpaintPositiveController,
               cardId: 'positive',
               hint: "프롬프트를 입력하세요...",
@@ -2253,7 +2261,7 @@ class _I2iTabState extends State<I2iTab>
               state,
               title: "선행 프롬프트",
               icon: Icons.arrow_right_alt,
-              color: const Color(0xFF29B6F6),
+              color: AppColors.blue,
               controller: state.inpaintPrefixController,
               cardId: 'prefix',
               hint: "프롬프트를 입력하세요...",
@@ -2264,7 +2272,7 @@ class _I2iTabState extends State<I2iTab>
               state,
               title: "후행 프롬프트",
               icon: Icons.keyboard_double_arrow_right,
-              color: const Color(0xFFFFA000),
+              color: AppColors.orange,
               controller: state.inpaintSuffixController,
               cardId: 'suffix',
               hint: "프롬프트를 입력하세요...",
@@ -2275,7 +2283,7 @@ class _I2iTabState extends State<I2iTab>
               state,
               title: "부정적 프롬프트",
               icon: Icons.remove_circle_outline,
-              color: const Color(0xFFFF5252),
+              color: AppColors.red,
               controller: state.inpaintNegativeController,
               cardId: 'negative',
               hint: "프롬프트를 입력하세요...",

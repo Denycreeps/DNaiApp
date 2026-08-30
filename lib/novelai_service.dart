@@ -886,7 +886,6 @@ class NovelAiService {
     required int steps,
     required String sampler,
     required String scheduler,
-    required bool isFurry,
     required int width,
     required int height,
     required double cfgScale,
@@ -910,9 +909,6 @@ class NovelAiService {
   }) async {
     try {
       String finalPrompt = positive;
-      if (isFurry) {
-        finalPrompt = "fur dataset, $positive";
-      }
 
       // 모델 능력(capability) 조회 — 기능 지원 여부/서버 전송용 문자열의 단일 출처
       final caps = modelCapsFor(model);
@@ -1063,21 +1059,26 @@ class NovelAiService {
         }
       }
 
-      parameters["v4_prompt"] = {
-        "caption": {"base_caption": finalPrompt, "char_captions": posCharCaptions},
-        // [배치 적용] ON이면 좌표 사용 — 전원 기본 위치(중앙)여도 그대로 중앙 배치(겹침 허용).
-        // 공식 스펙 정합: 포지션 기능은 캐릭터 2명 이상일 때만 활성 (1명은 공식도 비활성),
-        // 같은 셀 겹침은 공식도 그대로 전송(좌표는 강제가 아닌 '넛지', 랜덤 재배치 없음).
-        "use_coords": action == "infill"
-            ? false
-            : (useCharacterPosition && posCharCaptions.length >= 2),
-        "use_order": true,
-      };
-      parameters["v4_negative_prompt"] = {
-        "caption": {"base_caption": negative, "char_captions": negCharCaptions},
-        "legacy_uc": false,
-      };
+      // V4 이전 아키텍처(V3 등)는 v4_prompt를 이해하지 못한다.
+      //  캡션 구조 없이 input/uc만 보내야 하므로 이 블록을 건너뛴다.
+      if (caps.usesV4Prompt) {
+        parameters["v4_prompt"] = {
+          "caption": {"base_caption": finalPrompt, "char_captions": posCharCaptions},
+          // [배치 적용] ON이면 좌표 사용 — 전원 기본 위치(중앙)여도 그대로 중앙 배치(겹침 허용).
+          // 공식 스펙 정합: 포지션 기능은 캐릭터 2명 이상일 때만 활성 (1명은 공식도 비활성),
+          // 같은 셀 겹침은 공식도 그대로 전송(좌표는 강제가 아닌 '넛지', 랜덤 재배치 없음).
+          "use_coords": action == "infill"
+              ? false
+              : (useCharacterPosition && posCharCaptions.length >= 2),
+          "use_order": true,
+        };
+        parameters["v4_negative_prompt"] = {
+          "caption": {"base_caption": negative, "char_captions": negCharCaptions},
+          "legacy_uc": false,
+        };
+      }
       // PC 프로그램과 동일: uc에도 네거티브 프롬프트를 넣어야 메타데이터에 표시됨
+      //  (v4_prompt를 쓰지 않는 모델에서도 부정 프롬프트는 uc로 전달된다)
       parameters["uc"] = negative;
 
       // Vibe Transfer
@@ -1320,7 +1321,12 @@ class NovelAiService {
     }
   }
 
-  Future<Map<String, int>?> fetchUserInfo(String token) async {
+  /// 사용자 정보 조회 (Anlas + 구독 등급 + V5 사용 한도)
+  ///  응답의 usage 필드가 V5 한도다:
+  ///    { percent: 107, isNegative: false, timeUntilNextPercent: 0 }
+  ///  · percent  — 남은 비율. 100을 넘을 수도 있다(여유분).
+  ///  · isNegative — 이미 다 써서 Anlas를 소모하는 중인지
+  Future<Map<String, dynamic>?> fetchUserInfo(String token) async {
     try {
       final cleanToken = token.trim().replaceFirst('Bearer ', '').trim();
       // NAI 서버 마이그레이션(2026): /user/* 는 image.novelai.net에서 호출해야 함.
@@ -1341,12 +1347,35 @@ class NovelAiService {
         int tier = data['tier'] ?? 0;
         int anlas = 0;
 
+        // V5 사용 한도 (Opus 전용 — 없으면 null)
+        double? usagePercent;
+        bool usageNegative = false;
+        int usageNextSec = 0;
+        final usage = data['usage'];
+        if (usage is Map) {
+          final p = usage['percent'];
+          if (p is num) {
+            usagePercent = p.toDouble();
+          }
+          usageNegative = usage['isNegative'] == true;
+          final t = usage['timeUntilNextPercent'];
+          if (t is num) {
+            usageNextSec = t.toInt();
+          }
+        }
+
         if (data['trainingStepsLeft'] != null) {
           int fixed = data['trainingStepsLeft']['fixedTrainingStepsLeft'] ?? 0;
           int purchased = data['trainingStepsLeft']['purchasedTrainingSteps'] ?? 0;
           anlas = fixed + purchased;
         }
-        return {'tier': tier, 'anlas': anlas};
+        return {
+          'tier': tier,
+          'anlas': anlas,
+          'usagePercent': usagePercent, // null이면 한도 정보 없음
+          'usageNegative': usageNegative,
+          'usageNextSec': usageNextSec,
+        };
       }
     } catch (e) {
       debugPrint("🚨 Anlas 정보 조회 실패: $e");
