@@ -301,7 +301,7 @@ final Map<String, ModelCaps> _capsTable = {
     displayName: 'NAI Diffusion V4.5 Curated',
   ),
 
-  // ---- V4 (쭈인 요청: 현재는 V4.5와 동일하게 취급) ----
+  // ---- V4 (현재는 V4.5와 동일하게 취급) ----
   // ※ 참고: NovelAI 공식상 Precise Reference는 V4.5 전용이지만,
   //    현재 앱 동작(=V4/V4.5 동일 취급)에 맞춰 캡도 동일하게 둔다.
   //    실제 API 연결 단계에서 필요하면 이 부분만 갈라주면 된다.
