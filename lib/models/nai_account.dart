@@ -52,7 +52,9 @@ class NaiAccount {
     if (checkedAtMs <= 0) {
       return null;
     }
-    final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(checkedAtMs));
+    final d = DateTime.now().difference(
+      DateTime.fromMillisecondsSinceEpoch(checkedAtMs),
+    );
     if (d.inMinutes < 1) {
       return '방금';
     }

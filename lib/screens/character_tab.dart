@@ -8,6 +8,8 @@ import 'prompt_edit_dialog.dart';
 import '../models/model_caps.dart';
 import '../widgets/character_canvas.dart';
 import '../app_theme.dart';
+import '../widgets/confirm_dialog.dart';
+import '../utils/ui_safety.dart';
 
 class CharacterTab extends StatefulWidget {
   const CharacterTab({super.key});
@@ -514,6 +516,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     return GestureDetector(
       onTap: () {
         state.characters.add(NaiCharacter());
+        state.markCharactersReplaced();
         state.selectedCharIndex = state.characters.length - 1;
         state.saveAllSettings();
         state.refreshUI();
@@ -931,6 +934,8 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
       final moved = state.characters.removeAt(from);
       state.characters.insert(to, moved);
       state.selectedCharIndex = to; // 선택이 옮긴 캐릭터를 계속 따라가게
+      // index로 캐시된 입력 컨트롤러가 어긋나므로 다시 맞추게 알린다
+      state.markCharactersReplaced();
       state.saveAllSettings();
       state.refreshUI();
     });
@@ -969,7 +974,12 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                 // Expanded가 아니라 Flexible — 내용이 짧으면 그만큼만,
                 //  넘치면 남은 공간에 맞춰 줄어든다(그때만 스크롤).
                 Flexible(
-                  child: state.characters.isEmpty
+                  // ⚠️ isEmpty 만 보면 부족하다. 프롬프트 불러오기로 캐릭터가
+                  //    3개에서 1개로 줄어도 selectedCharIndex 는 2로 남아 있을 수
+                  //    있고, 그 상태로 characters[2] 를 읽으면 범위를 벗어난다.
+                  //    selectedCharacter 는 번호를 스스로 바로잡아 주므로
+                  //    이 값이 null 인지만 보면 아래 전체가 안전해진다.
+                  child: state.selectedCharacter == null
                       ? const Center(
                           child: Padding(
                             padding: EdgeInsets.all(32),
@@ -1078,13 +1088,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                                                     ],
                                                   ),
                                                 ).then((_) {
-                                                  // ⚠️ 다이얼로그가 닫히는 애니메이션이 끝나기 전에
-                                                  //    컨트롤러를 버리면, 아직 그려지고 있는 TextField가
-                                                  //    죽은 컨트롤러를 참조해 예외가 난다.
-                                                  //    한 프레임 뒤로 미뤄 안전하게 정리한다.
-                                                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                                                    nameCtrl.dispose();
-                                                  });
+                                                  disposeAfterDialog(nameCtrl.dispose);
                                                 });
                                               },
                                               child: Container(
@@ -1206,57 +1210,29 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                                         minHeight: 34,
                                       ),
                                       visualDensity: VisualDensity.compact,
-                                      onPressed: () {
-                                        showDialog(
-                                          context: context,
-                                          builder: (ctx) => AlertDialog(
-                                            backgroundColor: AppColors.surface,
-                                            title: const Text(
-                                              "캐릭터 삭제",
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                            content: const Text(
-                                              "이 캐릭터를 정말 삭제하시겠습니까?",
-                                              style: TextStyle(color: Colors.white70),
-                                            ),
-                                            actions: [
-                                              TextButton(
-                                                onPressed: () => Navigator.pop(ctx),
-                                                child: const Text(
-                                                  "취소",
-                                                  style: TextStyle(color: Colors.grey),
-                                                ),
-                                              ),
-                                              ElevatedButton(
-                                                style: ElevatedButton.styleFrom(
-                                                  backgroundColor: Colors.redAccent,
-                                                ),
-                                                onPressed: () {
-                                                  state.characters.removeAt(
-                                                    state.selectedCharIndex,
-                                                  );
-                                                  // Linter 규칙 준수: 중괄호 추가
-                                                  if (state.selectedCharIndex > 0) {
-                                                    state.selectedCharIndex--;
-                                                  }
-                                                  if (state.characters.isEmpty) {
-                                                    state.characters.add(NaiCharacter());
-                                                  }
-                                                  state.saveAllSettings();
-                                                  state.refreshUI();
-                                                  Navigator.pop(ctx);
-                                                },
-                                                child: const Text(
-                                                  "삭제",
-                                                  style: TextStyle(color: Colors.white),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
+                                      onPressed: () async {
+                                        final ok = await showConfirmDialog(
+                                          context,
+                                          title: "캐릭터 삭제",
+                                          message: "이 캐릭터를 정말 삭제하시겠습니까?",
+                                          confirmLabel: "삭제",
+                                          icon: Icons.delete_outline,
                                         );
+                                        if (!ok) {
+                                          return;
+                                        }
+                                        state.characters.removeAt(state.selectedCharIndex);
+                                        if (state.selectedCharIndex > 0) {
+                                          state.selectedCharIndex--;
+                                        }
+                                        if (state.characters.isEmpty) {
+                                          state.characters.add(NaiCharacter());
+                                        }
+                                        // 삭제하면 뒤 캐릭터들의 index가 한 칸씩
+                                        // 당겨져 캐시된 컨트롤러와 어긋난다
+                                        state.markCharactersReplaced();
+                                        state.saveAllSettings();
+                                        state.refreshUI();
                                       },
                                     ),
                                   ],
@@ -1310,9 +1286,12 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
         // 캐릭터 위치 미리보기 그리드 (맨 아래)
         if (state.characters.isNotEmpty)
           // 남은 공간을 정확히 채워 스크롤이 생기지 않게 한다
+          //  ⚠️ 아래 여백에 viewPadding.bottom을 더해야 한다.
+          //     이게 0이면 제스처 바(또는 3버튼 내비게이션)와 겹쳐
+          //     캔버스 아래쪽 마커가 시스템 바에 묻힌다.
           Expanded(
             child: Container(
-              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              margin: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).viewPadding.bottom + 8),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: AppColors.surface,

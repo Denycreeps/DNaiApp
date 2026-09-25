@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data'; // BytesBuilder (multipart 본문)
 import 'package:http/http.dart' as http;
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
@@ -9,16 +10,44 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:image/image.dart' as img;
 import 'tag_filters.dart';
 import 'models/model_caps.dart';
+import 'utils/image_codec.dart'; // ensurePng
 
 // ZIP 응답에서 첫 파일을 꺼낸다 (compute isolate용 — 수 MB 해제를 메인에서 안 하도록)
+/// zip 안의 이미지를 '전부' 꺼낸다. zip 이 아니면 빈 목록.
+///  배경 제거처럼 결과가 여러 장인 도구를 위한 것.
+///  (기존 _unzipFirstEntry 는 첫 장만 꺼내므로 그대로 둔다)
+List<Uint8List> _unzipAllEntries(Uint8List zipBytes) {
+  try {
+    final archive = ZipDecoder().decodeBytes(zipBytes);
+    return [
+      for (final f in archive)
+        if (f.isFile) f.content as Uint8List,
+    ];
+  } catch (_) {
+    // zip 이 아니면 빈 목록. 호출부가 원본 바이트를 한 장으로 취급한다.
+  }
+  return const [];
+}
+
 Uint8List? _unzipFirstEntry(Uint8List zipBytes) {
   try {
     final archive = ZipDecoder().decodeBytes(zipBytes);
     if (archive.isNotEmpty) {
       return archive.first.content as Uint8List;
     }
-  } catch (_) {}
+  } catch (_) {
+    // zip 이 아니면 그냥 null. 서버가 이미지를 zip 없이 그대로 주는 경우가 있어,
+    // 호출부가 null 을 받으면 원본 바이트를 그대로 쓴다.
+  }
   return null;
+}
+
+/// 결과가 여러 장일 수 있는 응답 (Director Tools 용).
+///  배경 제거는 Masked/Generated/Blend 3장이 온다.
+class NaiMultiResponse {
+  final List<Uint8List> images;
+  final String? error;
+  const NaiMultiResponse({this.images = const [], this.error});
 }
 
 class NaiResponse {
@@ -123,7 +152,17 @@ String _processMaskForInfill(Uint8List bytes) {
 class NovelAiService {
   static const String apiUrl = "https://image.novelai.net/ai/generate-image";
   static const String encodeVibeUrl = "https://image.novelai.net/ai/encode-vibe";
-  static const String upscaleUrl = "https://api.novelai.net/ai/upscale"; // 업스케일만 api 도메인 유지
+  // 업스케일 — 2026-08 에 NovelAI 가 V5 업스케일러로 바꾸면서 주소·형식이 모두 달라졌다.
+  //  · 주소: api.novelai.net → image.novelai.net (옛 주소는 404 'Cannot POST /ai/upscale')
+  //  · 형식: JSON(base64) → multipart (그림 + request)
+  //  · 모델·배율·비용이 고정이다 (입력 크기·구독 등급과 무관)
+  static const String upscaleUrl = "https://image.novelai.net/ai/upscale";
+  static const String upscaleModel = 'nai-diffusion-5-curated';
+  static const int upscaleScale = 2;
+  static const int upscaleAnlasCost = 1;
+
+  /// Director Tools 전용. 배경 제거·라인아트·스케치·디클러터가 모두 이 주소를 쓴다.
+  static const String directorUrl = "https://image.novelai.net/ai/augment-image";
 
   // ── Cloudflare Workers 프록시 ──────────────────────────────────────────
   static const String _danbooruProxy = "https://danbooru-proxy.dnaiapp.workers.dev";
@@ -141,8 +180,33 @@ class NovelAiService {
     }
   }
 
+  /// 프롬프트 한 덩어리를 정리한다.
+  ///
+  /// 하는 일은 '내용이 없는 조각 버리기' 하나뿐이다.
+  /// (선행/긍정/후행을 이을 때 생기는 ",," 나 맨 앞뒤 쉼표를 없애기 위함)
+  ///
+  /// ⚠️ 줄바꿈·들여쓰기는 절대 건드리지 않는다.
+  ///    예전에는 조각마다 trim()을 걸고 ', '로 다시 이어붙였는데,
+  ///     · 서버는 줄바꿈을 공백으로 취급하므로 지워도 결과가 같고
+  ///     · 정리된 프롬프트가 이미지 메타데이터에 그대로 박혀,
+  ///       나중에 프롬프트를 불러오면 사용자가 짜 둔 줄 구성이 통째로 사라졌고
+  ///     · '#' 주석처럼 줄바꿈이 문법인 기능까지 깨졌다.
   String sanitizePrompt(String input) {
-    return input.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).join(', ');
+    final parts = input.split(',').where((e) => e.trim().isNotEmpty).toList();
+    if (parts.isEmpty) {
+      return '';
+    }
+    // 맨 앞뒤 여백만 정리한다 (프롬프트가 빈 줄로 시작/끝나지 않게)
+    parts[0] = parts[0].trimLeft();
+    parts[parts.length - 1] = parts.last.trimRight();
+    return parts.join(',');
+  }
+
+  /// 선행/긍정/후행처럼 여러 구획을 하나의 프롬프트로 잇는다.
+  ///  비어 있는 구획은 건너뛰어 앞뒤에 쉼표가 남지 않게 하고,
+  ///  구획 사이에만 ", "를 넣는다. 각 구획 '안'의 서식은 그대로 유지된다.
+  String joinPromptSections(List<String> sections) {
+    return sections.map(sanitizePrompt).where((e) => e.isNotEmpty).join(', ');
   }
 
   // Gelbooru rating 정규화: "explicit" → "e", "questionable" → "q" 등
@@ -1230,7 +1294,10 @@ class NovelAiService {
             String errorMsg = response.body;
             try {
               errorMsg = jsonDecode(_utf8Body(response))['message']?.toString() ?? response.body;
-            } catch (_) {}
+            } catch (_) {
+              // 오류 응답이 JSON 이 아닌 경우(HTML 안내 페이지 등).
+              // 위에서 넣어 둔 원문(response.body)을 그대로 쓴다.
+            }
             final code = response.statusCode;
             String friendly;
             if (code == 400) {
@@ -1278,35 +1345,67 @@ class NovelAiService {
   // ============================================================================
   // 업스케일 및 사용자 정보
   // ============================================================================
-  Future<NaiResponse> upscaleImage({
-    required Uint8List image,
-    required int width,
-    required int height,
-    required String token,
-  }) async {
+  /// V5 업스케일 (2배 고정, 1 Anlas).
+  ///
+  /// NovelAI 웹과 같은 multipart 요청을 보낸다.
+  ///  · image   : 그림 파일 (PNG)
+  ///  · request : {"image":"image", "model":…, "declared_blur_sigma":0} (JSON)
+  ///  응답은 ZIP 안에 PNG 한 장이다.
+  Future<NaiResponse> upscaleImage({required Uint8List image, required String token}) async {
     try {
-      // 업스케일 API는 generate와 달리 채널 변환 없이 원본 그대로 base64 전송
-      final String base64Image = base64Encode(image);
+      final cleanToken = token.trim().replaceFirst('Bearer ', '').trim();
+      // 서버는 PNG 를 기대한다. WebP·JPEG 로 저장해 둔 그림을 불러온 경우 바꿔서 보낸다.
+      final png = await ensurePng(image);
+      if (png == null) {
+        return NaiResponse(error: "업스케일할 그림을 읽을 수 없습니다.");
+      }
+
+      // multipart 본문을 직접 만든다.
+      //  (http 패키지의 MultipartFile 로 content-type 을 정하려면 http_parser 를
+      //   따로 의존성에 넣어야 해서, 형식이 단순한 두 부분짜리는 직접 쓰는 편이 가볍다)
+      final boundary = '----DNaiApp${DateTime.now().microsecondsSinceEpoch}';
+      final request = jsonEncode({
+        'image': 'image', // 아래 'image' 부분을 가리킨다
+        'model': upscaleModel,
+        'declared_blur_sigma': 0,
+      });
+      final body = BytesBuilder(copy: false)
+        ..add(
+          utf8.encode(
+            '--$boundary\r\n'
+            'Content-Disposition: form-data; name="image"; filename="blob"\r\n'
+            'Content-Type: image/png\r\n\r\n',
+          ),
+        )
+        ..add(png)
+        ..add(
+          utf8.encode(
+            '\r\n--$boundary\r\n'
+            'Content-Disposition: form-data; name="request"; filename="blob"\r\n'
+            'Content-Type: application/json\r\n\r\n',
+          ),
+        )
+        ..add(utf8.encode(request))
+        ..add(utf8.encode('\r\n--$boundary--\r\n'));
 
       final response = await http
           .post(
             Uri.parse(upscaleUrl),
             headers: {
-              "Authorization": "Bearer $token",
-              "Content-Type": "application/json; charset=utf-8",
-              "Accept": "application/json",
+              "Authorization": "Bearer $cleanToken",
+              "Content-Type": "multipart/form-data; boundary=$boundary",
+              // NovelAI 웹이 함께 보내는 머리글 (요청 추적용)
+              "x-correlation-id": _correlationId(),
+              "x-initiated-at": DateTime.now().toUtc().toIso8601String(),
             },
-            body: jsonEncode({"image": base64Image, "width": width, "height": height, "scale": 4}),
+            body: body.takeBytes(),
           )
-          .timeout(const Duration(seconds: 120));
+          .timeout(const Duration(seconds: 180));
 
       if (response.statusCode == 201 || response.statusCode == 200) {
-        // 응답이 ZIP인 경우와 raw bytes인 경우 모두 처리 (해제는 isolate에서)
+        // 응답은 ZIP (해제는 isolate 에서). 혹시 ZIP 이 아니면 그대로 그림으로 쓴다.
         final unzipped = await compute(_unzipFirstEntry, response.bodyBytes);
-        if (unzipped != null) {
-          return NaiResponse(image: unzipped);
-        }
-        return NaiResponse(image: response.bodyBytes);
+        return NaiResponse(image: unzipped ?? response.bodyBytes);
       } else {
         String errorMsg = "서버 오류";
         try {
@@ -1318,6 +1417,76 @@ class NovelAiService {
       }
     } catch (e) {
       return NaiResponse(error: "네트워크 오류 발생\n$e");
+    }
+  }
+
+  /// 요청 추적용 짧은 무작위 값 (영문 소문자·숫자 6자)
+  static String _correlationId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final r = Random();
+    return List.generate(6, (_) => chars[r.nextInt(chars.length)]).join();
+  }
+
+  /// Director Tool 실행 (/ai/augment-image).
+  ///
+  /// 모든 도구가 이 하나의 엔드포인트를 쓰고 [reqType] 만 다르다.
+  ///  · bg-removal 은 결과가 3장(Masked/Generated/Blend)
+  ///  · 나머지는 1장
+  ///
+  /// ⚠️ 배경 제거는 공식 문서에서도 "상당히 느리다"고 안내한다.
+  ///    그래서 생성(60초)보다 넉넉한 180초를 준다.
+  Future<NaiMultiResponse> runDirectorTool({
+    required Uint8List image,
+    required int width,
+    required int height,
+    required String token,
+    required String reqType,
+    String prompt = '',
+    int defry = 0,
+  }) async {
+    try {
+      final cleanToken = token.trim().replaceFirst('Bearer ', '').trim();
+      final response = await http
+          .post(
+            Uri.parse(directorUrl),
+            headers: {
+              "Authorization": "Bearer $cleanToken",
+              "Content-Type": "application/json; charset=utf-8",
+              "Accept": "application/zip",
+            },
+            body: jsonEncode({
+              "req_type": reqType,
+              "width": width,
+              "height": height,
+              // 헤더(data:image/png;base64,) 없이 순수 base64 만 보낸다
+              "image": base64Encode(image),
+              "prompt": prompt,
+              "defry": defry,
+            }),
+          )
+          .timeout(const Duration(seconds: 180));
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final images = await compute(_unzipAllEntries, response.bodyBytes);
+        if (images.isNotEmpty) {
+          return NaiMultiResponse(images: images);
+        }
+        // zip 이 아니면 응답 자체가 이미지 한 장이다
+        return NaiMultiResponse(images: [response.bodyBytes]);
+      }
+
+      String errorMsg = "서버 오류";
+      try {
+        errorMsg = jsonDecode(_utf8Body(response))['message'] ?? response.body;
+      } catch (_) {
+        // JSON 이 아니면 본문을 그대로 보여 준다
+        errorMsg = response.body.isNotEmpty ? response.body : "알 수 없는 오류 발생";
+      }
+      return NaiMultiResponse(error: "Director Tool 에러 [${response.statusCode}]\n$errorMsg");
+    } on TimeoutException {
+      return NaiMultiResponse(error: "⏱ 처리 시간 초과 (180초)\n배경 제거는 오래 걸릴 수 있습니다. 잠시 후 다시 시도해주세요.");
+    } catch (e) {
+      return NaiMultiResponse(error: "네트워크 오류 발생\n$e");
     }
   }
 

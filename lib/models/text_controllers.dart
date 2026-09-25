@@ -44,7 +44,9 @@ class SyntaxHighlightController extends TextEditingController {
           if (colonIdx != -1) {
             // 들여쓰기(공백) + 조건부( '(' ~ ':' ) + 나머지
             if (indent > 0) {
-              spans.add(TextSpan(text: line.substring(0, indent), style: style));
+              spans.add(
+                TextSpan(text: line.substring(0, indent), style: style),
+              );
             }
             spans.add(
               TextSpan(
@@ -57,7 +59,9 @@ class SyntaxHighlightController extends TextEditingController {
                 ),
               ),
             );
-            spans.add(TextSpan(text: line.substring(colonIdx + 1), style: style));
+            spans.add(
+              TextSpan(text: line.substring(colonIdx + 1), style: style),
+            );
           } else {
             spans.add(TextSpan(text: line, style: style));
           }
@@ -124,7 +128,10 @@ class WeightRulesController extends TextEditingController {
       spans.add(
         TextSpan(
           text: text.substring(hash, end),
-          style: style?.copyWith(color: Colors.grey, fontStyle: FontStyle.italic),
+          style: style?.copyWith(
+            color: Colors.grey,
+            fontStyle: FontStyle.italic,
+          ),
         ),
       );
       i = end;
@@ -142,8 +149,12 @@ class WeightHighlightController extends TextEditingController {
   // '::' 구분자 전용 색 (가중치/프롬프트 경계를 확실히 구분)
   // 신택스 하이라이팅 배색 (Nord/Night Owl 계열 — 채도를 낮춰 눈에 편하게)
   //  숫자는 전통적으로 파랑 계열, 구분자는 톤 다운해 덜 튀게
-  static const Color _separatorColor = Color(0xFFC3A6E0); // '::' 차분한 라벤더 (구분자, 은은하게)
-  static const Color _weightNumColor = Color(0xFF82AAFF); // 가중치 숫자 (Night Owl 파랑 — 표준 숫자색)
+  static const Color _separatorColor = Color(
+    0xFFC3A6E0,
+  ); // '::' 차분한 라벤더 (구분자, 은은하게)
+  static const Color _weightNumColor = Color(
+    0xFF82AAFF,
+  ); // 가중치 숫자 (Night Owl 파랑 — 표준 숫자색)
 
   // 가중치 → 색상 매핑
   // 1.0 = 중립(색 없음), >1.0 어두운 갈색→(10.0)완전 빨강, <1.0 파랑→검정파랑
@@ -197,10 +208,14 @@ class WeightHighlightController extends TextEditingController {
         }
         // 마커 이전 일반 텍스트
         if (m.start > 0) {
-          spans.add(TextSpan(text: text.substring(pos, pos + m.start), style: style));
+          spans.add(
+            TextSpan(text: text.substring(pos, pos + m.start), style: style),
+          );
         }
         currentWeight = double.tryParse(m.group(1)!);
-        final markerColor = currentWeight != null ? _weightColor(currentWeight) : null;
+        final markerColor = currentWeight != null
+            ? _weightColor(currentWeight)
+            : null;
         // 시작 마커: 숫자만 볼드, :: 는 볼드 해제. 글씨 흰색, 배경 색상 음영.
         final numStr = m.group(1)!; // 숫자 부분
         final fullMarker = m.group(0)!; // 숫자 + (공백) + ::

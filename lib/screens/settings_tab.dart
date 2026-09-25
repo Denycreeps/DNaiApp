@@ -9,6 +9,7 @@ import '../models/app_state.dart';
 import '../models/text_controllers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../app_theme.dart';
+import '../utils/ui_safety.dart';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -603,8 +604,7 @@ class _SettingsTabState extends State<SettingsTab>
         ],
       ),
     ).then((_) {
-      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      disposeAfterDialog(() {
         labelCtrl.dispose();
         tokenCtrl.dispose();
       });
@@ -985,6 +985,22 @@ class _SettingsTabState extends State<SettingsTab>
     super.build(context); // KeepAlive 필수 호출
     final state = context.watch<AppState>();
 
+    // 다른 화면이 "설정의 이 하위 탭을 보여 달라"고 부탁했으면 그리로 옮긴다.
+    //  (예: 업데이트를 받기 시작하면 진행률이 있는 '기타' 탭으로)
+    //  ⚠️ build 도중에 탭을 옮기거나 상태를 비우면 안 되므로 프레임 뒤로 미룬다.
+    final requested = state.requestedSettingsSubTab;
+    if (requested != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        if (requested >= 0 && requested < _tabController.length) {
+          _tabController.animateTo(requested);
+        }
+        state.consumeSettingsSubTabRequest();
+      });
+    }
+
     // Gelbooru API 미인증 시 기본 열림 (최초 1회)
     if (!_gelbooruExpandChecked) {
       _gelbooruExpandChecked = true;
@@ -1265,6 +1281,19 @@ class _SettingsTabState extends State<SettingsTab>
               state.refreshUI();
             },
           ),
+          // 7-1. 중첩 가중치 펼치기
+          //  NovelAI 는 숫자 없는 '::' 를 만나면 앞의 가중치를 전부 끝내 버린다.
+          //  켜 두면 보내기 직전에 바깥 가중치를 다시 열어 준다.
+          _toggleTile(
+            icon: Icons.account_tree_outlined,
+            title: "중첩 가중치 펼치기",
+            value: state.expandNestedWeightsEnabled,
+            onChanged: (val) {
+              state.expandNestedWeightsEnabled = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
           // 8. e621 프롬프트 확장
           _toggleTile(
             icon: Icons.extension,
@@ -1381,7 +1410,7 @@ class _SettingsTabState extends State<SettingsTab>
           // 6-1. i2i 히스토리 핸들이 켜져 있을 때만(=비활성화 OFF) 인페인트 세부 옵션 표시
           if (!state.i2iHistoryDisabled) ...[
             _subToggleTile(
-              title: "인페인트 후 전환 방지",
+              title: "작업 후 결과로 전환 방지",
               value: state.inpaintNoAutoSwitch,
               onChanged: (val) {
                 state.inpaintNoAutoSwitch = val;
@@ -1399,19 +1428,20 @@ class _SettingsTabState extends State<SettingsTab>
               },
             ),
           ],
-          // ⚠️ [1차 UI 비활성] i2i탭은 2차 배치로 고정되어 토글을 숨겼다.
-          //  1차 UI를 되살리려면 아래 주석을 해제하고
-          //  AppState의 i2iAltLayout 강제 true(로드/복원부)를 풀면 된다.
-          // _toggleTile(
-          //   icon: Icons.view_quilt,
-          //   title: "i2i탭 다른 UI로 변경",
-          //   value: state.i2iAltLayout,
-          //   onChanged: (val) {
-          //     state.i2iAltLayout = val;
-          //     state.saveAllSettings();
-          //     state.refreshUI();
-          //   },
-          // ),
+          // 6-2. Director Tool 전환 버튼 표시
+          //  끄면 i2i 탭의 'Director tool' 버튼이 사라진다.
+          //  (이미 만든 결과나 고른 도구는 그대로 남는다 — 버튼만 감춘다)
+          _toggleTile(
+            icon: Icons.auto_awesome,
+            title: "Director Tool 버튼 표시",
+            color: AppColors.purple,
+            value: state.directorToolVisible,
+            onChanged: (val) {
+              state.directorToolVisible = val;
+              state.saveAllSettings();
+              state.refreshUI();
+            },
+          ),
         ],
       ),
 
@@ -1591,7 +1621,7 @@ class _SettingsTabState extends State<SettingsTab>
                 state.saveAllSettings();
                 state.refreshUI();
               }, icon: Icons.people),
-              _tabChip("와일드카드", state.wildcardTabEnabled, (v) {
+              _tabChip("라이브러리", state.wildcardTabEnabled, (v) {
                 state.wildcardTabEnabled = v;
                 state.saveAllSettings();
                 state.refreshUI();
@@ -2346,7 +2376,25 @@ class _SettingsTabState extends State<SettingsTab>
             // 업데이트 확인 버튼
             SizedBox(
               width: double.infinity,
-              child: state.isDownloadingUpdate
+              // 다운로드가 끝났는데 백업이 아직이면 그 사이에 한 줄 보여 준다
+              //  (보통은 다운로드 중에 끝나서 이 화면을 볼 일이 거의 없다)
+              child: !state.isDownloadingUpdate && state.isBackingUpBeforeUpdate
+                  ? Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          "업데이트 전 설정 백업 중...",
+                          style: TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                      ],
+                    )
+                  : state.isDownloadingUpdate
                   ? Column(
                       children: [
                         ClipRRect(
@@ -2360,7 +2408,9 @@ class _SettingsTabState extends State<SettingsTab>
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          "다운로드 중... ${(state.downloadProgress * 100).toStringAsFixed(0)}%",
+                          state.isBackingUpBeforeUpdate
+                              ? "다운로드 중... ${(state.downloadProgress * 100).toStringAsFixed(0)}%  ·  설정 백업 중"
+                              : "다운로드 중... ${(state.downloadProgress * 100).toStringAsFixed(0)}%",
                           style: const TextStyle(color: Colors.white54, fontSize: 12),
                         ),
                       ],

@@ -75,6 +75,18 @@ class NovelAiApp extends StatefulWidget {
 class _NovelAiAppState extends State<NovelAiApp>
     with TickerProviderStateMixin, WidgetsBindingObserver {
   TabController? _tabController;
+  // 키보드 내리기를 탭당 한 번만 하기 위한 표시
+  int _lastKeyboardHideTab = -1;
+  // 직전에 보고 있던 탭 (원래 번호). 히스토리를 '떠났는지' 알아내는 데 쓴다.
+  int _lastTabOrigIdx = -1;
+
+  // 키보드가 떠 있는지. build 에서 갱신해 두고 콜백에서는 이 값만 읽는다.
+  //  ⚠️ 콜백 안에서 MediaQuery.of(context) 를 부르면 안 된다.
+  //     그 호출은 context 를 InheritedWidget 의 '의존자'로 등록하는데,
+  //     콜백이 도는 시점에는 그 화면이 이미 사라지는 중일 수 있다.
+  //     그러면 정리되지 않은 의존자가 남아
+  //     '_dependents.isEmpty: is not true' 단언에 걸려 앱이 죽는다.
+  bool _keyboardOpen = false;
   late PageController _pageController;
   bool _updateDialogVisible = false;
   List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
@@ -98,9 +110,17 @@ class _NovelAiAppState extends State<NovelAiApp>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
-      // 앱이 백그라운드/종료될 때 밀린 히스토리 전체 저장 실행
+      // 앱이 백그라운드로 가거나 꺼질 때의 마지막 저장.
+      //  (업데이트 설치창이 뜰 때, 다른 앱으로 넘어갈 때, 시스템이 앱을 정리할 때)
       final appState = context.read<AppState>();
+      // 밀린 히스토리 전체 저장
       appState.fullSaveHistoryIfNeeded();
+      // 설정·프롬프트 사전도 한 번 더 — 둘 다 바꿀 때마다 바로 저장하지만,
+      //  그 저장이 끝나기 전에 앱이 넘어갔을 수 있어 안전망으로 둔다.
+      //  (사전은 임시 파일에 쓴 뒤 이름만 바꾸고, 설정은 안드로이드가 백업 파일을 두고 쓴다
+      //   — 어느 쪽이든 도중에 꺼져도 옛 내용이 남는다)
+      appState.saveAllSettings();
+      appState.savePromptDict();
     }
   }
 
@@ -364,14 +384,41 @@ class _NovelAiAppState extends State<NovelAiApp>
         initialIndex: newInitialIndex,
         vsync: this,
       );
+      // 지금 보이는 탭을 '직전 탭'으로 잡아 둔다.
+      //  (앱을 히스토리 탭에서 시작해도 첫 이동 때 갤러리 닫기가 제대로 동작하게)
+      //  ⚠️ _visibleTabIndices 는 이 아래에서야 새 값으로 바뀌므로 새 목록을 직접 본다
+      if (newInitialIndex >= 0 && newInitialIndex < newVisibleIndices.length) {
+        _lastTabOrigIdx = newVisibleIndices[newInitialIndex];
+      }
       _tabController!.addListener(() {
+        // ⚠️ TabController 의 리스너는 애니메이션이 도는 '매 프레임' 불린다.
+        //    여기서 키보드를 내리라고 하면 1초에 60번 요청이 나가,
+        //    안드로이드 입력기가 요청을 취소·재시도하며 스스로 막힌다.
+        //    그래서 탭이 실제로 바뀐 뒤 한 번만 처리한다.
         if (_tabController!.indexIsChanging) {
           return;
+        }
+        // 키보드를 띄운 채 탭을 옮기면 새 탭이 줄어든 높이로 그려져
+        // 레이아웃이 눌린 것처럼 보인다. 입력하던 값은 컨트롤러에 이미
+        // 들어 있으므로 키보드를 내려도 잃는 것이 없다.
+        //  ⚠️ 키보드가 이미 내려가 있으면 부르지 않는다. 그냥 부르면
+        //     안드로이드가 ALREADY_HIDDEN 으로 취소하며 로그만 쌓인다.
+        if (_lastKeyboardHideTab != _tabController!.index) {
+          _lastKeyboardHideTab = _tabController!.index;
+          if (_keyboardOpen) {
+            SystemChannels.textInput.invokeMethod('TextInput.hide');
+          }
         }
         final origIdx =
             _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
             ? _visibleTabIndices[_tabController!.index]
             : -1;
+        // 히스토리 탭을 막 떠났으면 갤러리 모드를 뒤에서 닫아 둔다.
+        //  (다시 들어왔을 때 이미 목록/그리드로 바뀌어 있게 — 들어온 뒤 바꾸면 눈에 보인다)
+        if (_lastTabOrigIdx == 1 && origIdx != 1) {
+          state.resetHistoryGalleryInBackground();
+        }
+        _lastTabOrigIdx = origIdx;
         if (origIdx == 1 && !state.isHistoryGridView) {
           // 컨트롤러를 직접 만지지 않고 요청만 보낸다 (HistoryTab이 처리)
           state.requestHistoryScrollToEnd();
@@ -396,6 +443,8 @@ class _NovelAiAppState extends State<NovelAiApp>
 
     bool isPromptTab = currentOrigIdx == 0;
     bool isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+    // 콜백에서 쓰려고 기록해 둔다 (콜백에서 직접 MediaQuery 를 읽으면 안 된다)
+    _keyboardOpen = isKeyboardOpen;
     double bottomNavBarHeight = MediaQuery.of(context).padding.bottom;
 
     if (state.requestedTabIndex != null) {
@@ -491,7 +540,8 @@ class _NovelAiAppState extends State<NovelAiApp>
                 );
               },
               tabs: _visibleTabIndices.map((origIdx) {
-                const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "와일드카드", "설정"];
+                // 4번 탭은 와일드카드·프롬프트 사전을 함께 담아 "라이브러리"라 부른다
+                const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "라이브러리", "설정"];
                 return Tab(text: labels[origIdx]);
               }).toList(),
             ),
@@ -509,6 +559,11 @@ class _NovelAiAppState extends State<NovelAiApp>
                     ? const NeverScrollableScrollPhysics()
                     : const AlwaysScrollableScrollPhysics(),
                 onPageChanged: (index) {
+                  // 스와이프로 넘길 때도 키보드를 내린다.
+                  //  (페이지가 실제로 바뀐 순간에만 불리므로 한 번으로 충분하다)
+                  if (_keyboardOpen) {
+                    SystemChannels.textInput.invokeMethod('TextInput.hide');
+                  }
                   int targetVisibleTab = index % tabCount;
                   if (_tabController!.index != targetVisibleTab) {
                     _tabController!.animateTo(targetVisibleTab);
@@ -542,13 +597,39 @@ class _NovelAiAppState extends State<NovelAiApp>
 
               // 캐릭터 편집 손잡이: 스크롤 영역 밖(화면 기준)에 두어야
               // 드래그 좌표가 마우스와 정확히 일치하고 창도 화면 기준으로 뜬다
-              if (isPromptTab && !isKeyboardOpen) const Positioned.fill(child: CharDrawerHandle()),
+              //
+              // ⚠️ 키보드가 떴다고 트리에서 빼면 안 된다.
+              //    이 위젯이 캐릭터 프롬프트용 TextEditingController 를 들고 있어서,
+              //    빠지는 순간 State.dispose 가 컨트롤러를 버린다.
+              //    그런데 캐릭터 프롬프트 입력창(다이얼로그)은 바로 그 컨트롤러를
+              //    쓰고 있다 → 입력창이 '버려진 컨트롤러'를 붙든 채 남고,
+              //    키보드가 닫히며 위젯이 되살아날 때 앱이 멈춘다(ANR).
+              //    그래서 트리에는 항상 두고, 보이기만 감춘다.
+              // ⚠️ Stack 의 자식 '개수'가 바뀌지 않게 한다.
+              //
+              //    조건부로 자식을 넣었다 뺐다 하면 개수가 달라지고, Flutter 는
+              //    남은 자식들을 앞에서부터 순서로 다시 맞춘다. 그 과정에서
+              //    엉뚱한 요소가 서로 짝지어져 멀쩡한 화면(PageView 전체)이
+              //    통째로 해제·재생성되고, 그때 아직 참조가 남은 채로 정리되면
+              //    '_dependents.isEmpty' 단언에 걸려 앱이 죽는다.
+              //
+              //    그래서 항상 자리를 지키게 두고 보이기만 감춘다.
+              //    키까지 달아 두면 순서가 흔들려도 같은 요소끼리 짝지어진다.
+              Positioned.fill(
+                key: const ValueKey('charDrawerHandle'),
+                child: Offstage(
+                  offstage: !isPromptTab || isKeyboardOpen,
+                  child: const CharDrawerHandle(),
+                ),
+              ),
 
-              if (isPromptTab && !isKeyboardOpen)
-                Positioned(
-                  bottom: 16 + bottomNavBarHeight,
-                  left: 0,
-                  right: 0,
+              Positioned(
+                key: const ValueKey('detailSettingsButton'),
+                bottom: 16 + bottomNavBarHeight,
+                left: 0,
+                right: 0,
+                child: Offstage(
+                  offstage: !isPromptTab || isKeyboardOpen,
                   child: Center(
                     child: SizedBox(
                       height: 38,
@@ -573,6 +654,7 @@ class _NovelAiAppState extends State<NovelAiApp>
                     ),
                   ),
                 ),
+              ),
             ],
           ),
         ),

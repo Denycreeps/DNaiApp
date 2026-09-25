@@ -38,7 +38,8 @@ class NaiPreset {
     this.characters,
     this.previewImage,
     Set<String>? savedFields,
-  }) : savedFields = savedFields ?? {'positive', 'negative', 'prefix', 'suffix'};
+  }) : savedFields =
+           savedFields ?? {'positive', 'negative', 'prefix', 'suffix'};
 
   Map<String, dynamic> toJson() => {
     'name': name,
@@ -59,7 +60,9 @@ class NaiPreset {
     prefix: json['prefix'] ?? '',
     suffix: json['suffix'] ?? '',
     settings: json['settings'] as Map<String, dynamic>?,
-    characters: (json['characters'] as List?)?.map((e) => Map<String, dynamic>.from(e)).toList(),
+    characters: (json['characters'] as List?)
+        ?.map((e) => Map<String, dynamic>.from(e))
+        .toList(),
     previewImage: json['previewImage'] as String?,
     savedFields: json['savedFields'] != null
         ? (json['savedFields'] as List).map((e) => e.toString()).toSet()
@@ -75,7 +78,12 @@ class I2iResult {
   // 어떤 모드로 만들어졌는지 ('inpaint' | 'mosaic' | 'upscale' | 'img2img')
   // 릴 썸네일 구석에 작은 배지로 표시. 기존 저장분엔 없으므로 기본값은 인페인트.
   String source;
-  I2iResult({required this.bytes, this.metadata, this.favorite = false, this.source = 'inpaint'});
+  I2iResult({
+    required this.bytes,
+    this.metadata,
+    this.favorite = false,
+    this.source = 'inpaint',
+  });
 
   Map<String, dynamic> toJson() => {
     'img': base64Encode(bytes),

@@ -1,4 +1,7 @@
 import 'package:flutter/services.dart' show rootBundle;
+// smartMatchTags / kContainsMarker 의 실제 정의는 utils/prompt_utils.dart 에 있다.
+// app_state 를 import 하던 기존 호출부가 그대로 쓰도록 이름만 다시 내보낸다.
+export '../utils/prompt_utils.dart' show smartMatchTags, kContainsMarker;
 import 'dart:io';
 import 'dart:async';
 import 'dart:math';
@@ -23,16 +26,24 @@ import '../tag_filters.dart';
 import '../app_theme.dart';
 import 'nai_character.dart';
 import 'model_caps.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'director_tools.dart';
+import 'prompt_dict.dart';
+import '../utils/image_codec.dart'; // WebP 굽기·썸네일 규칙 (한곳)
 import 'nai_account.dart';
 import 'text_controllers.dart';
 import 'preset_models.dart';
 import 'image_metadata.dart';
 import 'nai_presets.dart';
 import '../utils/qwen_tokenizer.dart';
+import '../widgets/app_toast.dart';
+import '../widgets/confirm_dialog.dart';
 
 // i2i 작업 이미지가 바뀔 때 마스킹(_strokes)을 어떻게 처리할지.
 // 1회용 소비 신호 대신 이 값을 함께 세팅하여 build 타이밍 문제를 방지한다.
+/// Anlas 추정 대상 작업.
+///  작업마다 계산 규칙이 달라 AppState.anlasFor 가 여기서 갈라진다.
+enum AnlasJob { generate, inpaint, img2img, director, upscale }
+
 enum I2iMaskAction {
   clearMask, // 마스크 초기화 (i2i로 새 이미지 보내기 등)
   keepMask, // 마스크 유지 (릴 결과 채택 등)
@@ -62,7 +73,6 @@ class MaskStroke {
 // ============================================================================
 // † 접두어 = 보조 매칭 결과 (UI에서 연한 스타일로 구분)
 // ============================================================================
-const String kContainsMarker = '* ';
 
 // ============================================================================
 // 프롬프트 토큰 추정기
@@ -75,34 +85,45 @@ const String kContainsMarker = '* ';
 //                     4배 넘게 벌어져 쓸 수 없다.
 //                     (사전 로드 전이면 QwenTokenizer가 알아서 근사값을 준다)
 
+// 토큰 수 캐시.
+//
+// ⚠️ 이게 없으면 앱이 멈춘다.
+//    화면에는 토큰 표시가 3곳 있고, 각 표시가 estimateBaseTokens +
+//    estimateCharacterTokens 를 부른다. 즉 리빌드 한 번에 BPE 가 6번 돈다.
+//    V5(Qwen)는 글자수 나눗셈이 아니라 실제 BPE 병합을 돌리므로,
+//    프롬프트가 길면 한 번에 수십만 번의 병합 연산이 된다.
+//    입력창을 닫으면 saveAllSettings·refreshUI·setLocal 로 리빌드가 연달아
+//    일어나는데, 그때마다 이 계산이 통째로 다시 돌아 메인 스레드가 막혔다.
+//
+//    같은 문자열은 결과가 항상 같으므로 그대로 재사용한다.
+final Map<String, int> _tokenCountCache = {};
+
 int estimateTokenCount(String prompt, {PromptTokenizer tokenizer = PromptTokenizer.t5}) {
   final t = prompt.trim();
   if (t.isEmpty) {
     return 0;
   }
-  switch (tokenizer) {
-    case PromptTokenizer.qwen:
-      return QwenTokenizer.countTokens(t);
-    case PromptTokenizer.t5:
-      return (t.length / 3.1).round();
+  // T5 는 나눗셈 한 번이라 캐시가 필요 없다
+  if (tokenizer == PromptTokenizer.t5) {
+    return (t.length / 3.1).round();
   }
+
+  final cached = _tokenCountCache[t];
+  if (cached != null) {
+    return cached;
+  }
+  final v = QwenTokenizer.countTokens(t);
+  // 프롬프트를 고칠 때마다 새 항목이 쌓이므로 상한을 둔다.
+  //  (오래된 것부터 버린다 — Map 은 넣은 순서를 유지한다)
+  if (_tokenCountCache.length >= 64) {
+    _tokenCountCache.remove(_tokenCountCache.keys.first);
+  }
+  _tokenCountCache[t] = v;
+  return v;
 }
 
 /// 현재 선택된 모델이 쓰는 토크나이저
 PromptTokenizer _tokenizerOf(AppState state) => modelCapsFor(state.selectedModel).tokenizer;
-
-/// 픽셀 수를 사람이 읽기 좋게 (1048576 → "1,048,576 픽셀")
-String _formatPixels(int px) {
-  final s = px.toString();
-  final buf = StringBuffer();
-  for (int i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 == 0) {
-      buf.write(',');
-    }
-    buf.write(s[i]);
-  }
-  return '$buf 픽셀';
-}
 
 // 베이스 프롬프트(선행 + 긍정 + 후행 + Quality Tags)의 토큰 수.
 //  ⚠️ 부정 프롬프트(UC)는 여기에 더하지 않는다.
@@ -119,7 +140,117 @@ int estimateBaseTokens(AppState state) {
   return estimateTokenCount(withQuality, tokenizer: _tokenizerOf(state));
 }
 
+/// 중첩된 가중치 구간을 NovelAI 가 실제로 해석하는 방식에 맞춰 펼친다.
+///
+/// NovelAI 의 `::` 는 '스택'이 아니라 '평면'이다.
+/// 숫자 없는 `::` 를 만나면 그 앞의 가중치가 **전부** 끝나고 1.0 으로 돌아간다.
+/// 즉 아래 두 줄에서 D 는 5.0 이 아니라 1.0 으로 들어간다.
+///
+/// ```
+/// 5.0::A, B, 1.5::C ::, D ::,      ← D 는 1.0 (사람이 기대하는 것과 다름)
+/// 5.0::A, B, 1.5::C ::, 5.0::D ::, ← D 를 5.0 으로 두려면 이렇게 써야 한다
+/// ```
+///
+/// 이 함수는 앞 줄을 뒤 줄로 바꿔 준다. 괄호의 짝을 맞추듯 여는 가중치를
+/// 스택에 쌓아 두었다가, 구간이 닫히면 바깥 가중치를 다시 열어 준다.
+///
+/// 건드리지 않는 경우:
+///  · 중첩이 없으면 원문 그대로 (스택이 비면 다시 열 것이 없다)
+///  · 닫는 `::` 가 남거나 모자라도 무너지지 않는다
+///  · `{}` `[]` 같은 다른 강조 문법과는 무관하다
+/// 가중치 표시 앞뒤의 쓸모없는 쉼표를 걷어 낸다.
+///
+/// 선행·긍정·후행을 합칠 때 경계마다 ', ' 가 들어가서, 선행 끝에 연 가중치나
+/// 후행 앞에서 닫는 가중치가 엉뚱하게 떨어져 나갔다.
+///
+///  선행 '1girl, 1.1::'  +  긍정 'shirt, standing'  +  후행 '::, masterpiece'
+///   합친 그대로 : 1girl, 1.1::, shirt, standing, ::, masterpiece
+///   정리한 뒤   : 1girl, 1.1::shirt, standing::, masterpiece
+///
+/// 규칙은 두 가지뿐이다.
+///  · 여는 표시(1.1::) 바로 뒤의 쉼표를 뺀다 → 가중치가 다음 태그에 바로 붙는다
+///  · 닫는 표시(::) 바로 앞의 쉼표를 뺀다   → 앞 태그에 바로 붙어 닫힌다
+///  사용자가 직접 띄어 쓴 'test ::' 같은 공백은 건드리지 않는다.
+///  '중첩 가중치 펼치기' 설정과 무관하게 항상 적용한다 (합치는 방식의 문제라서).
+String tidyWeightMarkers(String input) {
+  if (!input.contains('::')) {
+    return input;
+  }
+  return input
+      .replaceAllMapped(_weightOpenThenComma, (m) => m.group(1)!)
+      .replaceAll(_commaThenWeightClose, '::');
+}
+
+final RegExp _weightOpenThenComma = RegExp(r'(-?\d+(?:\.\d+)?\s*::)\s*,\s*');
+// 닫는 표시는 숫자가 앞에 붙지 않은 '::' — 쉼표 뒤에 오면 앞에 숫자가 있을 수 없다
+final RegExp _commaThenWeightClose = RegExp(r'\s*,\s*::(?!\d)');
+
+String expandNestedWeights(String input) {
+  if (!input.contains('::')) {
+    return input;
+  }
+
+  // 여는 표시(1.5::)와 닫는 표시(::)를 모두 찾는다.
+  //  여는 쪽은 숫자가 바로 앞에 붙어 있어야 한다.
+  final marker = RegExp(r'(-?\d+(?:\.\d+)?)\s*::|::');
+
+  final buf = StringBuffer();
+  final stack = <String>[]; // 열려 있는 가중치들 (바깥 → 안쪽)
+  int last = 0;
+  bool changed = false;
+
+  for (final m in marker.allMatches(input)) {
+    buf.write(input.substring(last, m.start));
+    final weight = m.group(1);
+
+    if (weight != null) {
+      // 여는 표시 — 원문 그대로 두고 스택에 쌓는다
+      buf.write(m.group(0));
+      stack.add(weight);
+      last = m.end;
+      continue;
+    }
+
+    // 닫는 표시
+    buf.write('::');
+    last = m.end;
+    if (stack.isNotEmpty) {
+      stack.removeLast();
+    }
+    if (stack.isEmpty) {
+      continue; // 바깥에 남은 가중치가 없으면 되살릴 것도 없다
+    }
+
+    // 바깥 가중치를 다시 연다. 구분자(쉼표·공백·줄바꿈)는 그대로 두고
+    // 실제 내용이 시작되는 자리 바로 앞에 끼워 넣는다.
+    int p = last;
+    while (p < input.length && (input[p] == ',' || _isSpace(input[p]))) {
+      p++;
+    }
+    // 뒤에 내용이 없거나 곧바로 또 닫는다면 넣을 필요가 없다
+    if (p >= input.length || input.startsWith('::', p)) {
+      continue;
+    }
+    buf.write(input.substring(last, p));
+    buf.write('${stack.last}::');
+    last = p;
+    changed = true;
+  }
+
+  buf.write(input.substring(last));
+  return changed ? buf.toString() : input;
+}
+
+bool _isSpace(String c) => c == ' ' || c == '\t' || c == '\n' || c == '\r';
+
 /// 부정 프롬프트(UC 프리셋 포함)의 토큰 수. 긍정과는 별도 한도.
+///
+/// ⚠️ 현재 어디서도 부르지 않는다 (2026-08 기준).
+///    긍정/부정 토큰을 분리하면서 함께 만들었지만, 부정 프롬프트가 한도에
+///    닿는 경우가 사실상 없어서 화면에는 표시하지 않기로 했다.
+///    "왜 부정은 안 세지?" 라는 의문이 생겼을 때 답이 되도록 남겨 둔다.
+///    부정 카운터를 붙이고 싶으면 buildTokenLabel 옆에 이 값을 쓰면 되고,
+///    끝내 필요 없다고 판단되면 이 함수째로 지워도 된다.
 int estimateNegativeTokens(AppState state) {
   final negative = state.applyUcPreset(state.negativeController.text);
   return estimateTokenCount(negative, tokenizer: _tokenizerOf(state));
@@ -162,129 +293,10 @@ String buildTokenLabel(AppState state, int maxTokens) {
 int estimateTotalTokens(AppState state) {
   return estimateBaseTokens(state) + estimateCharacterTokens(state);
 }
-
-List<String> smartMatchTags(List<String> tags, String query, {int limit = 15}) {
-  // 트레일링 스페이스 감지 (trim 전에!)
-  final hasTrailingSpace = query.endsWith(' ');
-  final lower = query.toLowerCase().trim();
-  if (lower.isEmpty) {
-    return [];
-  }
-
-  // "artist:" 특별 처리: artist의 앞부분("a"~"artist")으로 시작하면 맨 앞에 끼워넣기
-  // (artist name 태그는 거의 안 쓰므로 artist: 접두사를 최우선 노출)
-  String? artistPrefix;
-  if (!lower.contains(':') && "artist".startsWith(lower)) {
-    artistPrefix = 'artist:';
-  }
-
-  final fragments = lower.split(RegExp(r'\s+'));
-
-  // 다중 조각 ("ca t", "lo a v" 등): 스마트 단어 매칭
-  if (fragments.length > 1) {
-    return _multiWordMatch(tags, fragments, limit);
-  }
-
-  // artist: 끼워넣기 헬퍼 (중복 방지, 맨 앞 배치)
-  List<String> withArtist(List<String> results) {
-    final prefix = artistPrefix;
-    if (prefix == null) {
-      return results;
-    }
-    final filtered = results.where((t) => t != prefix).toList();
-    return [prefix, ...filtered].take(limit).toList();
-  }
-
-  // ======================================================================
-  // 단일 조각
-  // ======================================================================
-
-  // 🔒 트레일링 스페이스 = "확정 모드": startsWith만 → 없으면 contains fallback
-  if (hasTrailingSpace) {
-    final startsResults = tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList();
-    if (startsResults.isNotEmpty) {
-      return withArtist(startsResults);
-    }
-    // startsWith 결과 없음 → contains fallback (연한 스타일)
-    return withArtist(
-      tags
-          .where((t) => t.toLowerCase().contains(lower))
-          .take(limit)
-          .map((t) => '$kContainsMarker$t')
-          .toList(),
-    );
-  }
-
-  // 1~2글자: startsWith만 (contains는 노이즈 너무 많음)
-  if (lower.length <= 2) {
-    return withArtist(tags.where((t) => t.toLowerCase().startsWith(lower)).take(limit).toList());
-  }
-
-  // 3글자+, 스페이스 없음: 단어경계 우선 + 중간매칭 후순위
-  final wordBoundaryResults = <String>[];
-  final midWordResults = <String>[];
-
-  for (final tag in tags) {
-    final tagLower = tag.toLowerCase();
-    if (tagLower.startsWith(lower)) {
-      // 태그 자체가 쿼리로 시작 (최우선)
-      wordBoundaryResults.add(tag);
-    } else if (tagLower.split(' ').any((w) => w.startsWith(lower))) {
-      // 태그 안의 단어가 쿼리로 시작 (단어 경계 매칭)
-      wordBoundaryResults.add(tag);
-    } else if (tagLower.contains(lower)) {
-      // 단어 중간에 포함 (최후순위)
-      midWordResults.add(tag);
-    }
-    if (wordBoundaryResults.length >= limit && midWordResults.length >= limit) {
-      break;
-    }
-  }
-
-  // 점진적 할당: 쿼리가 길수록 midWord 비중 증가
-  final wordSlots = (wordBoundaryResults.length < limit - 3)
-      ? wordBoundaryResults.length
-      : max<int>(limit - lower.length, 5).clamp(0, limit);
-  final midSlots = limit - min<int>(wordBoundaryResults.length, wordSlots);
-
-  return withArtist([
-    ...wordBoundaryResults.take(wordSlots),
-    ...midWordResults.take(midSlots).map((t) => '$kContainsMarker$t'),
-  ]);
-}
-
-List<String> _multiWordMatch(List<String> tags, List<String> fragments, int limit) {
-  final first = fragments.first;
-  final rest = fragments.sublist(1);
-
-  return tags
-      .where((tag) {
-        final tagLower = tag.toLowerCase();
-        if (!tagLower.startsWith(first)) {
-          return false;
-        }
-
-        final words = tagLower.split(RegExp(r'[_ ]'));
-        int wordIdx = 1;
-        for (final frag in rest) {
-          bool found = false;
-          while (wordIdx < words.length) {
-            if (words[wordIdx].startsWith(frag)) {
-              wordIdx++;
-              found = true;
-              break;
-            }
-            wordIdx++;
-          }
-          if (!found) {
-            return false;
-          }
-        }
-        return true;
-      })
-      .take(limit)
-      .toList();
-}
+// 자동완성 매칭기(smartMatchTags)는 utils/prompt_utils.dart 로 옮겼다.
+//  프롬프트탭·확대 입력창·와일드카드탭이 함께 쓰는데 AppState를 전혀 참조하지
+//  않아서, 여기 두면 세 화면이 app_state 전체를 끌어와야 했다.
+//  기존 호출부가 그대로 동작하도록 파일 상단에서 이름만 다시 내보낸다.
 
 class AppState extends ChangeNotifier {
   // ============================================================================
@@ -409,6 +421,169 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ══════════════════════════════════════════════════════════════
+  // 업데이트 전 자동 백업
+  // ══════════════════════════════════════════════════════════════
+  //
+  //  평소 업데이트는 앱 데이터를 그대로 두지만, 서명이 바뀌는 등 '지우고 다시 깔아야'
+  //  하는 경우엔 설정·프리셋·사전이 모두 사라진다. 그래서 설치 직전에 한 번 떠 둔다.
+  //
+  //  · 담는 것: 설정·계정·프리셋·와일드카드·캐릭터·프롬프트 사전 + 즐겨찾기 히스토리
+  //    (히스토리 전체는 썸네일 만드는 데만 수 초 — 즐겨찾기만 작은 썸네일로)
+  //  · 저장 위치: 저장 폴더의 settings/ — 앱을 지워도 남는 곳
+  //  · 저장 폴더를 아직 안 정했으면 조용히 건너뛴다 (업데이트를 막지 않는다)
+  //  · 자동 백업은 최근 [_autoBackupKeep] 개만 남긴다
+
+  static const int _autoBackupKeep = 3;
+  static const String _autoBackupPrefix = 'DNaiApp_autobackup_';
+
+  /// 업데이트 전 백업 중인지 (설정 > 기타 에 상태를 보여 주는 데 쓴다)
+  bool isBackingUpBeforeUpdate = false;
+
+  /// 이번에 앱을 켠 뒤 이미 백업해 둔 대상 버전.
+  ///  ⚠️ 설치창에서 취소하고 다시 누를 때마다 백업하면, 거의 같은 파일 3개가
+  ///     칸을 다 채워 '이전 버전 때 백업'이 밀려난다. 그래서 한 번만 뜬다.
+  ///  일부러 저장하지 않는다 — 앱이 꺼졌다 켜지면 상태가 바뀌었을 수 있으니
+  ///  그때는 다시 뜨는 게 맞다.
+  String? _autoBackupDoneFor;
+
+  /// 업데이트 직전에 지금 상태를 파일로 떠 둔다. 성공하면 보여 줄 경로, 아니면 null.
+  ///  ⚠️ 여기서 난 오류는 절대 밖으로 던지지 않는다 — 백업 때문에 업데이트가 막히면 안 된다.
+  Future<String?> _autoBackupBeforeUpdate() async {
+    if (safRootUri == null || !Platform.isAndroid) {
+      return null;
+    }
+    if (_autoBackupDoneFor != null && _autoBackupDoneFor == latestVersion) {
+      return null; // 이번 실행에서 이미 떠 둠 (설치를 취소하고 다시 누른 경우)
+    }
+    isBackingUpBeforeUpdate = true;
+    notifyListeners();
+    try {
+      final data = await exportSettings(includeHistory: true, favoritesOnly: true);
+      final now = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      final stamp =
+          '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
+      // 파일 이름은 영문·숫자만 — 저장소·PC 로 옮길 때 깨지지 않게
+      final name =
+          '$_autoBackupPrefix'
+          'v${currentVersion}_to_v${latestVersion ?? 'x'}_$stamp.json';
+      final shown = await saveSettingsViaSaf(name, jsonEncode(data));
+      if (shown != null) {
+        debugPrint('업데이트 전 자동 백업: $shown');
+        // 성공했을 때만 기억한다 (실패했으면 다음에 다시 시도해야 한다)
+        _autoBackupDoneFor = latestVersion;
+        await _pruneAutoBackups();
+      }
+      return shown;
+    } catch (e) {
+      debugPrint('업데이트 전 자동 백업 실패(업데이트는 계속): $e');
+      return null;
+    } finally {
+      isBackingUpBeforeUpdate = false;
+      notifyListeners();
+    }
+  }
+
+  /// 설치창을 열기 전에 백업이 끝나기를 기다린다.
+  ///  ⚠️ 무한정 기다리지 않는다 — 저장소가 느리거나 멈춰도 업데이트는 진행돼야 한다.
+  Future<void> _waitBackup(Future<String?> backup) async {
+    try {
+      await backup.timeout(const Duration(seconds: 20));
+    } catch (_) {
+      debugPrint('자동 백업이 늦어 기다리지 않고 설치를 진행합니다.');
+    }
+  }
+
+  /// 자동 백업을 최근 [_autoBackupKeep] 개만 남기고 지운다.
+  ///  (직접 '내보내기' 한 파일은 이름이 달라 건드리지 않는다)
+  Future<void> _pruneAutoBackups() async {
+    final root = safRootUri;
+    if (root == null) {
+      return;
+    }
+    try {
+      final dir = await _safUtil.mkdirp(root, _appFolderPath(['settings']));
+      final items =
+          (await _safUtil.list(
+              dir.uri,
+            )).where((f) => !f.isDir && f.name.startsWith(_autoBackupPrefix)).toList()
+            // 이름 끝에 날짜·시각이 붙어 있어 이름 역순 = 최신순
+            ..sort((a, b) => b.name.compareTo(a.name));
+      for (final old in items.skip(_autoBackupKeep)) {
+        await _safUtil.delete(old.uri, false);
+      }
+    } catch (e) {
+      debugPrint('옛 자동 백업 정리 실패(무시): $e');
+    }
+  }
+
+  /// 받아 둔 APK 가 그대로 쓸 수 있는 상태인지.
+  ///
+  /// 다운로드가 중간에 끊긴 파일이 남아 있을 수 있어 크기까지 확인한다.
+  /// 크기를 모르면(기록이 없으면) 믿지 않고 다시 받는다 — 깨진 파일을
+  /// 설치하려 하면 원인을 알기 어려운 오류가 난다.
+  Future<bool> _isUsableApk(File file) async {
+    try {
+      if (!await file.exists()) {
+        return false;
+      }
+      final prefs = await SharedPreferences.getInstance();
+      final expected = prefs.getInt('apkSize_$latestVersion');
+      if (expected == null || expected <= 0) {
+        return false;
+      }
+      return await file.length() == expected;
+    } catch (_) {
+      // 확인에 실패하면 안전하게 다시 받는다
+      return false;
+    }
+  }
+
+  Future<void> _rememberApkSize(String? version, int size) async {
+    if (version == null) {
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('apkSize_$version', size);
+    } catch (_) {
+      // 기록에 실패해도 이번 설치는 그대로 진행된다 (다음에 다시 받을 뿐)
+    }
+  }
+
+  /// 지금 쓰는 것 말고 예전에 받아 둔 APK 파일을 지운다.
+  ///  수십 MB짜리라 쌓이면 저장 공간을 잡아먹는다.
+  Future<void> _cleanupOldApks({String? keep}) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final prefs = await SharedPreferences.getInstance();
+      for (final f in dir.listSync().whereType<File>()) {
+        final name = f.path.split(Platform.pathSeparator).last;
+        if (!name.startsWith('DNaiApp_v') || !name.endsWith('.apk')) {
+          continue;
+        }
+        if (f.path == keep) {
+          continue;
+        }
+        await f.delete();
+        // 크기 기록도 같이 정리
+        final v = name.substring('DNaiApp_v'.length, name.length - '.apk'.length);
+        await prefs.remove('apkSize_$v');
+      }
+    } catch (e) {
+      debugPrint('옛 APK 정리 실패(무시): $e');
+    }
+  }
+
+  /// 받아 둔 APK 를 설치 화면으로 넘긴다.
+  Future<void> _openApk(File file, BuildContext context) async {
+    final result = await OpenFilex.open(file.path);
+    if (result.type != ResultType.done && context.mounted) {
+      showToast(context, "설치 실행에 실패했습니다: ${result.message}");
+    }
+  }
+
   Future<void> downloadAndInstallUpdate(BuildContext context) async {
     // 이미 다운로드 중이면 중복 실행 무시 (버튼 연타/중복 호출 방지)
     if (isDownloadingUpdate) {
@@ -416,23 +591,45 @@ class AppState extends ChangeNotifier {
     }
     if (apkDownloadUrl == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("다운로드 URL을 찾을 수 없습니다."),
-          ),
-        );
+        showToast(context, "다운로드 URL을 찾을 수 없습니다.");
       }
       return;
     }
+
+    // 다운로드가 시작되면 진행률이 보이는 곳(설정 > 기타)으로 옮겨 준다.
+    //  받는 동안 아무 표시도 없으면 멈춘 것처럼 보인다.
+    navigateToSettings(3);
+
+    // 업데이트 전 자동 백업 — 다운로드와 '나란히' 돌린다.
+    //  다운로드가 훨씬 오래 걸리므로 백업 때문에 더 기다리는 일은 거의 없다.
+    //  설치창을 열기 직전에만 끝났는지 확인한다 (설치창이 뜨면 앱이 곧 꺼진다).
+    final Future<String?> backup = _autoBackupBeforeUpdate();
 
     isDownloadingUpdate = true;
     downloadProgress = 0.0;
     notifyListeners();
 
     try {
-      final dir = await getTemporaryDirectory();
+      final dir = await getApplicationDocumentsDirectory();
       final file = File('${dir.path}/DNaiApp_v$latestVersion.apk');
+
+      // 이미 받아 둔 파일이 있으면 다시 받지 않는다.
+      //  ⚠️ 설치가 취소되는 일이 잦다 (출처 허용을 안 했거나 실수로 뒤로 감).
+      //     그때마다 수십 MB를 다시 받는 것은 낭비다.
+      //     임시 폴더는 시스템이 언제든 지우므로 문서 폴더에 둔다.
+      if (await _isUsableApk(file)) {
+        debugPrint('이미 받아 둔 APK 사용: ${file.path}');
+        isDownloadingUpdate = false;
+        downloadProgress = 1.0;
+        notifyListeners();
+        await _waitBackup(backup);
+        // 파일을 확인하는 사이 화면이 닫혔을 수 있다
+        if (!context.mounted) {
+          return;
+        }
+        await _openApk(file, context);
+        return;
+      }
 
       // 스트리밍 다운로드 (프로그레스 표시)
       final request = http.Request('GET', Uri.parse(apkDownloadUrl!));
@@ -452,30 +649,28 @@ class AppState extends ChangeNotifier {
       }
 
       await file.writeAsBytes(bytes);
+      // 다음에 설치가 취소돼도 다시 받지 않도록 크기를 기록해 둔다
+      await _rememberApkSize(latestVersion, bytes.length);
+      // 옛 버전 파일은 이제 필요 없다
+      await _cleanupOldApks(keep: file.path);
 
       isDownloadingUpdate = false;
       downloadProgress = 1.0;
       notifyListeners();
 
-      // APK 설치 실행
-      final result = await OpenFilex.open(file.path);
-      if (result.type != ResultType.done && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("설치 실행에 실패했습니다: ${result.message}"),
-          ),
-        );
+      await _waitBackup(backup);
+      // 받는 동안 화면이 닫혔을 수 있다 (수십 초가 걸리기도 한다)
+      if (!context.mounted) {
+        return;
       }
+      await _openApk(file, context);
     } catch (e) {
       isDownloadingUpdate = false;
       downloadProgress = 0.0;
       notifyListeners();
       debugPrint("업데이트 다운로드 실패: $e");
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("다운로드에 실패했습니다.")),
-        );
+        showToast(context, "다운로드에 실패했습니다.");
       }
     }
   }
@@ -573,13 +768,19 @@ class AppState extends ChangeNotifier {
   bool charRetapToggle = true;
 
   // 저장 폴더를 '날짜'로만 만든다 (기본 OFF = 실행할 때마다 날짜_시간 폴더)
-  bool saveFolderByDateOnly = false;
+  bool saveFolderByDateOnly = true;
   bool removeColors = false;
   bool isAutoSave = true;
   // 이미지를 WebP(무손실)로 저장 — 용량 약 26% 절감, 메타데이터는 EXIF로 보존
   bool saveAsWebp = false;
   // WebP 저장 시 손실 압축(품질 95) 사용 — 화질 차이 거의 없이 용량이 크게 줄어든다
   bool webpLossy = false;
+
+  /// 설정(두 스위치)으로 정해지는 저장 형식.
+  ///  설정 값 자체(saveAsWebp·webpLossy)는 그대로 두고 여기서 해석만 한다
+  ///  → 옛 설정·백업과 그대로 호환된다. 확장자·품질은 image_codec.dart 의 SaveFormat 에 있다.
+  SaveFormat get saveFormat =>
+      !saveAsWebp ? SaveFormat.png : (webpLossy ? SaveFormat.webpLossy : SaveFormat.webpLossless);
   bool isRandomLocked = false;
   bool isSeedLocked = false;
   double infillStrength = 0.7;
@@ -588,17 +789,9 @@ class AppState extends ChangeNotifier {
   double img2imgNoise = 0.1;
   bool isVariancePlus = false; // VAR+ (Variety+) 모드
   bool horizontalSwipeEnabled = false; // 좌우 스와이프 탭 전환
-  // i2i탭 UI 배치 변경: ON이면 모드 칩 가로 1줄 + 실행 버튼 우하단 배치
-  // ⚠️ [1차 UI 비활성] i2i 탭은 2차 배치(대체 UI)로 고정.
-  //  - 이 값은 항상 true로 유지된다(설정 토글 제거 + 로드 시 강제).
-  //    따라서 i2i_tab.dart의 `if (!state.i2iAltLayout)` 분기는 실행되지 않는다.
-  //  - 1차 UI 코드는 i2i_tab.dart에 그대로 남아 있다(삭제 시 참고: 갈리는 곳 2군데,
-  //    `_classicToolbarChildren`와 모드칩 2×2 배치).
-  //  - 되살리려면: 아래 로드부의 강제 true를 풀고 settings_tab의 토글 주석을 해제.
-  bool i2iAltLayout = true;
   // 프롬프트 탭 2번째 UI (합본 미리보기 + 기능 묶음). 기본 OFF — 기존 UI 유지
   // 프롬프트 탭을 개편된 새 레이아웃으로 표시 (기본 OFF = 기존 사용자에게 익숙한 예전 UI)
-  bool promptNewLayout = false;
+  bool promptNewLayout = true;
 
   // ⚠️ [보류] 프롬프트탭 2번째 UI. 설정 화면에서는 숨겨져 있다(settings_tab 참고).
   //  구현은 prompt_tab.dart의 _buildAltLayout 이하에 그대로 살아 있으므로,
@@ -609,7 +802,7 @@ class AppState extends ChangeNotifier {
   // [실험] 정렬 축 다양화 (random+score+id 섞기) — 중복 줄이고 표본 확대
   bool diversifySearchSort = false;
   // 프롬프트 탭 캐릭터 편집 서랍 표시 (기본 OFF)
-  bool promptCharDrawerEnabled = false;
+  bool promptCharDrawerEnabled = true;
   // 가중치 규칙: "태그=숫자" 형식으로 프롬프트의 특정 태그에 NovelAI 가중치를 자동 적용
   bool _weightRulesEnabled = false;
   bool get weightRulesEnabled => _weightRulesEnabled;
@@ -1039,14 +1232,22 @@ class AppState extends ChangeNotifier {
   ///     저장했는데, 안드로이드 11(API 30)부터 문서 선택기가 Android/data 안을
   ///     들여다볼 수 없게 막혔다. 그래서 저장은 되는데 '가져오기'에서 폴더 자체가
   ///     보이지 않는 문제가 있었다. SAF 폴더는 사용자가 직접 고른 위치라 안전하다.
+  /// 저장 폴더 안에서 '앱 폴더' 아래의 경로 조각.
+  ///  사용자가 고른 폴더 이름이 이미 'DNaiApp' 이면 한 단계를 건너뛴다
+  ///  (DNaiApp/DNaiApp/… 처럼 겹치지 않게).
+  ///  ⚠️ 예전엔 이 판단이 저장·설정·자동 백업 곳곳에 따로 적혀 있었다.
+  List<String> _appFolderPath(List<String> sub) {
+    final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
+    return rootIsDnai ? sub : ['DNaiApp', ...sub];
+  }
+
   Future<String?> saveSettingsViaSaf(String fileName, String contents) async {
     final root = safRootUri;
     if (root == null || !Platform.isAndroid) {
       return null;
     }
     try {
-      final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
-      final pathParts = rootIsDnai ? ['settings'] : ['DNaiApp', 'settings'];
+      final pathParts = _appFolderPath(['settings']);
       final dir = await _safUtil.mkdirp(root, pathParts);
       await _safStream.writeFileBytes(
         dir.uri,
@@ -1054,7 +1255,7 @@ class AppState extends ChangeNotifier {
         'application/json',
         Uint8List.fromList(utf8.encode(contents)),
       );
-      final shown = rootIsDnai ? 'settings/$fileName' : 'DNaiApp/settings/$fileName';
+      final shown = _appFolderPath(['settings', fileName]).join('/');
       return '${safRootName ?? 'SAF'}/$shown';
     } catch (e) {
       debugPrint('설정 SAF 저장 실패: $e');
@@ -1071,11 +1272,10 @@ class AppState extends ChangeNotifier {
     }
     try {
       // 확장자와 mime이 어긋나면 안드로이드가 확장자를 덧붙인다(예: name.webp.png)
-      final mime = ext == 'jpg' ? 'image/jpeg' : (ext == 'webp' ? 'image/webp' : 'image/png');
+      final mime = mimeForExt(ext);
       final session = _resolveSessionFolder();
       // 루트 폴더명이 이미 'DNaiApp'(대소문자 무시)이면 DNaiApp 중첩 생성 방지
-      final rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
-      final pathParts = rootIsDnai ? [session] : ['DNaiApp', session];
+      final pathParts = _appFolderPath([session]);
       // 세션 폴더 확보 (같은 세션이면 캐시 재사용 → mkdirp 반복 호출 방지)
       String dirUri;
       final cachedDir = _safSessionDirUri;
@@ -1089,22 +1289,12 @@ class AppState extends ChangeNotifier {
       }
       await _safStream.writeFileBytes(dirUri, '$fileName.$ext', mime, bytes);
       gallerySafRevision++; // 갤러리 자동 갱신 신호 (호출자의 notifyListeners로 전파됨)
-      final displayPath = rootIsDnai
-          ? '$session/$fileName.$ext'
-          : 'DNaiApp/$session/$fileName.$ext';
+      final displayPath = _appFolderPath([session, '$fileName.$ext']).join('/');
       return '${safRootName ?? 'SAF'}/$displayPath';
     } catch (e) {
       debugPrint('SAF 저장 실패: $e');
       return null;
     }
-  }
-
-  bool _isSafImageName(String name) {
-    final lower = name.toLowerCase();
-    return lower.endsWith('.png') ||
-        lower.endsWith('.jpg') ||
-        lower.endsWith('.jpeg') ||
-        lower.endsWith('.webp');
   }
 
   // SAF 갤러리에서 마지막으로 보던 위치 (탭/모드 전환 후 복원용)
@@ -1156,7 +1346,7 @@ class AppState extends ChangeNotifier {
     try {
       final items = await _safUtil.list(dirUri);
       for (final f in items) {
-        if (!f.isDir && _isSafImageName(f.name)) {
+        if (!f.isDir && isImageFileName(f.name)) {
           images.add((uri: f.uri, name: f.name));
         }
       }
@@ -1189,7 +1379,7 @@ class AppState extends ChangeNotifier {
       for (final f in items) {
         if (f.isDir) {
           subDirs.add((uri: f.uri, name: f.name));
-        } else if (_isSafImageName(f.name)) {
+        } else if (isImageFileName(f.name)) {
           images.add((uri: f.uri, name: f.name));
         }
       }
@@ -1219,7 +1409,7 @@ class AppState extends ChangeNotifier {
         for (final f in inner) {
           if (f.isDir) {
             hasSub = true;
-          } else if (_isSafImageName(f.name)) {
+          } else if (isImageFileName(f.name)) {
             imgCount++;
             innerImgs.add((uri: f.uri, name: f.name));
           }
@@ -1254,7 +1444,7 @@ class AppState extends ChangeNotifier {
     }
     try {
       final items = await _safUtil.list(dirUri);
-      final imgs = items.where((f) => !f.isDir && _isSafImageName(f.name)).toList()
+      final imgs = items.where((f) => !f.isDir && isImageFileName(f.name)).toList()
         ..sort((a, b) => b.name.compareTo(a.name));
       for (final im in imgs) {
         out.add((uri: im.uri, name: im.name));
@@ -1353,7 +1543,6 @@ class AppState extends ChangeNotifier {
     if (root == null || !Platform.isAndroid) {
       return (copied: 0, failed: 0, deleted: 0);
     }
-    final bool rootIsDnai = (safRootName ?? '').trim().toLowerCase() == 'dnaiapp';
 
     Future<String?> ensureDir(List<String> names) async {
       try {
@@ -1371,8 +1560,8 @@ class AppState extends ChangeNotifier {
     Future<void> copyFile(File f, String dirUri) async {
       try {
         final name = f.path.split('/').last;
-        final ext = name.contains('.') ? name.split('.').last.toLowerCase() : 'png';
-        final mime = (ext == 'jpg' || ext == 'jpeg') ? 'image/jpeg' : 'image/png';
+        // ⚠️ 예전엔 jpg 가 아니면 모두 image/png 로 넘겨, WebP 파일이 '그림.webp.png' 가 됐다
+        final mime = mimeForExt(extOf(name));
         final bytes = await f.readAsBytes();
         await _safStream.writeFileBytes(dirUri, name, mime, bytes);
         copied++;
@@ -1380,7 +1569,10 @@ class AppState extends ChangeNotifier {
           try {
             await f.delete();
             deleted++;
-          } catch (_) {}
+          } catch (_) {
+            // 원본 삭제 실패는 넘어간다. 복사는 이미 끝났으므로 이전 자체는 성공이고,
+            // 여기서 멈추면 남은 파일들까지 못 옮긴다. 실패분은 앱 폴더에 그대로 남는다.
+          }
         }
       } catch (e) {
         failed++;
@@ -1399,18 +1591,18 @@ class AppState extends ChangeNotifier {
         if (entity is Directory) {
           // 세션 폴더 → DNaiApp/세션 (루트가 DNaiApp이면 세션만)
           final session = entity.path.split('/').last;
-          final dirUri = await ensureDir(rootIsDnai ? [session] : ['DNaiApp', session]);
+          final dirUri = await ensureDir(_appFolderPath([session]));
           if (dirUri == null) {
             continue;
           }
           for (final f in entity.listSync()) {
-            if (f is File && _isSafImageName(f.path.split('/').last)) {
+            if (f is File && isImageFileName(f.path.split('/').last)) {
               await copyFile(f, dirUri);
             }
           }
-        } else if (entity is File && _isSafImageName(entity.path.split('/').last)) {
+        } else if (entity is File && isImageFileName(entity.path.split('/').last)) {
           // 세션 없이 베이스 바로 아래 있는 이미지 → DNaiApp 루트
-          final dirUri = await ensureDir(rootIsDnai ? [] : ['DNaiApp']);
+          final dirUri = await ensureDir(_appFolderPath([]));
           if (dirUri != null) {
             await copyFile(entity, dirUri);
           }
@@ -1517,7 +1709,8 @@ class AppState extends ChangeNotifier {
       return null;
     }
     try {
-      final thumb = await compute(_makeSafThumbIsolate, bytes);
+      // 네이티브 WebP 가 먼저 (순수 Dart 로 PNG 를 푸는 것보다 훨씬 빠르다), 안 되면 옛 방식
+      final thumb = await makeGalleryThumb(bytes) ?? await compute(_makeSafThumbIsolate, bytes);
       if (thumb != null) {
         final f = thumbFile;
         if (f != null) {
@@ -1596,7 +1789,10 @@ class AppState extends ChangeNotifier {
       if (!await dir.exists()) {
         try {
           await dir.create(recursive: true);
-        } catch (_) {}
+        } catch (_) {
+          // 폴더를 못 만들어도 아래에서 경로는 그대로 돌려준다.
+          // 실제로 쓸 때 다시 실패하며, 그때 사용자에게 알린다.
+        }
       }
       return dir.path;
     }
@@ -1700,6 +1896,72 @@ class AppState extends ChangeNotifier {
   List<String> customResolutions = []; // 사용자 추가 해상도
 
   List<NaiCharacter> characters = [NaiCharacter()];
+
+  /// 캐릭터 목록이 '외부에서' 통째로 바뀔 때마다 1씩 오른다.
+  ///  (이미지에서 프롬프트 불러오기, 프리셋 적용, 삭제·순서 변경 등)
+  ///
+  ///  화면이 캐릭터별로 캐시해 둔 입력 컨트롤러는 이 값이 달라졌을 때
+  ///  '편집 중이라도' 내용을 다시 맞춰야 한다. 그러지 않으면 옛 텍스트를 든
+  ///  컨트롤러가 나중에 모델을 되돌려 버린다.
+  int charactersRevision = 0;
+
+  /// 캐릭터 목록을 외부에서 바꾼 뒤 호출한다.
+  /// 지금 고른 캐릭터. 목록이 비었으면 null.
+  ///
+  /// ⚠️ selectedCharIndex 를 그대로 믿고 characters[...] 를 읽으면 안 된다.
+  ///    프롬프트 불러오기로 캐릭터가 3개에서 1개로 줄어도 선택 번호는 2로
+  ///    남아 있을 수 있고, 그 상태로 읽으면 범위를 벗어난다.
+  ///    읽기 전에 이 getter 로 한 번 거르면 어느 화면에서든 안전하다.
+  NaiCharacter? get selectedCharacter {
+    if (characters.isEmpty) {
+      return null;
+    }
+    if (selectedCharIndex < 0 || selectedCharIndex >= characters.length) {
+      // 범위를 벗어나 있었다면 여기서 바로잡아 둔다 (다음 접근부터는 정상)
+      selectedCharIndex = characters.length - 1;
+    }
+    return characters[selectedCharIndex];
+  }
+
+  void markCharactersReplaced() {
+    charactersRevision++;
+    // 목록이 바뀌면 선택 번호부터 바로잡는다.
+    //  (여기서 한 번 맞춰 두면 화면들이 각자 검사하지 않아도 된다)
+    if (selectedCharIndex >= characters.length) {
+      selectedCharIndex = characters.isEmpty ? 0 : characters.length - 1;
+    }
+    _pruneCharacterUndo();
+    notifyListeners();
+  }
+
+  /// 지금 없는 캐릭터의 되돌리기 기록을 버린다.
+  ///
+  /// 캐릭터를 지우거나 프롬프트 불러오기로 통째로 교체하면 옛 기록이 남는다.
+  /// 그대로 두면 설정 파일만 계속 불어나고, 우연히 같은 uid 가 생기면
+  /// 엉뚱한 내용으로 되돌아갈 수도 있다.
+  ///  ⚠️ 목록을 바꾸는 곳마다 따로 지우게 하면 빠뜨리기 쉬우므로,
+  ///     '캐릭터가 바뀌었다'는 신호 한 곳에서만 처리한다.
+  void _pruneCharacterUndo() {
+    if (promptUndoHistory.isEmpty) {
+      return;
+    }
+    final alive = characters.map((c) => c.uid).toSet();
+    // 캐릭터 기록의 열쇠는 'char/<uid>/긍정' 형태다
+    final dead = promptUndoHistory.keys
+        .where((k) => k.startsWith('char/') && !alive.contains(k.split('/')[1]))
+        .toList();
+    if (dead.isEmpty) {
+      return;
+    }
+    for (final k in dead) {
+      promptUndoHistory.remove(k);
+    }
+    // ⚠️ 여기서 saveAllSettings 를 부르지 않는다.
+    //    이 함수를 부르는 쪽(삭제·교체·프리셋 적용)이 모두 곧바로 저장하므로,
+    //    여기서 또 부르면 설정 116개를 잇달아 두 번 쓰게 된다.
+    //    그 연쇄가 겹치면 화면이 멈춘 것처럼 보인다.
+  }
+
   int selectedCharIndex = 0;
   bool useCharacterPosition = true; // 캐릭터 배치 적용 ON/OFF (그리드 좌표 반영)
 
@@ -1856,8 +2118,15 @@ class AppState extends ChangeNotifier {
   double promptCharHandleTop = -1; // 프롬프트 탭 캐릭터 편집 손잡이 세로 위치 (-1이면 기본값)
   bool i2iHistoryDisabled = false; // ON이면 릴 끄고 i2i 결과를 메인 히스토리에 저장
   // i2i 히스토리 핸들이 켜져 있을 때의 인페인트 세부 옵션
-  bool inpaintNoAutoSwitch = false; // 인페인트 후 결과로 전환하지 않음 (기본 OFF = 전환함)
-  bool inpaintAutoClearMask = false; // 인페인트 시 마스킹 자동 해제 (기본 OFF=유지)
+  // 작업 결과를 곧바로 '작업 이미지'로 바꾸지 않음 (기본 OFF = 바꿈).
+  //  이름은 인페인트에서 시작했지만 모자이크·Director 결과에도 함께 적용된다.
+  //  설정 키를 바꾸면 기존 사용자 설정이 초기화되므로 이름은 그대로 둔다.
+  bool inpaintNoAutoSwitch = false;
+  bool inpaintAutoClearMask = false;
+
+  /// i2i 탭에 Director Tool 전환 버튼을 보여 줄지. 기본 ON.
+  ///  꺼도 이미 만들어 둔 결과나 설정은 그대로 남는다 — 버튼만 감춘다.
+  bool directorToolVisible = true;
   bool galleryModeEnabled = true; // 갤러리 모드(공용 폴더 탐색) 사용 여부 — 기본 ON
 
   // SAF (Storage Access Framework) — 사용자가 고른 저장 폴더의 트리 URI
@@ -1915,6 +2184,34 @@ class AppState extends ChangeNotifier {
   //     컨트롤러는 HistoryTab이 직접 갖고, 요청만 이 값으로 전달한다.
   int historyScrollToEndRevision = 0;
 
+  /// 와일드카드 탭 안에서 마지막으로 본 쪽 (0 와일드카드 / 1 프롬프트 사전).
+  ///  와일드카드 탭은 떠날 때마다 새로 만들어지므로 여기에 기억해 둔다.
+  ///  ※ 화면 상태일 뿐 '설정'이 아니라서 백업·복원(5곳 패턴)에는 넣지 않는다.
+  ///    앱을 다시 켜도 이어지도록 저장만 따로 한다.
+  int wildcardSubTab = 0;
+
+  void setWildcardSubTab(int index) {
+    if (wildcardSubTab == index) {
+      return;
+    }
+    wildcardSubTab = index;
+    // 화면을 다시 그릴 필요가 없어 notifyListeners 는 부르지 않는다
+    SharedPreferences.getInstance().then((p) => p.setInt('wildcardSubTab', index));
+  }
+
+  /// 히스토리 탭을 '떠날 때마다' 1씩 오른다.
+  ///  히스토리 탭은 이 값이 바뀐 것을 보고 갤러리 모드를 닫아 둔다.
+  ///  (갤러리는 가끔 들여다보는 곳이라, 다시 들어오면 목록부터 보이는 게 자연스럽다)
+  ///
+  ///  ⚠️ '들어올 때' 닫으면 탭이 보이고 나서 0.5초 뒤에 화면이 휙 바뀐다.
+  ///     떠날 때 닫아 두면 화면 밖에서 조용히 바뀌어 있어 다시 들어와도 티가 안 난다.
+  int historyGalleryResetRevision = 0;
+
+  void resetHistoryGalleryInBackground() {
+    historyGalleryResetRevision++;
+    notifyListeners();
+  }
+
   void requestHistoryScrollToEnd() {
     historyScrollToEndRevision++;
     notifyListeners();
@@ -1923,6 +2220,20 @@ class AppState extends ChangeNotifier {
   bool isHistoryGridView = false;
 
   int? requestedTabIndex;
+
+  /// 설정 탭 안에서 펼쳐 보여 줄 하위 탭 (0 일반 / 1 저장 / 2 API / 3 기타).
+  ///  설정 화면이 이 값을 보고 그 탭으로 옮긴 뒤 스스로 비운다.
+  int? requestedSettingsSubTab;
+
+  /// 설정 탭의 [subTab] 을 펼친 채로 설정 화면을 연다.
+  void navigateToSettings(int subTab) {
+    requestedSettingsSubTab = subTab;
+    navigateToTab(5); // 설정 탭
+  }
+
+  void consumeSettingsSubTabRequest() {
+    requestedSettingsSubTab = null;
+  }
 
   void navigateToTab(int index) {
     requestedTabIndex = index;
@@ -1963,7 +2274,13 @@ class AppState extends ChangeNotifier {
     try {
       final info = await PackageInfo.fromPlatform();
       currentVersion = info.version;
-    } catch (_) {}
+      // 업데이트가 끝나면(= 새 버전으로 켜지면) 받아 둔 설치 파일은 필요 없다.
+      //  설치가 취소됐을 때 다시 쓰려고 남겨 두는 것이므로, 설치가 됐으면 지운다.
+      unawaited(_cleanupOldApks());
+    } catch (_) {
+      // 버전을 못 읽으면 초기값("0.0.0")이 남는다.
+      // 업데이트 확인이 항상 '새 버전 있음'으로 보일 뿐, 앱 동작에는 지장이 없다.
+    }
 
     // 권한: 파일 접근은 앱 전용 디렉토리 사용 (권한 불필요)
     // 커스텀 경로 저장 시 실패하면 앱 전용 폴더로 자동 대체
@@ -2003,7 +2320,10 @@ class AppState extends ChangeNotifier {
         naiAccounts = list
             .map((e) => NaiAccount.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
-      } catch (_) {}
+      } catch (_) {
+        // 저장된 값이 깨졌거나 형식이 바뀐 경우. 기본값으로 시작한다.
+        // (여기서 멈추면 나머지 설정까지 못 읽어 앱이 초기 상태로 보인다)
+      }
     }
     activeAccountIndex = prefs.getInt('activeAccountIndex') ?? 0;
     _migrateSingleToken();
@@ -2067,7 +2387,7 @@ class AppState extends ChangeNotifier {
     removeClothingEvents = prefs.getBool('remove_clothing_events') ?? false;
     removeImpliedTags = prefs.getBool('remove_implied_tags') ?? false;
     charRetapToggle = prefs.getBool('charRetapToggle') ?? true;
-    saveFolderByDateOnly = prefs.getBool('saveFolderByDateOnly') ?? false;
+    saveFolderByDateOnly = prefs.getBool('saveFolderByDateOnly') ?? true;
     removeColors = prefs.getBool('remove_colors') ?? false;
     customRemoveController.text = prefs.getString('custom_remove') ?? "";
     isAutoSave = prefs.getBool('auto_save') ?? true;
@@ -2075,17 +2395,33 @@ class AppState extends ChangeNotifier {
     webpLossy = prefs.getBool('webpLossy') ?? false;
     isRandomLocked = prefs.getBool('random_lock') ?? false;
     isSeedLocked = prefs.getBool('seedLocked') ?? false;
+    directorTool = prefs.getString('directorTool') ?? 'bg-removal';
+    wildcardSubTab = (prefs.getInt('wildcardSubTab') ?? 0).clamp(0, 1);
+    expandNestedWeightsEnabled = prefs.getBool('expandNestedWeights') ?? true;
+    // 프롬프트 되돌리기 기록 (입력창 이름 → 최근 내용 목록)
+    final undoRaw = prefs.getString('promptUndoHistory');
+    if (undoRaw != null) {
+      try {
+        promptUndoHistory = (jsonDecode(undoRaw) as Map).map(
+          (k, v) => MapEntry(k as String, List<String>.from(v as List)),
+        );
+      } catch (_) {
+        // 형식이 깨졌으면 버린다. 되돌리기 기록은 없어도 앱 동작에 지장이 없다.
+      }
+    }
+    directorToolVisible = prefs.getBool('directorToolVisible') ?? true;
     infillStrength = prefs.getDouble('infillStrength') ?? 0.7;
     img2imgStrength = prefs.getDouble('img2imgStrength') ?? 0.5;
     img2imgNoise = prefs.getDouble('img2imgNoise') ?? 0.1;
     isVariancePlus = prefs.getBool('variancePlus') ?? false;
     horizontalSwipeEnabled = prefs.getBool('horizontalSwipeEnabled') ?? false;
-    i2iAltLayout = true; // [1차 UI 비활성] 저장값과 무관하게 항상 2차 배치
+    // 3.9.0 에서 i2i 탭의 예전 배치를 없애며 쓰지 않게 된 설정값을 치운다
+    unawaited(prefs.remove('i2iAltLayout'));
     promptAltLayout = prefs.getBool('promptAltLayout') ?? false;
-    promptNewLayout = prefs.getBool('promptNewLayout') ?? false;
+    promptNewLayout = prefs.getBool('promptNewLayout') ?? true;
     gelbooruSearchPages = (prefs.getInt('gelbooruSearchPages') ?? 40).clamp(40, 120);
     diversifySearchSort = prefs.getBool('diversifySearchSort') ?? false;
-    promptCharDrawerEnabled = prefs.getBool('promptCharDrawerEnabled') ?? false;
+    promptCharDrawerEnabled = prefs.getBool('promptCharDrawerEnabled') ?? true;
     weightRulesEnabled = prefs.getBool('weightRulesEnabled') ?? false;
     weightRulesController.text = prefs.getString('weightRules') ?? "";
     historySlideEnabled = prefs.getBool('historySlideEnabled') ?? false;
@@ -2165,7 +2501,10 @@ class AppState extends ChangeNotifier {
         modelSettingProfiles = decoded.map(
           (k, v) => MapEntry(k, Map<String, String>.from(v as Map)),
         );
-      } catch (_) {}
+      } catch (_) {
+        // 저장된 값이 깨졌거나 형식이 바뀐 경우. 기본값으로 시작한다.
+        // (여기서 멈추면 나머지 설정까지 못 읽어 앱이 초기 상태로 보인다)
+      }
     }
     // 제거된 테스트 모델이 저장돼 있으면 실제 v4.5로 교정 (드롭다운 크래시 방지)
     if (selectedModel == "nai-diffusion-4-5-full-test") {
@@ -2203,6 +2542,7 @@ class AppState extends ChangeNotifier {
 
     // 프리셋: 파일 우선. 없으면 예전 방식(prefs)에서 읽어 파일로 옮긴다.
     await _loadPresets(prefs);
+    await _loadPromptDict();
 
     gelbooruPrompts = prefs.getStringList('gelbooruPrompts') ?? [];
     gelbooruTotal = gelbooruPrompts.length;
@@ -2281,16 +2621,42 @@ class AppState extends ChangeNotifier {
   // ============================================================================
   // 설정 내보내기/가져오기
   // ============================================================================
-  Future<Map<String, dynamic>> exportSettings({bool includeHistory = true}) async {
+  /// [favoritesOnly] 면 히스토리 중 즐겨찾기한 것만 담는다.
+  ///  (업데이트 전 자동 백업용 — 전체 히스토리는 썸네일 만드는 데만 수 초가 걸린다.
+  ///   즐겨찾기는 '어떤 프롬프트였는지'를 남기려는 것이라 썸네일은 작아도 된다)
+  Future<Map<String, dynamic>> exportSettings({
+    bool includeHistory = true,
+    bool favoritesOnly = false,
+  }) async {
     // 히스토리 썸네일 생성 → 백그라운드 isolate로 처리
     List<Map<String, dynamic>> historyExport = [];
     if (includeHistory && historyImages.isNotEmpty) {
-      historyExport = await compute(_exportHistoryIsolate, {
-        'images': historyImages,
-        'metadata': historyMetadata.map((m) => m?.toJson()).toList(),
-        'favorites': historyFavorites,
-        'filePaths': historyFilePaths,
-      });
+      // 네 목록은 번호로 짝지어져 있으므로 같은 번호끼리 골라 담는다
+      final idx = [
+        for (int i = 0; i < historyImages.length; i++)
+          if (!favoritesOnly || (i < historyFavorites.length && historyFavorites[i])) i,
+      ];
+      if (idx.isNotEmpty) {
+        // 큰 원본(최근 이미지)은 히스토리 썸네일과 같은 규칙으로 먼저 줄인다.
+        //  isolate 안에서는 네이티브 인코더를 못 쓰므로 여기서 처리하고,
+        //  isolate 는 이미 작은 것을 그대로 담기만 한다. (실패한 것만 isolate 가 옛 방식으로 줄인다)
+        final images = [for (final i in idx) historyImages[i]];
+        for (int k = 0; k < images.length; k++) {
+          if (images[k].length >= kThumbBytesLimit) {
+            images[k] = await makeHistoryThumb(images[k]) ?? images[k];
+          }
+        }
+        historyExport = await compute(_exportHistoryIsolate, {
+          'images': images,
+          'metadata': [
+            for (final i in idx) i < historyMetadata.length ? historyMetadata[i]?.toJson() : null,
+          ],
+          'favorites': [for (final i in idx) i < historyFavorites.length && historyFavorites[i]],
+          'filePaths': [
+            for (final i in idx) i < historyFilePaths.length ? historyFilePaths[i] : null,
+          ],
+        });
+      }
     }
 
     return {
@@ -2340,12 +2706,18 @@ class AppState extends ChangeNotifier {
       'webpLossy': webpLossy,
       'random_lock': isRandomLocked,
       'seedLocked': isSeedLocked,
+      'directorTool': directorTool,
+      // 사전은 파일로 따로 저장하지만 백업에는 함께 담는다 (잃으면 복구 불가)
+      'promptDict': promptDict.map((e) => e.toJson()).toList(),
+      'promptDictCategories': promptDictCategories.map((c) => c.toJson()).toList(),
+      'expandNestedWeights': expandNestedWeightsEnabled,
+      'promptUndoHistory': promptUndoHistory,
+      'directorToolVisible': directorToolVisible,
       'infillStrength': infillStrength,
       'img2imgStrength': img2imgStrength,
       'img2imgNoise': img2imgNoise,
       'variancePlus': isVariancePlus,
       'horizontalSwipeEnabled': horizontalSwipeEnabled,
-      'i2iAltLayout': i2iAltLayout,
       'promptAltLayout': promptAltLayout,
       'promptNewLayout': promptNewLayout,
       'gelbooruSearchPages': gelbooruSearchPages,
@@ -2422,7 +2794,7 @@ class AppState extends ChangeNotifier {
     for (int i = 0; i < images.length; i++) {
       String base64Thumb;
       // 50KB 이하 = 이미 썸네일
-      if (images[i].length < 50000) {
+      if (images[i].length < kThumbBytesLimit) {
         base64Thumb = base64Encode(images[i]);
       } else {
         try {
@@ -2457,7 +2829,11 @@ class AppState extends ChangeNotifier {
               .map((e) => NaiAccount.fromJson(Map<String, dynamic>.from(e as Map)))
               .toList();
           activeAccountIndex = data['activeAccountIndex'] ?? 0;
-        } catch (_) {}
+        } catch (_) {
+          // 계정 목록이 깨져 있으면 통째로 건너뛴다.
+          // 백업 파일이 옛 버전이거나 손상된 경우인데, 여기서 멈추면
+          // 나머지 설정까지 복원되지 않는다. 계정은 다시 등록하면 된다.
+        }
       }
       _migrateSingleToken();
       apiTokenController.text = apiToken;
@@ -2491,7 +2867,10 @@ class AppState extends ChangeNotifier {
         modelSettingProfiles = (data['modelSettingProfiles'] as Map).map(
           (k, v) => MapEntry(k as String, Map<String, String>.from(v as Map)),
         );
-      } catch (_) {}
+      } catch (_) {
+        // 모델별 기억값은 편의 기능이라 형식이 안 맞으면 버린다.
+        // 비워 두면 다음에 모델을 바꿀 때 현재 값으로 다시 채워진다.
+      }
     }
     if (selectedModel == "nai-diffusion-4-5-full-test") {
       selectedModel = NaiModels.v45Full;
@@ -2511,24 +2890,50 @@ class AppState extends ChangeNotifier {
     removeClothingEvents = data['remove_clothing_events'] ?? false;
     removeImpliedTags = data['remove_implied_tags'] ?? false;
     charRetapToggle = data['charRetapToggle'] ?? true;
-    saveFolderByDateOnly = data['saveFolderByDateOnly'] ?? false;
+    saveFolderByDateOnly = data['saveFolderByDateOnly'] ?? true;
     removeColors = data['remove_colors'] ?? false;
     isAutoSave = data['auto_save'] ?? true;
     saveAsWebp = data['saveAsWebp'] ?? false;
     webpLossy = data['webpLossy'] ?? false;
     isRandomLocked = data['random_lock'] ?? false;
     isSeedLocked = data['seedLocked'] ?? false;
+    directorTool = data['directorTool'] ?? 'bg-removal';
+    if (data['promptDict'] != null) {
+      try {
+        promptDict = (data['promptDict'] as List).map((e) => PromptDictEntry.fromJson(e)).toList();
+        promptDictCategories = ((data['promptDictCategories'] as List?) ?? const [])
+            .map((e) => PromptDictCategory.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        _dropDanglingCategoryRefs();
+        _dictThumbCache.clear(); // 항목이 통째로 바뀌었으니 옛 미리보기 풀이는 버린다
+        unawaited(savePromptDict()); // 복원분을 파일에도 반영
+        // 복원으로 사라진 항목의 큰 이미지를 치운다 (남은 항목의 이미지는 그대로)
+        unawaited(_cleanupDictImages());
+      } catch (_) {
+        // 옛 백업이거나 형식이 다르면 사전만 건너뛴다
+      }
+    }
+    expandNestedWeightsEnabled = data['expandNestedWeights'] ?? true;
+    if (data['promptUndoHistory'] != null) {
+      try {
+        promptUndoHistory = (data['promptUndoHistory'] as Map).map(
+          (k, v) => MapEntry(k as String, List<String>.from(v as List)),
+        );
+      } catch (_) {
+        // 백업이 옛 형식이면 되돌리기 기록만 건너뛴다
+      }
+    }
+    directorToolVisible = data['directorToolVisible'] ?? true;
     infillStrength = (data['infillStrength'] ?? 0.7).toDouble();
     img2imgStrength = (data['img2imgStrength'] ?? 0.5).toDouble();
     img2imgNoise = (data['img2imgNoise'] ?? 0.1).toDouble();
     isVariancePlus = data['variancePlus'] ?? false;
     horizontalSwipeEnabled = data['horizontalSwipeEnabled'] ?? false;
-    i2iAltLayout = true; // [1차 UI 비활성] 백업을 불러와도 2차 배치 유지
     promptAltLayout = data['promptAltLayout'] ?? false;
-    promptNewLayout = data['promptNewLayout'] ?? false;
+    promptNewLayout = data['promptNewLayout'] ?? true;
     gelbooruSearchPages = ((data['gelbooruSearchPages'] ?? 40) as int).clamp(40, 120);
     diversifySearchSort = data['diversifySearchSort'] ?? false;
-    promptCharDrawerEnabled = data['promptCharDrawerEnabled'] ?? false;
+    promptCharDrawerEnabled = data['promptCharDrawerEnabled'] ?? true;
     weightRulesEnabled = data['weightRulesEnabled'] ?? false;
     weightRulesController.text = data['weightRules'] ?? "";
     historySlideEnabled = data['historySlideEnabled'] ?? false;
@@ -2687,6 +3092,8 @@ class AppState extends ChangeNotifier {
     // 히스토리 복원 (썸네일 base64 → Uint8List)
     if (data['history'] != null) {
       final historyData = data['history'] as List;
+      // 백업으로 히스토리를 통째로 바꾸는 것이므로 막아 둔 저장을 다시 푼다
+      _historyLoadFailed = false;
       historyImages.clear();
       historyMetadata.clear();
       historyFavorites.clear();
@@ -2778,12 +3185,15 @@ class AppState extends ChangeNotifier {
       await prefs.setBool('webpLossy', webpLossy);
       await prefs.setBool('random_lock', isRandomLocked);
       await prefs.setBool('seedLocked', isSeedLocked);
+      await prefs.setString('directorTool', directorTool);
+      await prefs.setBool('expandNestedWeights', expandNestedWeightsEnabled);
+      await prefs.setString('promptUndoHistory', jsonEncode(promptUndoHistory));
+      await prefs.setBool('directorToolVisible', directorToolVisible);
       await prefs.setDouble('infillStrength', infillStrength);
       await prefs.setDouble('img2imgStrength', img2imgStrength);
       await prefs.setDouble('img2imgNoise', img2imgNoise);
       await prefs.setBool('variancePlus', isVariancePlus);
       await prefs.setBool('horizontalSwipeEnabled', horizontalSwipeEnabled);
-      await prefs.setBool('i2iAltLayout', i2iAltLayout);
       await prefs.setBool('promptAltLayout', promptAltLayout);
       await prefs.setBool('promptNewLayout', promptNewLayout);
       await prefs.setInt('gelbooruSearchPages', gelbooruSearchPages);
@@ -2873,7 +3283,11 @@ class AppState extends ChangeNotifier {
       final data = await exportSettings(includeHistory: false);
       data['backup_time'] = DateTime.now().toIso8601String();
       await file.writeAsString(jsonEncode(data));
-    } catch (_) {}
+    } catch (_) {
+      // 자동 백업 실패는 알리지 않는다.
+      // 설정은 이미 SharedPreferences 에 저장돼 있고, 이건 그 사본일 뿐이다.
+      // 저장 공간이 부족할 때 매번 알림이 뜨면 오히려 방해가 된다.
+    }
   }
 
   Future<bool> tryRecoverFromBackup() async {
@@ -2910,6 +3324,70 @@ class AppState extends ChangeNotifier {
   //  NovelAI 웹이 자동으로 붙여 주는 태그를 우리도 똑같이 붙인다.
   //  · Quality Tags는 프롬프트 '뒤'에 (공식과 같은 위치)
   //  · UC 프리셋은 부정 프롬프트 '앞'에
+  /// 인원수(1girl · 2boys · 1other …)와 solo 를 프롬프트 '맨 앞'으로 옮긴다.
+  ///
+  /// NovelAI 는 인원수를 모든 프롬프트의 맨 앞에 두기를 권장한다.
+  /// 예전엔 그 자리를 지키려고 선행 프롬프트를 계속 고쳐야 했는데,
+  /// 이제 긍정·선행·후행 어디에 써도 보낼 때 알아서 맨 앞으로 모은다.
+  ///
+  ///  'masterpiece, smile, 1girl, solo'  →  '1girl, solo, masterpiece, smile'
+  ///
+  /// 건드리지 않는 경우:
+  ///  · 가중치 구간 안의 태그 (5.0::1girl, smile :: 처럼) — 빼 내면 가중치가 바뀐다
+  ///  · 괄호로 강조한 태그 ({1girl}) — 사용자가 일부러 꾸민 것
+  ///  · 'NovelAI 권장 순서 무시' 가 켜져 있을 때
+  ///
+  /// 같은 태그가 여러 번 나오면 하나만 남긴다.
+  /// 입력창 내용은 바꾸지 않는다 — 보내는 프롬프트에만 적용된다.
+  String _hoistCountTags(String text) {
+    if (ignoreRecommendedOrder || text.trim().isEmpty) {
+      return text;
+    }
+    final persons = <String>[];
+    final solos = <String>[];
+    final seen = <String>{};
+    final rest = <String>[];
+    // NovelAI 의 가중치는 '평면'이다: N:: 로 열리고 숫자 없는 :: 에서 전부 닫힌다
+    bool inWeight = false;
+    final marker = RegExp(r'(-?\d+(?:\.\d+)?)\s*::|::');
+
+    for (final piece in text.split(',')) {
+      final core = piece.trim();
+      final low = core.toLowerCase();
+      final plain = core.isNotEmpty && !piece.contains('::') && !core.contains(RegExp(r'[{}\[\]]'));
+      final isPerson = _personTag.hasMatch(low) || _multiplePersonTags.contains(low);
+      final isSolo = low == 'solo' || low == 'solo focus';
+
+      if (plain && !inWeight && (isPerson || isSolo)) {
+        if (seen.add(low)) {
+          (isPerson ? persons : solos).add(core);
+        }
+        // 원래 자리에서는 뺀다 (중복도 함께 사라진다)
+      } else {
+        rest.add(piece);
+      }
+      // 이 조각이 가중치 구간을 열거나 닫는지 반영
+      for (final m in marker.allMatches(piece)) {
+        inWeight = m.group(1) != null;
+      }
+    }
+
+    if (persons.isEmpty && solos.isEmpty) {
+      return text; // 옮길 것이 없으면 원문 그대로 (서식을 건드리지 않는다)
+    }
+    final head = [...persons, ...solos].join(', ');
+    // 앞에서 뺀 자리에 남은 쉼표·공백을 정리한다
+    final tail = rest.join(',').replaceFirst(RegExp(r'^[\s,]+'), '');
+    return tail.isEmpty ? head : '$head, $tail';
+  }
+
+  static final RegExp _personTag = RegExp(r'^\d+\+?\s?(girl|girls|boy|boys|other|others)$');
+  static const Set<String> _multiplePersonTags = {
+    'multiple girls',
+    'multiple boys',
+    'multiple others',
+  };
+
   String applyQualityTags(String prompt) {
     final opt = NaiPresets.find(NaiPresets.qualityFor(selectedModel), qualityTagsPreset);
     if (opt.tags.isEmpty) {
@@ -3974,6 +4452,70 @@ class AppState extends ChangeNotifier {
     return tags.toSet().join(', ');
   }
 
+  // 프롬프트 조각 하나. 사용자가 넣은 앞뒤 여백(줄바꿈·들여쓰기)을 따로 들고 다닌다.
+  //  조건부 규칙은 '내용'만 보고 판단·치환하고, 여백은 그대로 되돌려 준다.
+  //  이렇게 해야 규칙이 걸리든 안 걸리든 사용자의 줄 구성이 유지된다.
+  static List<({String lead, String core, String trail})> _splitPieces(String input) {
+    final out = <({String lead, String core, String trail})>[];
+    for (final raw in input.split(',')) {
+      final core = raw.trim();
+      if (core.isEmpty) {
+        continue; // 내용 없는 조각은 버린다
+      }
+      final start = raw.indexOf(core);
+      out.add((
+        lead: raw.substring(0, start),
+        core: core,
+        trail: raw.substring(start + core.length),
+      ));
+    }
+    return out;
+  }
+
+  // 조각들을 원래 여백 그대로 다시 잇는다. 내용이 빈 조각(규칙으로 지워진 것)은 뺀다.
+  static String _joinPieces(List<({String lead, String core, String trail})> pieces) {
+    final alive = pieces.where((p) => p.core.isNotEmpty).toList();
+    if (alive.isEmpty) {
+      return '';
+    }
+    final buf = <String>[];
+    for (int i = 0; i < alive.length; i++) {
+      final p = alive[i];
+      // 맨 앞 조각의 선행 여백만 없앤다 (프롬프트가 빈 줄로 시작하지 않게)
+      buf.add((i == 0 ? '' : p.lead) + p.core + p.trail);
+    }
+    return buf.join(',').trimRight();
+  }
+
+  // 규칙이 태그를 'A, B' 처럼 쉼표가 든 값으로 바꾸면, 그 조각은 더 이상
+  // 태그 하나가 아니다. 그대로 두면 다음 규칙이 'A' 를 찾지 못해 건너뛰게 된다.
+  //  예) (A&!B&...):A=A, B  와  (A&!E&...):A=A, E  를 함께 쓰면
+  //      앞 규칙이 'A' 를 'A, B' 로 바꿔 버려 뒤 규칙의 조건(A)이 거짓이 됐다.
+  // 그래서 치환 직후 쉼표가 생긴 조각을 다시 태그 단위로 쪼갠다.
+  static void _resplitPieces(List<({String lead, String core, String trail})> list) {
+    for (int i = 0; i < list.length; i++) {
+      if (!list[i].core.contains(',')) {
+        continue;
+      }
+      final p = list[i];
+      final parts = p.core.split(',').where((e) => e.trim().isNotEmpty).toList();
+      if (parts.length <= 1) {
+        continue;
+      }
+      final replacement = <({String lead, String core, String trail})>[];
+      for (int k = 0; k < parts.length; k++) {
+        replacement.add((
+          // 첫 조각만 원래 앞 여백을 물려받고, 나머지는 보통의 ", " 간격을 쓴다
+          lead: k == 0 ? p.lead : ' ',
+          core: parts[k].trim(),
+          trail: k == parts.length - 1 ? p.trail : '',
+        ));
+      }
+      list.replaceRange(i, i + 1, replacement);
+      i += replacement.length - 1;
+    }
+  }
+
   // 생성 모드용: 선행+긍정+후행을 합쳐 조건 검사 후, 영역 경계를 보존하며 적용
   // - 조건 판정: 전체 합친 태그 기준
   // - 교체(^, =): 세 영역 모두 제자리
@@ -3989,38 +4531,28 @@ class AppState extends ChangeNotifier {
       return (prefix: prefix, positive: positive, suffix: suffix);
     }
 
-    List<String> prefixTags = prefix
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    List<String> positiveTags = positive
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
-    List<String> suffixTags = suffix
-        .split(',')
-        .map((e) => e.trim())
-        .where((e) => e.isNotEmpty)
-        .toList();
+    // 여백을 보존한 채 조각으로 나눈다 (줄바꿈이 살아남는 이유)
+    final prefixTags = _splitPieces(prefix);
+    final positiveTags = _splitPieces(positive);
+    final suffixTags = _splitPieces(suffix);
 
     // prefix=로 추가될 태그(긍정 앞)와 suffix=로 추가될 태그(긍정 뒤)
-    List<String> positiveFront = [];
-    List<String> positiveBack = [];
+    //  새로 넣는 태그는 원래 서식이 없으므로 ", " 로 붙인다.
+    final positiveFront = <({String lead, String core, String trail})>[];
+    final positiveBack = <({String lead, String core, String trail})>[];
 
     for (final rule in _parseConditionalRules()) {
       String condStr = rule.cond;
       String actionStr = rule.action;
 
-      // 1. 조건 판정은 전체 합친 태그(선행+긍정+후행) 기준
+      // 1. 조건 판정은 전체 합친 태그(선행+긍정+후행) 기준 — 내용만 본다
       List<String> allTags = [
         ...prefixTags,
         ...positiveFront,
         ...positiveTags,
         ...positiveBack,
         ...suffixTags,
-      ];
+      ].map((p) => p.core).where((e) => e.isNotEmpty).toList();
       bool conditionMet = _evaluateCondition(condStr, allTags, rating);
       if (!conditionMet) {
         continue;
@@ -4029,14 +4561,14 @@ class AppState extends ChangeNotifier {
       if (actionStr.startsWith('prefix=')) {
         // 2. 긍정 프롬프트 맨 앞에 추가
         String b = actionStr.substring(7).trim();
-        if (!allTags.contains(b) && !positiveFront.contains(b)) {
-          positiveFront.add(b);
+        if (!allTags.contains(b) && !positiveFront.any((p) => p.core == b)) {
+          positiveFront.add((lead: ' ', core: b, trail: ''));
         }
       } else if (actionStr.startsWith('suffix=')) {
         // 3. 긍정 프롬프트 맨 끝에 추가
         String b = actionStr.substring(7).trim();
-        if (!allTags.contains(b) && !positiveBack.contains(b)) {
-          positiveBack.add(b);
+        if (!allTags.contains(b) && !positiveBack.any((p) => p.core == b)) {
+          positiveBack.add((lead: ' ', core: b, trail: ''));
         }
       } else if (actionStr.contains('^')) {
         int idx = actionStr.indexOf('^');
@@ -4046,8 +4578,12 @@ class AppState extends ChangeNotifier {
         String literalB = b.replaceAll('*', '');
         for (final list in [prefixTags, positiveTags, suffixTags]) {
           for (int i = 0; i < list.length; i++) {
-            if (_isMatch(list[i], a)) {
-              list[i] = literalA.isNotEmpty ? list[i].replaceAll(literalA, literalB) : b;
+            if (_isMatch(list[i].core, a)) {
+              // 여백(lead/trail)은 그대로 두고 내용만 바꾼다
+              final replaced = literalA.isNotEmpty
+                  ? list[i].core.replaceAll(literalA, literalB)
+                  : b;
+              list[i] = (lead: list[i].lead, core: replaced, trail: list[i].trail);
             }
           }
         }
@@ -4057,21 +4593,27 @@ class AppState extends ChangeNotifier {
         String b = actionStr.substring(eqIdx + 1).trim();
         for (final list in [prefixTags, positiveTags, suffixTags]) {
           for (int i = 0; i < list.length; i++) {
-            if (_isMatch(list[i], a)) {
-              list[i] = b;
+            if (_isMatch(list[i].core, a)) {
+              list[i] = (lead: list[i].lead, core: b, trail: list[i].trail);
             }
           }
         }
       }
+
+      // 이번 규칙이 'A, B' 같은 값을 넣었을 수 있다. 다음 규칙이 태그를 제대로
+      // 찾을 수 있도록 매 규칙이 끝날 때마다 조각을 다시 태그 단위로 맞춘다.
+      _resplitPieces(prefixTags);
+      _resplitPieces(positiveTags);
+      _resplitPieces(suffixTags);
     }
 
     // 긍정 = [prefix=추가분] + [원래 긍정] + [suffix=추가분]
-    List<String> finalPositive = [...positiveFront, ...positiveTags, ...positiveBack];
+    final finalPositive = [...positiveFront, ...positiveTags, ...positiveBack];
 
     return (
-      prefix: prefixTags.join(', '),
-      positive: finalPositive.join(', '),
-      suffix: suffixTags.join(', '),
+      prefix: _joinPieces(prefixTags),
+      positive: _joinPieces(finalPositive),
+      suffix: _joinPieces(suffixTags),
     );
   }
 
@@ -4118,6 +4660,7 @@ class AppState extends ChangeNotifier {
 
     // 표시용 구분: 선행/긍정/후행 사이에 빈 줄을 넣어 영역을 눈으로 구분한다.
     // (실제 전송은 handleGenerate가 따로 조립하므로 여기 줄바꿈은 화면에만 영향)
+    //  각 구획 '안'의 줄바꿈은 sanitizePrompt가 보존하므로 사용자가 짠 줄 구성이 그대로 보인다.
     const sep = "\n\n";
     final parts = [
       _service.sanitizePrompt(prefixText),
@@ -4212,6 +4755,26 @@ class AppState extends ChangeNotifier {
 
   /// 생성이 완전히 끝났는지 (후처리 포함). 버튼 비활성 판단에 쓴다.
   bool get isGenerateBusy => _isGenerateProcessing;
+
+  /// 잔액(Anlas)과 V5 시간당 한도를 갱신한다. 기다리지 않는다.
+  ///
+  /// ⚠️ 일부러 await하지 않는다.
+  ///    이 둘은 화면의 숫자만 바꾸는 조회라서 다음 생성과 경합하지 않는다.
+  ///    예전에는 생성 직후 이걸 await 하는 바람에 이미지가 이미 화면에 떴는데도
+  ///    네트워크 왕복(V5는 2회) 동안 생성 버튼이 계속 잠겨 있었다.
+  ///    조회가 끝나면 각 함수가 알아서 notifyListeners()로 숫자를 갱신한다.
+  void refreshBalanceInBackground() {
+    unawaited(() async {
+      try {
+        await fetchAnlas();
+        if (modelCapsFor(selectedModel).hasHourlyLimit) {
+          await fetchV5Limit();
+        }
+      } catch (e) {
+        debugPrint('잔액 조회 실패(무시): $e');
+      }
+    }());
+  }
 
   Future<void> handleGenerate(BuildContext context, VoidCallback onScrollToHistoryEnd) async {
     if (_isGenerateProcessing) {
@@ -4319,28 +4882,18 @@ class AppState extends ChangeNotifier {
     }
 
     // 3. 합치기 (와일드카드는 이미 개봉됨)
-    String combined = "$prefixText,$positiveText,$suffixText";
-
-    String finalPrompt = _service.sanitizePrompt(combined);
-    finalPrompt = _applyWeightRules(finalPrompt);
-    // 공식 프리셋(Quality Tags / UC)을 마지막에 적용
-    finalPrompt = applyQualityTags(finalPrompt);
-    String finalNegative = _service.sanitizePrompt(_processWildcards(negativeController.text));
-    finalNegative = applyUcPreset(finalNegative);
+    //  구획별로 정리한 뒤 ", " 로 잇는다. 구획 '안'의 줄바꿈은 그대로 살아남는다.
+    String finalPrompt = _service.joinPromptSections([prefixText, positiveText, suffixText]);
+    // 보내기 직전 마무리 — i2i 와 똑같은 단계를 거친다 (_finishPositive 참고)
+    finalPrompt = _finishPositive(finalPrompt);
+    final String finalNegative = _finishNegative(negativeController.text);
 
     // 모델 상한을 넘으면 서버가 거부한다 (V4.5=6, V5=32)
     List<Map<String, dynamic>> processedCharacters = characters
         .where((char) => char.isActive)
         .take(modelCapsFor(selectedModel).maxCharacters)
         .map((char) {
-          Map<String, dynamic> charJson = char.toJson();
-          if (charJson.containsKey('positive')) {
-            charJson['positive'] = _processWildcards(charJson['positive'].toString());
-          }
-          if (charJson.containsKey('negative')) {
-            charJson['negative'] = _processWildcards(charJson['negative'].toString());
-          }
-          return charJson;
+          return _characterForSend(char);
         })
         .toList();
 
@@ -4416,16 +4969,15 @@ class AppState extends ChangeNotifier {
         }
       }
 
-      await fetchAnlas();
-      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
-      if (modelCapsFor(selectedModel).hasHourlyLimit) {
-        await fetchV5Limit();
-      }
+      // 잔액·한도 갱신은 기다리지 않는다 (버튼이 그만큼 늦게 풀린다)
+      refreshBalanceInBackground();
     } finally {
       if (bgInitialized && Platform.isAndroid) {
         try {
           await FlutterBackground.disableBackgroundExecution();
-        } catch (_) {}
+        } catch (_) {
+          // 이미 해제됐거나 권한이 사라진 경우다. 생성은 끝난 뒤라 알릴 필요가 없다.
+        }
       }
       // 후처리까지 끝난 지금 잠금을 푼다 (성공/실패 무관)
       _isGenerateProcessing = false;
@@ -4559,23 +5111,13 @@ class AppState extends ChangeNotifier {
 
     if (!isApiConnected) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 2400),
-            content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
-          ),
-        );
+        showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
       }
       return;
     }
     if (targetI2iImage == null || targetI2iMetadata == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 2400),
-            content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
-          ),
-        );
+        showToast(context, "히스토리 탭에서 이미지를 먼저 선택해주세요.");
       }
       return;
     }
@@ -4598,14 +5140,14 @@ class AppState extends ChangeNotifier {
       final int height = targetI2iMetadata!.height;
 
       // i2i 탭의 프롬프트 입력란을 그대로 사용 (인페인트와 공유)
-      final String combined =
-          "${inpaintPrefixController.text},${inpaintPositiveController.text},${inpaintSuffixController.text}";
-      String finalPrompt = _service.sanitizePrompt(_processWildcards(combined));
-      finalPrompt = _applyWeightRules(finalPrompt);
-      finalPrompt = applyQualityTags(finalPrompt);
-      final String finalNegative = applyUcPreset(
-        _service.sanitizePrompt(_processWildcards(inpaintNegativeController.text)),
-      );
+      String finalPrompt = _service.joinPromptSections([
+        _processWildcards(inpaintPrefixController.text),
+        _processWildcards(inpaintPositiveController.text),
+        _processWildcards(inpaintSuffixController.text),
+      ]);
+      // 보내기 직전 마무리 — 생성과 똑같은 단계를 거친다 (_finishPositive 참고)
+      finalPrompt = _finishPositive(finalPrompt);
+      final String finalNegative = _finishNegative(inpaintNegativeController.text);
 
       bgInitialized = await _enableBackgroundExecution();
 
@@ -4616,14 +5158,7 @@ class AppState extends ChangeNotifier {
                 // 모델 상한을 넘으면 서버가 거부한다 (V4.5=6, V5=32)
                 .take(modelCapsFor(selectedModel).maxCharacters)
                 .map((char) {
-                  final Map<String, dynamic> charJson = char.toJson();
-                  if (charJson.containsKey('positive')) {
-                    charJson['positive'] = _processWildcards(charJson['positive'].toString());
-                  }
-                  if (charJson.containsKey('negative')) {
-                    charJson['negative'] = _processWildcards(charJson['negative'].toString());
-                  }
-                  return charJson;
+                  return _characterForSend(char);
                 })
                 .toList()
           : <Map<String, dynamic>>[];
@@ -4711,11 +5246,8 @@ class AppState extends ChangeNotifier {
         addI2iResult(result.image!, parsedMeta, source: resultSource);
       }
 
-      await fetchAnlas();
-      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
-      if (modelCapsFor(selectedModel).hasHourlyLimit) {
-        await fetchV5Limit();
-      }
+      // 잔액·한도 갱신은 기다리지 않는다 (버튼이 그만큼 늦게 풀린다)
+      refreshBalanceInBackground();
     } catch (e) {
       debugPrint('$action 파이프라인 에러: $e');
     } finally {
@@ -4762,107 +5294,33 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
-        ),
-      );
+      showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
       return;
     }
-    if (targetI2iImage == null || targetI2iMetadata == null) {
+    // 새 업스케일러는 크기 정보를 받지 않아, 메타데이터가 없는 그림(밖에서 가져온 그림)도 된다
+    if (targetI2iImage == null) {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("히스토리 탭에서 이미지를 먼저 선택해주세요."),
-        ),
-      );
+      showToast(context, "히스토리 탭에서 이미지를 먼저 선택해주세요.");
       return;
     }
 
-    int width = targetI2iMetadata!.width;
-    int height = targetI2iMetadata!.height;
+    // ⚠️ 예전엔 여기서 '1024×1024 이하만' 을 막았다. 그건 옛 업스케일러의 제한이었고,
+    //    지금의 V5 업스케일러는 공개된 크기 제한이 없다(NovelAI 웹도 막지 않는다).
+    //    앱이 옛 기준으로 막으면 오히려 쓸 수 있는 그림을 못 쓰게 되므로,
+    //    크기는 서버가 판단하게 두고 거절되면 그 메시지를 그대로 보여 준다.
 
-    // 업스케일 API 입력 크기 제한 (모델 캡에서 조회, 0이면 제한 없음)
-    final int upscaleCap = modelCapsFor(selectedModel).maxUpscalePixels;
-    if (upscaleCap > 0 && (width * height) > upscaleCap) {
-      if (!context.mounted) {
-        return;
-      }
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: AppColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.amber),
-              SizedBox(width: 8),
-              Text(
-                "해상도 제한 초과",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          content: Text(
-            "업스케일 API는 ${_formatPixels(upscaleCap)} 이하인 원본 이미지만 처리할 수 있습니다."
-            "\n\n현재 해상도: ${width}x$height (${_formatPixels(width * height)})",
-            style: const TextStyle(color: Colors.white70),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text(
-                "확인",
-                style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    bool proceed =
-        await showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: AppColors.surface,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: const Row(
-              children: [
-                Icon(Icons.high_quality, color: Colors.amber),
-                SizedBox(width: 8),
-                Text(
-                  "업스케일 진행",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ],
-            ),
-            content: const Text(
-              "업스케일(화질 향상)을 진행하면 유료 재화인 Anlas가 소모됩니다.\n(소모되는 비용은 이미지 크기에 따라 달라집니다.)\n\n계속 진행하시겠습니까?",
-              style: TextStyle(color: Colors.white70),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text("취소", style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.amber[700]),
-                child: const Text(
-                  "업스케일 시작",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          ),
-        ) ??
-        false;
+    final bool proceed = await showConfirmDialog(
+      context,
+      title: "업스케일 진행",
+      message:
+          "업스케일(${NovelAiService.upscaleScale}배)을 진행합니다.\n${anlasText(anlasFor(AnlasJob.upscale))}\n\n계속 진행하시겠습니까?",
+      confirmLabel: "업스케일 시작",
+      icon: Icons.high_quality,
+      iconColor: Colors.amber,
+      confirmColor: Colors.amber[700],
+    );
 
     if (!proceed) {
       return;
@@ -4877,12 +5335,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final result = await _service.upscaleImage(
-        image: targetI2iImage!,
-        width: width,
-        height: height,
-        token: apiToken,
-      );
+      final result = await _service.upscaleImage(image: targetI2iImage!, token: apiToken);
 
       isUpscaleLoading = false;
 
@@ -4918,6 +5371,9 @@ class AppState extends ChangeNotifier {
           ),
         );
       } else if (result.image != null) {
+        // ⚠️ 배율을 가정하지 않고 결과 그림의 실제 크기를 읽는다.
+        //    예전엔 'width * 4' 로 적어서, 배율이 2배로 바뀐 뒤엔 틀린 크기가 기록될 뻔했다.
+        final (outW, outH) = await readImageSize(result.image!) ?? (0, 0);
         NaiMetadata? parsedMeta;
         if (targetI2iMetadata != null) {
           parsedMeta = NaiMetadata(
@@ -4925,8 +5381,8 @@ class AppState extends ChangeNotifier {
             negative: targetI2iMetadata!.negative,
             characterPrompts: targetI2iMetadata!.characterPrompts,
             characterUndesiredContents: targetI2iMetadata!.characterUndesiredContents,
-            width: width * 4,
-            height: height * 4,
+            width: outW > 0 ? outW : targetI2iMetadata!.width * NovelAiService.upscaleScale,
+            height: outH > 0 ? outH : targetI2iMetadata!.height * NovelAiService.upscaleScale,
             seed: targetI2iMetadata!.seed,
             steps: targetI2iMetadata!.steps,
             sampler: targetI2iMetadata!.sampler,
@@ -4944,13 +5400,254 @@ class AppState extends ChangeNotifier {
         addI2iResult(result.image!, parsedMeta, source: 'upscale');
       }
 
-      await fetchAnlas();
-      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
-      if (modelCapsFor(selectedModel).hasHourlyLimit) {
-        await fetchV5Limit();
-      }
+      // 잔액·한도 갱신은 기다리지 않는다 (버튼이 그만큼 늦게 풀린다)
+      refreshBalanceInBackground();
     } finally {
       isUpscaleLoading = false;
+      notifyListeners();
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // Director Tools
+  // ══════════════════════════════════════════════════════════════
+
+  // ══════════════════════════════════════════════════════════════
+  // 프롬프트 되돌리기 기록
+  // ══════════════════════════════════════════════════════════════
+  //
+  // 확대 입력창에서 내용을 통째로 갈아엎기 전의 상태를 입력창별로 남긴다.
+  //  예: 그림체 프롬프트를 써 둔 채 "이 작가는 어떻게 그려질까?" 하고
+  //      전부 지운 뒤 하나만 시험해 보는 흐름. 예전에는 원래 내용을 직접
+  //      복사해 두거나 프리셋에 저장해야 했다.
+  //
+  // key 는 입력창 이름(title). 최신 기록이 리스트 앞에 온다.
+  Map<String, List<String>> promptUndoHistory = {};
+
+  /// 한 입력창이 기억하는 최대 개수.
+  static const int kPromptUndoLimit = 3;
+
+  /// [title] 입력창의 현재 내용을 되돌리기 기록에 넣는다.
+  ///
+  /// 내용이 통째로 바뀌기 '직전'에 부른다. 타이핑마다 부르면 안 된다.
+  ///  · 빈 내용은 되돌릴 가치가 없어 넣지 않는다
+  ///  · 맨 앞 기록과 같으면 중복이므로 넣지 않는다
+  void pushPromptUndo(String title, String text) {
+    final t = text.trim();
+    if (t.isEmpty) {
+      return;
+    }
+    final list = promptUndoHistory[title] ?? <String>[];
+    if (list.isNotEmpty && list.first == text) {
+      return;
+    }
+    list.insert(0, text);
+    while (list.length > kPromptUndoLimit) {
+      list.removeLast();
+    }
+    promptUndoHistory[title] = list;
+    saveAllSettings();
+  }
+
+  /// [title] 입력창의 되돌리기 기록. 최신이 앞.
+  List<String> promptUndoList(String title) => promptUndoHistory[title] ?? const [];
+
+  /// 되돌리기 기록을 비운다.
+  void clearPromptUndo(String title) {
+    promptUndoHistory.remove(title);
+    saveAllSettings();
+  }
+
+  /// 중첩 가중치를 보내기 직전에 펼칠지. 기본 OFF.
+  ///
+  /// NovelAI 는 숫자 없는 `::` 를 만나면 앞의 가중치를 전부 끝내 버린다.
+  /// 켜 두면 `5.0::A, 1.5::B ::, C ::,` 를
+  /// `5.0::A, 1.5::B ::, 5.0::C ::,` 로 바꿔 보낸다.
+  ///
+  /// 입력한 프롬프트 자체는 건드리지 않는다 — 전송분에만 적용된다.
+  bool expandNestedWeightsEnabled = true;
+
+  /// 캐릭터 하나를 '보낼 모양'으로 만든다 (생성·i2i 공통).
+  ///  ⚠️ 예전엔 두 경로에 똑같은 17줄이 따로 있어서, 한쪽만 고치면 동작이 갈렸다.
+  ///     (임시 프롬프트·중첩 가중치를 넣을 때 실제로 i2i 쪽을 빠뜨린 적이 있다)
+  Map<String, dynamic> _characterForSend(NaiCharacter char) {
+    final Map<String, dynamic> charJson = char.toJson();
+    // 임시 프롬프트는 원본 뒤에 붙인다. char.positive 자체는 건드리지 않는다
+    //  — 화면의 원본은 그대로 두고 '이번 전송분'에만 더하는 기능이다.
+    if (char.tempActive) {
+      charJson['positive'] = [
+        char.positive.trim(),
+        char.tempPositive.trim(),
+      ].where((e) => e.isNotEmpty).join(', ');
+    }
+    if (charJson.containsKey('positive')) {
+      charJson['positive'] = _maybeExpandWeights(
+        tidyWeightMarkers(_processWildcards(charJson['positive'].toString())),
+      );
+    }
+    if (charJson.containsKey('negative')) {
+      charJson['negative'] = _maybeExpandWeights(
+        tidyWeightMarkers(_processWildcards(charJson['negative'].toString())),
+      );
+    }
+    return charJson;
+  }
+
+  /// 합친 긍정 프롬프트를 보내기 직전 모양으로 마무리한다 (생성·i2i 공통).
+  ///  순서가 중요하다: 가중치 쉼표 정리 → 인원수를 앞으로 → 가중치 규칙 → 품질 태그 → 중첩 가중치 펼치기
+  ///  (쉼표 정리가 맨 먼저여야 섹션 경계에 걸친 가중치를 뒤 단계들이 제대로 알아본다)
+  String _finishPositive(String joined) => _maybeExpandWeights(
+    applyQualityTags(_applyWeightRules(_hoistCountTags(tidyWeightMarkers(joined)))),
+  );
+
+  /// 부정 프롬프트를 보내기 직전 모양으로 (생성·i2i 공통).
+  String _finishNegative(String raw) => _maybeExpandWeights(
+    applyUcPreset(tidyWeightMarkers(_service.sanitizePrompt(_processWildcards(raw)))),
+  );
+
+  /// 설정이 켜져 있을 때만 중첩 가중치를 펼친다.
+  ///  전송 직전에 한 번만 통과시키면 되므로 조립이 끝난 문자열에 적용한다.
+  String _maybeExpandWeights(String text) =>
+      expandNestedWeightsEnabled ? expandNestedWeights(text) : text;
+
+  /// 지금 고른 Director 도구 (req_type). 5곳 패턴으로 저장된다.
+  String directorTool = 'bg-removal';
+
+  /// 도구가 도는 중인지. 실행 버튼을 잠그는 데 쓴다.
+  bool isDirectorLoading = false;
+
+  /// 지금 고른 이미지 기준으로 Director 도구의 예상 Anlas 를 돌려준다.
+  ///  0 이면 소모 없음(Opus 무료 범위), -1 이면 계산 불가(너무 큼).
+  // 메타데이터가 없는 그림의 크기를 한 번만 재 두는 곳 (그림이 바뀌면 다시 잰다)
+  Uint8List? _sizedImage;
+  (int, int) _sizedImageWH = (0, 0);
+
+  int directorCostFor(String reqType) {
+    int w = targetI2iMetadata?.width ?? 0;
+    int h = targetI2iMetadata?.height ?? 0;
+    if ((w <= 0 || h <= 0) && targetI2iImage != null) {
+      // ⚠️ 이 함수는 Director 칩을 그릴 때마다(칩 4개 × 2번) 불린다.
+      //    메타데이터 없는 그림(밖에서 가져온 그림)이면 예전엔 그때마다
+      //    그림을 통째로 풀어 리빌드 한 번에 8번씩 디코딩했다.
+      //    같은 그림이면 처음 잰 크기를 그대로 쓴다.
+      if (!identical(_sizedImage, targetI2iImage)) {
+        final decoded = img.decodeImage(targetI2iImage!);
+        _sizedImage = targetI2iImage;
+        _sizedImageWH = decoded == null ? (0, 0) : (decoded.width, decoded.height);
+      }
+      (w, h) = _sizedImageWH;
+    }
+    if (w <= 0 || h <= 0) {
+      return 0; // 크기를 모르면 경고를 띄우지 않는다 (실행 단계에서 다시 검사한다)
+    }
+    return directorToolCost(reqType: reqType, width: w, height: h, tier: subscriptionTier);
+  }
+
+  void setDirectorTool(String reqType) {
+    directorTool = reqType;
+    saveAllSettings();
+    notifyListeners();
+  }
+
+  /// 선택한 이미지에 Director 도구를 적용한다.
+  ///
+  /// 결과는 i2i 결과 릴에 쌓인다. 배경 제거는 3장이 한 번에 들어간다.
+  Future<void> handleDirectorTool(BuildContext context) async {
+    if (isDirectorLoading) {
+      return; // 연타 방지 — 느린 도구라 특히 중요하다
+    }
+    if (apiToken.isEmpty) {
+      showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
+      return;
+    }
+    if (targetI2iImage == null) {
+      showToast(context, "히스토리 탭에서 이미지를 먼저 선택해주세요.");
+      return;
+    }
+
+    // 크기는 메타데이터가 있으면 그걸 쓰고, 없으면 이미지에서 직접 읽는다.
+    int width = targetI2iMetadata?.width ?? 0;
+    int height = targetI2iMetadata?.height ?? 0;
+    if (width <= 0 || height <= 0) {
+      final decoded = img.decodeImage(targetI2iImage!);
+      if (decoded == null) {
+        showToast(context, "이미지 크기를 읽지 못했습니다.");
+        return;
+      }
+      width = decoded.width;
+      height = decoded.height;
+    }
+
+    final tool = directorToolFor(directorTool);
+    isDirectorLoading = true;
+    lastErrorMessage = null;
+    notifyListeners();
+
+    try {
+      final result = await _service.runDirectorTool(
+        image: targetI2iImage!,
+        width: width,
+        height: height,
+        token: apiToken,
+        reqType: tool.reqType,
+      );
+
+      if (result.error != null) {
+        lastErrorMessage = result.error;
+        if (context.mounted) {
+          showToast(context, result.error!, length: ToastLength.long);
+        }
+        return;
+      }
+
+      if (result.images.isEmpty) {
+        if (context.mounted) {
+          showToast(context, "결과를 받지 못했습니다.");
+        }
+        return;
+      }
+
+      // ⚠️ 순서 중요: 이미지 전환을 먼저 정한 뒤 addI2iResult 를 호출한다.
+      //    addI2iResult 가 notifyListeners() 를 부르므로,
+      //    그 전에 상태가 정해져 있어야 i2i_tab build 가 올바르게 판단한다.
+      //    (인페인트 파이프라인과 같은 규칙)
+      if (!inpaintNoAutoSwitch) {
+        // 결과를 작업 이미지로 자동 전환.
+        //  배경 제거는 3장이지만 첫 장(Masked)으로 바꾼다.
+        //  나머지는 릴에 남아 있으니 눌러서 바꿔 볼 수 있다.
+        final first = result.images.first;
+        final firstMeta = extractNovelAIMetadata(first);
+        i2iMaskActionOnChange = I2iMaskAction.followInpaintSetting;
+        targetI2iImage = first;
+        targetI2iMetadata = firstMeta;
+        recordI2iView(first, firstMeta); // 본 이미지 기록 추가
+      } else if (inpaintAutoClearMask) {
+        // 전환은 안 하지만 마스크 자동 해제는 ON → 마스크만 즉시 해제
+        i2iMaskClearRevision++;
+      }
+
+      // 결과를 릴에 넣는다. 배경 제거는 3장이라 배지에 종류를 붙여 구분한다.
+      for (int i = 0; i < result.images.length; i++) {
+        final bytes = result.images[i];
+        final String badge = (tool.multiResult && i < kBgRemovalVariants.length)
+            ? '${tool.badge}-${kBgRemovalVariants[i][0]}' // BG-M / BG-G / BG-B
+            : tool.badge;
+        addI2iResult(bytes, extractNovelAIMetadata(bytes), source: badge);
+      }
+
+      if (context.mounted) {
+        showToast(
+          context,
+          result.images.length > 1
+              ? "${tool.label} 완료 — 결과 ${result.images.length}장"
+              : "${tool.label} 완료",
+        );
+      }
+
+      // 도구도 Anlas 를 쓰므로 잔액을 갱신한다 (기다리지는 않는다)
+      refreshBalanceInBackground();
+    } finally {
+      isDirectorLoading = false;
       notifyListeners();
     }
   }
@@ -4972,12 +5669,7 @@ class AppState extends ChangeNotifier {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("이미지를 불러오는 데 실패했습니다."),
-        ),
-      );
+      showToast(context, "이미지를 불러오는 데 실패했습니다.");
     }
   }
 
@@ -5045,7 +5737,7 @@ class AppState extends ChangeNotifier {
     List<int> toConvert = [];
     List<Uint8List> toConvertData = [];
     for (int i = 0; i < cutoff; i++) {
-      if (historyImages[i].length < 50000) {
+      if (historyImages[i].length < kThumbBytesLimit) {
         continue;
       }
       toConvert.add(i);
@@ -5055,10 +5747,39 @@ class AppState extends ChangeNotifier {
       return;
     }
 
-    // 백그라운드 isolate에서 변환
-    final thumbnails = await compute(_trimHistoryIsolate, toConvertData);
+    // 네이티브 WebP 로 줄인다 (긴 변 768 — 예전 200px 보다 크게 열어도 알아볼 수 있다).
+    //  인코더가 안 되는 기기면 옛 방식(isolate 에서 200px JPEG)으로 대신한다.
+    final thumbnails = List<Uint8List>.from(toConvertData);
+    final fallbackIdx = <int>[];
+    for (int k = 0; k < toConvertData.length; k++) {
+      final t = await makeHistoryThumb(toConvertData[k]);
+      if (t != null) {
+        thumbnails[k] = t;
+      } else {
+        fallbackIdx.add(k);
+      }
+    }
+    if (fallbackIdx.isNotEmpty) {
+      final old = await compute(_trimHistoryIsolate, [
+        for (final k in fallbackIdx) toConvertData[k],
+      ]);
+      for (int n = 0; n < fallbackIdx.length; n++) {
+        thumbnails[fallbackIdx[n]] = old[n];
+      }
+    }
+
+    // 변환하는 동안 사용자가 히스토리를 지웠을 수 있다.
+    //  인덱스만 믿으면 엉뚱한 이미지를 썸네일로 덮어쓰게 되므로,
+    //  '그 자리에 있던 바로 그 객체'가 아직 있는지 확인하고 바꾼다.
     for (int j = 0; j < toConvert.length; j++) {
-      historyImages[toConvert[j]] = thumbnails[j];
+      final idx = toConvert[j];
+      if (idx >= historyImages.length) {
+        continue; // 목록이 짧아졌다
+      }
+      if (!identical(historyImages[idx], toConvertData[j])) {
+        continue; // 다른 이미지가 그 자리를 차지했다
+      }
+      historyImages[idx] = thumbnails[j];
     }
   }
 
@@ -5072,7 +5793,10 @@ class AppState extends ChangeNotifier {
           results.add(Uint8List.fromList(img.encodeJpg(thumb, quality: 70)));
           continue;
         }
-      } catch (_) {}
+      } catch (_) {
+        // 썸네일 변환 실패 시 원본을 그대로 쓴다 (아래 add).
+        // 메모리를 줄이지 못할 뿐 이미지는 계속 보인다.
+      }
       results.add(bytes);
     }
     return results;
@@ -5107,7 +5831,9 @@ class AppState extends ChangeNotifier {
     selectedHistoryIndex = historyImages.length - 1;
     scrollToThumbnailEnd = true;
     saveHistoryToLocal();
-    await _trimHistoryMemory();
+    // 오래된 이미지를 썸네일로 줄이는 작업. 화면에 이미 뜬 이미지와는 무관하므로
+    // 기다리지 않는다 (기다리면 그만큼 생성 버튼이 늦게 풀린다).
+    unawaited(_trimHistoryMemory());
 
     return savedPath;
   }
@@ -5281,14 +6007,9 @@ class AppState extends ChangeNotifier {
       // 어디에 무슨 이름으로 저장됐는지 알려준다 (릴에서 꾹 누르지 않고 저장했을 때 특히 유용)
       final name = path.split(RegExp(r'[/\\]')).last;
       final where = safRootUri != null ? (safRootName ?? '저장 폴더') : 'DNaiApp';
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2600),
-          content: Text("💾 $where 에 저장했어요\n$name"),
-        ),
-      );
+      showToast(context, "💾 $where 에 저장했어요\n$name");
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("저장에 실패했습니다.")));
+      showToast(context, "저장에 실패했습니다.");
     }
   }
 
@@ -5323,7 +6044,10 @@ class AppState extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble('promptCharHandleTop', value);
-    } catch (_) {}
+    } catch (_) {
+      // 손잡이 위치는 화면 편의값이라 저장에 실패해도 무시한다.
+      // 이번 실행 중에는 promptCharHandleTop 값이 그대로 쓰인다.
+    }
   }
 
   Future<void> saveI2iHandleBottom(double value) async {
@@ -5337,6 +6061,8 @@ class AppState extends ChangeNotifier {
   }
 
   void deleteAllHistory() {
+    // 사용자가 일부러 전부 지웠으니 (불러오기 실패로 막아 둔) 저장을 다시 푼다
+    _historyLoadFailed = false;
     historyImages.clear();
     historyMetadata.clear();
     historyFavorites.clear();
@@ -5490,6 +6216,297 @@ class AppState extends ChangeNotifier {
   Future<File> _presetsFile() async {
     final appDir = await getApplicationDocumentsDirectory();
     return File('${appDir.path}/presets.json');
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // 프롬프트 사전
+  // ══════════════════════════════════════════════════════════════
+  //  미리보기 그림을 품고 있어 SharedPreferences 가 아니라 파일에 둔다.
+  //  (프리셋과 같은 이유 — prefs 는 앱 시작 때 통째로 메모리에 올라온다)
+  List<PromptDictEntry> promptDict = [];
+  List<PromptDictCategory> promptDictCategories = [];
+
+  /// 확대 입력창의 사전 선택 창에서 마지막으로 고른 분류 (앱을 켜 있는 동안만 기억).
+  ///  캐릭터 입력창에서 '캐릭터' 분류를 골라 두면 다음에 열 때도 그대로 보인다.
+  String dictPickerFilter = kDictFilterAll;
+
+  Future<File> _promptDictFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/prompt_dict.json');
+  }
+
+  Future<void> savePromptDict() async {
+    try {
+      final f = await _promptDictFile();
+      // 반쯤 쓰다 꺼져도 옛 내용이 남도록 통째로 바꾼다
+      await _writeAtomic(
+        f,
+        jsonEncode({
+          'categories': promptDictCategories.map((c) => c.toJson()).toList(),
+          'entries': promptDict.map((e) => e.toJson()).toList(),
+        }),
+      );
+    } catch (e) {
+      debugPrint('프롬프트 사전 저장 실패: $e');
+    }
+  }
+
+  Future<void> _loadPromptDict() async {
+    try {
+      final f = await _promptDictFile();
+      if (!await f.exists()) {
+        return;
+      }
+      final raw = jsonDecode(await f.readAsString());
+      // 옛 형식: 항목 목록만 있었다 (분류 기능 이전)
+      if (raw is List) {
+        promptDict = raw.map((e) => PromptDictEntry.fromJson(e)).toList();
+      } else if (raw is Map) {
+        promptDictCategories = ((raw['categories'] as List?) ?? const [])
+            .map((e) => PromptDictCategory.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        promptDict = ((raw['entries'] as List?) ?? const [])
+            .map((e) => PromptDictEntry.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      }
+      _dropDanglingCategoryRefs();
+      // 불러오기에 성공했을 때만 주인 없는 큰 이미지를 치운다
+      unawaited(_cleanupDictImages());
+    } catch (e) {
+      debugPrint('프롬프트 사전 불러오기 실패: $e');
+      // ⚠️ 빈 목록으로 시작한 채 저장하면 깨진(하지만 살릴 수도 있는) 파일을 덮어쓴다.
+      //    그래서 깨진 파일은 이름을 바꿔 따로 보관하고 새로 시작한다.
+      //    큰 이미지도 이번엔 치우지 않는다 (나중에 살릴 때 필요할 수 있다).
+      try {
+        final f = await _promptDictFile();
+        if (await f.exists()) {
+          await f.rename('${f.path}.broken_${DateTime.now().millisecondsSinceEpoch}');
+        }
+      } catch (_) {
+        // 이름조차 못 바꾸면 그대로 둔다 — 앱 실행을 막지 않는다
+      }
+      promptDict = [];
+      promptDictCategories = [];
+    }
+  }
+
+  // ── 사전 큰 이미지 ──────────────────────────────────────────────
+  //  목록용 작은 썸네일은 prompt_dict.json 안에(base64), 크게 볼 이미지는 파일로 따로 둔다.
+  //  ⚠️ 큰 이미지(장당 40~65KB)까지 JSON 에 넣으면 앱을 켤 때마다 수 MB 를 통째로 읽고,
+  //     항목 하나 고칠 때마다 통째로 다시 쓰게 된다.
+  //  파일 이름은 항목 id — 목록 순서와 무관해 삭제·정렬에 안전하다.
+  //  백업에는 넣지 않는다 (업데이트 전 자동 백업을 가볍게). 복원하면 작은 썸네일만 돌아온다.
+
+  Future<Directory> _dictImageDir() async {
+    final base = await getApplicationDocumentsDirectory();
+    final d = Directory('${base.path}/prompt_dict_images');
+    if (!await d.exists()) {
+      await d.create(recursive: true);
+    }
+    return d;
+  }
+
+  Future<File> _dictImageFile(String id) async => File('${(await _dictImageDir()).path}/$id.webp');
+
+  /// 큰 이미지를 저장한다 (임시 파일에 쓴 뒤 이름만 바꿔, 도중에 꺼져도 깨진 파일이 남지 않게).
+  Future<void> saveDictImage(String id, Uint8List bytes) async {
+    try {
+      final f = await _dictImageFile(id);
+      final tmp = File('${f.path}.tmp');
+      await tmp.writeAsBytes(bytes, flush: true);
+      await tmp.rename(f.path);
+    } catch (e) {
+      debugPrint('사전 큰 이미지 저장 실패: $e');
+    }
+  }
+
+  /// 큰 이미지를 읽는다. 없으면 null (그땐 작은 썸네일로 대신 보여 준다).
+  Future<Uint8List?> loadDictImage(String id) async {
+    try {
+      final f = await _dictImageFile(id);
+      return await f.exists() ? await f.readAsBytes() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> deleteDictImage(String id) async {
+    try {
+      final f = await _dictImageFile(id);
+      if (await f.exists()) {
+        await f.delete();
+      }
+    } catch (_) {
+      // 지우지 못해도 다음 정리 때 치워진다
+    }
+  }
+
+  /// 어느 항목에도 속하지 않는 큰 이미지 파일을 지운다 (항목을 지운 뒤 남은 것, 쓰다 만 .tmp 등).
+  Future<void> _cleanupDictImages() async {
+    try {
+      // ⚠️ 깨진 사전 파일(.broken_*)이 보관돼 있으면 정리하지 않는다.
+      //    그 파일을 살렸을 때 필요한 큰 이미지까지 지우게 된다.
+      //    (보관 파일을 지우면 다음 실행부터 다시 정리한다)
+      final dictFile = await _promptDictFile();
+      final hasBroken = dictFile.parent.listSync().whereType<File>().any(
+        (f) => f.uri.pathSegments.last.startsWith('prompt_dict.json.broken_'),
+      );
+      if (hasBroken) {
+        return;
+      }
+      final alive = promptDict.map((e) => e.id).toSet();
+      final dir = await _dictImageDir();
+      for (final f in dir.listSync().whereType<File>()) {
+        final name = f.uri.pathSegments.last;
+        final id = name.endsWith('.webp') ? name.substring(0, name.length - 5) : null;
+        if (id == null || !alive.contains(id)) {
+          await f.delete();
+        }
+      }
+    } catch (e) {
+      debugPrint('사전 이미지 정리 실패(무시): $e');
+    }
+  }
+
+  void addPromptDictEntry(PromptDictEntry e) {
+    promptDict.insert(0, e); // 새 항목이 맨 위에
+    unawaited(savePromptDict());
+    notifyListeners();
+  }
+
+  void updatePromptDictEntry(PromptDictEntry e) {
+    final i = promptDict.indexWhere((x) => x.id == e.id);
+    if (i < 0) {
+      return;
+    }
+    promptDict[i] = e;
+    unawaited(savePromptDict());
+    notifyListeners();
+  }
+
+  /// 거르기 값이 아직 유효한가. 지워진 분류를 가리키면 '전체'를 돌려준다.
+  ///  (사전 탭 칩 줄과 확대 입력창 선택 창이 함께 쓴다)
+  String validDictFilter(String f) {
+    if (f == kDictFilterAll || f == kDictFilterNone) {
+      return f;
+    }
+    return promptDictCategories.any((c) => c.id == f) ? f : kDictFilterAll;
+  }
+
+  // 사전 미리보기(base64)를 푼 결과. 사전 탭과 입력창 선택 창이 함께 쓴다.
+  //  원래 문자열을 함께 들고 있다가 미리보기가 바뀌면 다시 푼다.
+  final Map<String, (String, Uint8List?)> _dictThumbCache = {};
+
+  /// 사전 항목의 미리보기 바이트 (없거나 깨졌으면 null).
+  Uint8List? dictThumb(PromptDictEntry e) {
+    final t = e.thumbnail;
+    if (t == null) {
+      return null;
+    }
+    final c = _dictThumbCache[e.id];
+    if (c != null && identical(c.$1, t)) {
+      return c.$2;
+    }
+    Uint8List? b;
+    try {
+      b = base64Decode(t);
+    } catch (_) {
+      b = null; // 깨진 미리보기는 아이콘으로 대신한다
+    }
+    _dictThumbCache[e.id] = (t, b);
+    return b;
+  }
+
+  /// 새 분류. 이름이 비었거나 이미 있으면 null.
+  PromptDictCategory? addPromptDictCategory(String name) {
+    final n = name.trim();
+    if (n.isEmpty || _categoryNameTaken(n)) {
+      return null;
+    }
+    final c = PromptDictCategory(name: n);
+    promptDictCategories.add(c);
+    unawaited(savePromptDict());
+    notifyListeners();
+    return c;
+  }
+
+  /// 분류 이름 바꾸기. 성공하면 true.
+  bool renamePromptDictCategory(String id, String name) {
+    final n = name.trim();
+    final i = promptDictCategories.indexWhere((x) => x.id == id);
+    if (i < 0 || n.isEmpty || _categoryNameTaken(n, exceptId: id)) {
+      return false;
+    }
+    promptDictCategories[i].name = n;
+    unawaited(savePromptDict());
+    notifyListeners();
+    return true;
+  }
+
+  /// 분류를 지운다. 안의 항목은 지우지 않고 '미분류'로 돌린다.
+  void removePromptDictCategory(String id) {
+    promptDictCategories.removeWhere((c) => c.id == id);
+    for (final e in promptDict) {
+      if (e.categoryId == id) {
+        e.categoryId = null;
+      }
+    }
+    dictPickerFilter = validDictFilter(dictPickerFilter);
+    unawaited(savePromptDict());
+    notifyListeners();
+  }
+
+  bool _categoryNameTaken(String name, {String? exceptId}) {
+    final low = name.toLowerCase();
+    // '전체'·'미분류'는 칩 이름으로 이미 쓰고 있어 헷갈리므로 막는다
+    if (low == '전체' || low == '미분류') {
+      return true;
+    }
+    return promptDictCategories.any((c) => c.id != exceptId && c.name.toLowerCase() == low);
+  }
+
+  /// 없는 분류를 가리키는 항목은 미분류로 (백업 복원·파일 손상 대비)
+  void _dropDanglingCategoryRefs() {
+    final ids = promptDictCategories.map((c) => c.id).toSet();
+    for (final e in promptDict) {
+      if (e.categoryId != null && !ids.contains(e.categoryId)) {
+        e.categoryId = null;
+      }
+    }
+  }
+
+  /// [prefix] 로 시작하는 되돌리기 기록 중, 이제 없는 대상의 기록을 지운다.
+  ///  예) prefix 'dict/' + 남아 있는 사전 id 들 → 지워진 항목의 기록만 버린다.
+  ///  (캐릭터는 uid 가 얽혀 있어 _pruneCharacterUndo 가 따로 맡는다)
+  void pruneUndoKeys(String prefix, Iterable<String> alive) {
+    final keep = alive.toSet();
+    final dead = promptUndoHistory.keys
+        .where((k) => k.startsWith(prefix) && !keep.contains(k.substring(prefix.length)))
+        .toList();
+    for (final k in dead) {
+      promptUndoHistory.remove(k);
+    }
+  }
+
+  /// 되돌리기 기록의 열쇠를 바꾼다 (이름을 바꿔도 기록이 이어지게).
+  void renameUndoKey(String from, String to) {
+    if (from == to) {
+      return;
+    }
+    final v = promptUndoHistory.remove(from);
+    if (v != null) {
+      promptUndoHistory[to] = v;
+    }
+  }
+
+  void removePromptDictEntry(String id) {
+    promptDict.removeWhere((x) => x.id == id);
+    _dictThumbCache.remove(id);
+    unawaited(deleteDictImage(id));
+    // 지운 항목의 되돌리기 기록도 버린다 ('dict/new' 는 새 항목용이라 남긴다)
+    pruneUndoKeys('dict/', [...promptDict.map((e) => e.id), 'new']);
+    unawaited(savePromptDict());
+    notifyListeners();
   }
 
   Future<void> savePresetsToFile() async {
@@ -5785,6 +6802,9 @@ class AppState extends ChangeNotifier {
   Timer? _historySaveDebounce;
 
   Future<void> saveHistoryToLocal() async {
+    if (_historyLoadFailed) {
+      return; // 불러오기에 실패한 기록을 빈 목록으로 덮어쓰지 않는다
+    }
     // 빠른 연속 호출 방지 (300ms 디바운스)
     _historySaveDebounce?.cancel();
     _historySaveDebounce = Timer(const Duration(milliseconds: 300), () async {
@@ -5793,11 +6813,13 @@ class AppState extends ChangeNotifier {
         final int total = historyImages.length;
 
         // JSON 파일만 매번 갱신 (가볍고 빠름)
-        await File(
-          '${dir.path}/metadata.json',
-        ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
-        await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
-        await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
+        // 반쯤 쓰다 꺼져도 옛 내용이 남도록 통째로 바꾼다
+        await _writeAtomic(
+          File('${dir.path}/metadata.json'),
+          jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()),
+        );
+        await _writeAtomic(File('${dir.path}/favorites.json'), jsonEncode(historyFavorites));
+        await _writeAtomic(File('${dir.path}/paths.json'), jsonEncode(historyFilePaths));
 
         // 인덱스가 밀린 상태면 이미지 파일은 건너뛰기 (fullSave에서 처리)
         if (!historyNeedsFullSave && total > 0) {
@@ -5827,43 +6849,104 @@ class AppState extends ChangeNotifier {
 
   // 전체 재정렬 저장 (삭제 등 인덱스가 바뀌는 작업 후에만 호출)
   Future<void> _fullSaveHistoryToLocal() async {
+    if (_historyLoadFailed) {
+      return; // 위와 같은 이유
+    }
     try {
       final dir = await _getHistoryDir();
 
-      // 기존 이미지/썸네일 파일만 삭제 (JSON은 유지)
-      final existing = dir.listSync().whereType<File>();
-      for (final f in existing) {
-        final name = f.path.split('/').last;
-        if (name.startsWith('img_') || name.startsWith('thumb_')) {
-          await f.delete();
-        }
-      }
-
+      // ⚠️ 예전엔 이미지 파일을 '먼저 전부 지운 뒤' 다시 썼다.
+      //    그 사이 앱이 꺼지면(업데이트 설치창 등) 이미지가 대량으로 사라지고,
+      //    불러올 때 즐겨찾기가 밀리는 원인이 됐다.
+      //    이제 번호마다 '새 파일을 먼저 쓰고' 옛 짝 파일을 지운다.
+      //    도중에 꺼져도 잃는 것은 그 한 장뿐이고, 두 파일이 남으면 불러올 때 새 쪽을 고른다.
       final int total = historyImages.length;
       // _trimHistoryMemory 덕에 오래된 이미지는 이미 썸네일 (~10KB)
       final futures = <Future>[];
       for (int i = 0; i < total; i++) {
-        final bool isSmall = historyImages[i].length < 50000;
-        if (isSmall) {
-          futures.add(File('${dir.path}/thumb_$i.jpg').writeAsBytes(historyImages[i]));
-        } else {
-          futures.add(File('${dir.path}/img_$i.png').writeAsBytes(historyImages[i]));
-        }
+        // 썸네일은 이제 WebP 인데 파일 이름은 옛 그대로 thumb_i.jpg 를 쓴다.
+        //  (불러올 때 확장자가 아니라 내용으로 그림을 읽으므로 문제없고, 옛 기록과도 호환된다)
+        final bool isSmall = historyImages[i].length < kThumbBytesLimit;
+        final keep = File('${dir.path}/${isSmall ? 'thumb_$i.jpg' : 'img_$i.png'}');
+        final other = File('${dir.path}/${isSmall ? 'img_$i.png' : 'thumb_$i.jpg'}');
+        futures.add(
+          keep.writeAsBytes(historyImages[i], flush: true).then((_) async {
+            if (await other.exists()) {
+              await other.delete();
+            }
+          }),
+        );
       }
       // 병렬 쓰기
       await Future.wait(futures);
 
-      // JSON 저장
-      await File(
-        '${dir.path}/metadata.json',
-      ).writeAsString(jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()));
-      await File('${dir.path}/favorites.json').writeAsString(jsonEncode(historyFavorites));
-      await File('${dir.path}/paths.json').writeAsString(jsonEncode(historyFilePaths));
+      // 목록이 줄었으면 뒤에 남은 번호의 파일을 치운다
+      for (final f in dir.listSync().whereType<File>()) {
+        final name = f.uri.pathSegments.last;
+        final m = RegExp(r'^(?:img|thumb)_(\d+)\.(?:png|jpg)$').firstMatch(name);
+        if (m != null && int.parse(m.group(1)!) >= total) {
+          await f.delete();
+        }
+      }
+
+      // JSON 은 이미지를 다 쓴 '뒤'에, 통째로 바꾼다 (반쯤 쓴 파일이 남지 않게)
+      await _writeAtomic(
+        File('${dir.path}/metadata.json'),
+        jsonEncode(historyMetadata.map((m) => m?.toJson()).toList()),
+      );
+      await _writeAtomic(File('${dir.path}/favorites.json'), jsonEncode(historyFavorites));
+      await _writeAtomic(File('${dir.path}/paths.json'), jsonEncode(historyFilePaths));
 
       debugPrint("✅ 히스토리 전체 저장 완료 ($total개)");
     } catch (e) {
       debugPrint("❌ 히스토리 전체 저장 실패: $e");
     }
+  }
+
+  /// i 번 히스토리 이미지 파일을 읽는다. 없으면 null.
+  ///
+  /// 원본(img_i.png)과 썸네일(thumb_i.jpg)이 둘 다 있으면 '더 최근에 쓴 쪽'을 고른다.
+  ///  (저장 도중 꺼지면 옛 파일이 남아 있을 수 있다 — 옛 것을 고르면 엉뚱한 그림이 된다)
+  Future<Uint8List?> _readHistoryImageFile(Directory dir, int i) async {
+    final png = File('${dir.path}/img_$i.png');
+    final jpg = File('${dir.path}/thumb_$i.jpg');
+    final hasPng = await png.exists();
+    final hasJpg = await jpg.exists();
+    if (!hasPng && !hasJpg) {
+      return null;
+    }
+    File pick = hasPng ? png : jpg;
+    if (hasPng && hasJpg) {
+      pick = (await jpg.lastModified()).isAfter(await png.lastModified()) ? jpg : png;
+    }
+    try {
+      return await pick.readAsBytes();
+    } catch (_) {
+      return null; // 읽다 실패하면 없는 것으로 친다
+    }
+  }
+
+  /// JSON 목록 파일을 읽는다. 없거나 깨졌으면 빈 목록.
+  Future<List> _readJsonList(File f) async {
+    try {
+      if (!await f.exists()) {
+        return const [];
+      }
+      final v = jsonDecode(await f.readAsString());
+      return v is List ? v : const [];
+    } catch (_) {
+      // 반쯤 쓰다 꺼진 파일일 수 있다 — 앱을 멈추지 않고 빈 값으로 넘어간다
+      return const [];
+    }
+  }
+
+  /// 파일을 '통째로' 바꾼다: 임시 파일에 다 쓴 뒤 이름만 바꾼다.
+  ///  ⚠️ 그냥 덮어쓰다 앱이 꺼지면 반쯤 쓴 JSON 이 남아 다음 실행에 읽지 못한다.
+  ///     이름 바꾸기는 한 번에 일어나므로 '옛 내용' 아니면 '새 내용'만 남는다.
+  Future<void> _writeAtomic(File f, String content) async {
+    final tmp = File('${f.path}.tmp');
+    await tmp.writeAsString(content, flush: true);
+    await tmp.rename(f.path);
   }
 
   Future<void> _loadHistoryFromLocal() async {
@@ -5879,45 +6962,52 @@ class AppState extends ChangeNotifier {
 
       final metaJson = jsonDecode(await metaFile.readAsString()) as List;
 
-      List<Uint8List> loadedImages = [];
-      List<NaiMetadata?> loadedMeta = [];
+      // 즐겨찾기·경로를 '먼저' 읽어 둔다.
+      //  ⚠️ 이 둘은 이미지와 번호로 짝지어져 있다. 예전엔 이미지를 읽다가 파일이
+      //     없는 번호를 건너뛰고, 즐겨찾기는 통째로 읽어서 — 파일 하나만 빠져도
+      //     그 뒤 즐겨찾기가 전부 한 칸씩 밀렸다. (업데이트 설치창이 앱을 끄는 등
+      //     저장 도중에 꺼지면 파일이 빠질 수 있다 → "즐겨찾기가 풀렸다")
+      //     이제 이미지를 담을 때 같은 번호의 즐겨찾기·경로를 함께 담는다.
+      final List favJson = await _readJsonList(File('${dir.path}/favorites.json'));
+      final List pathsJson = await _readJsonList(File('${dir.path}/paths.json'));
+
+      final List<Uint8List> loadedImages = [];
+      final List<NaiMetadata?> loadedMeta = [];
+      final List<bool> loadedFav = [];
+      final List<String?> loadedPaths = [];
 
       for (int i = 0; i < metaJson.length; i++) {
-        final imgFile = File('${dir.path}/img_$i.png');
-        final thumbFile = File('${dir.path}/thumb_$i.jpg');
-
-        if (await imgFile.exists()) {
-          loadedImages.add(await imgFile.readAsBytes());
-          loadedMeta.add(metaJson[i] != null ? NaiMetadata.fromJson(metaJson[i]) : null);
-        } else if (await thumbFile.exists()) {
-          loadedImages.add(await thumbFile.readAsBytes());
-          loadedMeta.add(metaJson[i] != null ? NaiMetadata.fromJson(metaJson[i]) : null);
+        final bytes = await _readHistoryImageFile(dir, i);
+        if (bytes == null) {
+          continue; // 이 번호는 통째로 건너뛴다 (즐겨찾기·경로도 함께)
         }
+        // ⚠️ 한 장의 정보가 깨져도 그 한 장만 비우고 계속 읽는다.
+        //    예전엔 여기서 예외가 나면 히스토리 전체가 빈 채로 시작했고,
+        //    그 상태에서 새로 저장하면 디스크의 기록까지 덮어써 모두 잃었다.
+        NaiMetadata? meta;
+        try {
+          meta = metaJson[i] != null ? NaiMetadata.fromJson(metaJson[i]) : null;
+        } catch (_) {
+          meta = null; // 프롬프트 정보만 잃고 그림·즐겨찾기는 살린다
+        }
+        loadedImages.add(bytes);
+        loadedMeta.add(meta);
+        loadedFav.add(i < favJson.length && favJson[i] == true);
+        final p = i < pathsJson.length ? pathsJson[i] : null;
+        loadedPaths.add(p is String ? p : null);
       }
 
+      // 네 목록을 한꺼번에 바꾼다 (길이가 항상 같다)
       historyImages = loadedImages;
       historyMetadata = loadedMeta;
+      historyFavorites = loadedFav;
+      historyFilePaths = loadedPaths;
 
-      // 즐겨찾기 불러오기
-      final favFile = File('${dir.path}/favorites.json');
-      if (await favFile.exists()) {
-        final favJson = jsonDecode(await favFile.readAsString()) as List;
-        historyFavorites = favJson.map((e) => e as bool).toList();
-      }
-
-      // 파일 경로 불러오기
-      final pathsFile = File('${dir.path}/paths.json');
-      if (await pathsFile.exists()) {
-        final pathsJson = jsonDecode(await pathsFile.readAsString()) as List;
-        historyFilePaths = pathsJson.map((e) => e as String?).toList();
-      }
-
-      // 길이 보정
-      while (historyFavorites.length < historyImages.length) {
-        historyFavorites.add(false);
-      }
-      while (historyFilePaths.length < historyImages.length) {
-        historyFilePaths.add(null);
+      if (loadedImages.length != metaJson.length) {
+        debugPrint("⚠️ 히스토리 이미지 ${metaJson.length - loadedImages.length}개 누락 — 즐겨찾기는 제자리 유지");
+        // 빠진 번호를 정리해 다음 실행부터는 번호가 다시 맞게 한다
+        historyNeedsFullSave = true;
+        unawaited(fullSaveHistoryIfNeeded());
       }
 
       if (historyImages.isNotEmpty) {
@@ -5929,10 +7019,17 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint("❌ 히스토리 불러오기 실패: $e");
+      // ⚠️ 불러오지 못한 채로 저장하면 디스크의 기록을 빈 목록으로 덮어쓴다.
+      //    이번 실행 동안은 히스토리 저장을 멈춰 원본 파일을 지킨다.
+      //    (새로 만든 그림은 저장 폴더에는 그대로 저장된다)
+      _historyLoadFailed = true;
       isHistoryLoading = false;
       notifyListeners();
     }
   }
+
+  /// 히스토리를 불러오지 못했는지. true 면 히스토리 파일을 건드리지 않는다.
+  bool _historyLoadFailed = false;
 
   // ============================================================================
   // 파일 존재 여부 확인
@@ -6029,24 +7126,14 @@ class AppState extends ChangeNotifier {
     final meta = historyMetadata[index];
     if (meta == null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("메타데이터가 없어 재생성할 수 없습니다."),
-          ),
-        );
+        showToast(context, "메타데이터가 없어 재생성할 수 없습니다.");
       }
       return;
     }
 
     if (apiToken.isEmpty) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("API 토큰이 설정되지 않았습니다."),
-          ),
-        );
+        showToast(context, "API 토큰이 설정되지 않았습니다.");
       }
       return;
     }
@@ -6101,27 +7188,14 @@ class AppState extends ChangeNotifier {
         }
         saveHistoryToLocal();
       } else if (result.error != null && context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("재생성 실패: ${result.error}"),
-          ),
-        );
+        showToast(context, "재생성 실패: ${result.error}");
       }
-      await fetchAnlas();
-      // V5 한도도 같은 시점에만 확인한다 (매번 조회하지 않음)
-      if (modelCapsFor(selectedModel).hasHourlyLimit) {
-        await fetchV5Limit();
-      }
+      // 잔액·한도 갱신은 기다리지 않는다 (버튼이 그만큼 늦게 풀린다)
+      refreshBalanceInBackground();
     } catch (e) {
       debugPrint("재생성 오류: $e");
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("재생성 중 오류가 발생했습니다."),
-          ),
-        );
+        showToast(context, "재생성 중 오류가 발생했습니다.");
       }
     } finally {
       isLoading = false;
@@ -6148,36 +7222,59 @@ class AppState extends ChangeNotifier {
     return suffix.isEmpty ? parsed : "${parsed}_$suffix";
   }
 
-  // PNG 바이트를 WebP(무손실)로 변환하고 원본 메타데이터를 EXIF로 이식한다.
-  // 실패하면 null을 반환해 호출부가 원본(PNG)으로 폴백하도록 한다.
-  Future<Uint8List?> _convertToWebpWithMetadata(Uint8List pngBytes, {bool lossless = false}) async {
-    try {
-      // 1) 원본 PNG의 파라미터 JSON을 먼저 확보 (변환하면 사라지므로)
-      String? metaJson;
-      final chunkJson = extractPngCommentJson(pngBytes);
-      if (chunkJson != null && chunkJson.trim().startsWith('{')) {
-        metaJson = chunkJson;
-      }
+  /// 저장 직전 준비: 설정에 맞춰 형식을 바꾸고 확장자를 정한다.
+  ///  ⚠️ 예전엔 자동 저장·수동 저장에 똑같은 코드가 두 벌 있었다. 여기 하나로 모은다.
+  Future<(Uint8List, String)> _prepareForSave(Uint8List bytes) async {
+    // JPEG(밖에서 가져온 그림)는 건드리지 않는다
+    if (isJpeg(bytes)) {
+      return (bytes, 'jpg');
+    }
+    var format = saveFormat;
+    // ⚠️ 투명 배경으로 뽑은 그림을 손실 WebP 로 저장하면 알파가 뭉개진다 → 무손실로
+    if (format == SaveFormat.webpLossy && transparentBackground) {
+      format = SaveFormat.webpLossless;
+    }
+    if (format.quality == null) {
+      return (bytes, format.ext); // 원본 그대로 쓰는 형식
+    }
+    final converted = await _convertWithMetadata(bytes, format);
+    // 실패하면 원본(PNG) 그대로 저장한다
+    return converted == null ? (bytes, SaveFormat.png.ext) : (converted, format.ext);
+  }
 
-      // 2) WebP 인코딩 (안드로이드 시스템 API — 빠름)
-      //    quality 100 = 무손실, 95 = 손실이지만 화질 차이가 거의 없고 용량이 크게 준다
-      final encoded = await FlutterImageCompress.compressWithList(
-        pngBytes,
-        format: CompressFormat.webp,
-        quality: (webpLossy && !lossless) ? 95 : 100,
-      );
-      if (encoded.isEmpty) {
+  // PNG 바이트를 [format] 으로 굽고 원본 메타데이터를 옮겨 담는다.
+  // 실패하면 null을 반환해 호출부가 원본(PNG)으로 폴백하도록 한다.
+  //  ⚠️ 새 저장 형식을 더할 때는 메타데이터를 담는 방법도 정해야 한다
+  //     (PNG 는 tEXt 청크, WebP 는 EXIF — 형식마다 다르다).
+  Future<Uint8List?> _convertWithMetadata(Uint8List pngBytes, SaveFormat format) async {
+    try {
+      // 1) 원본 PNG 의 글자 청크를 '전부' 먼저 확보 (변환하면 사라지므로).
+      //    Comment(파라미터)만 옮기면 novelai.net/inspect 가 Title·Description·
+      //    Software·Source 를 못 보여 준다 — NovelAI 와 같은 모양으로 전부 옮긴다.
+      //    생성 파라미터가 없는 그림(모자이크 결과 등)은 메타데이터 없이 굽는다.
+      final chunks = extractPngTextChunks(pngBytes);
+      final bool hasParams = paramsJsonOf(chunks) != null; // PNG 를 다시 훑지 않는다
+
+      // 2) 굽기 — 품질·방식은 image_codec.dart 의 SaveFormat 이 정한다
+      //    ⚠️ 공용 인코더를 쓴다. 플러그인을 직접 부르면 크기 기본값(1920×1080)
+      //       때문에 업스케일한 큰 그림(예: 2176×3840)이 저장할 때 조용히 줄어든다.
+      final encoded = await encodeForSave(pngBytes, format);
+      if (encoded == null) {
         return null;
       }
-      final webp = Uint8List.fromList(encoded);
 
-      // 3) 메타데이터가 있으면 EXIF 청크로 이식
-      if (metaJson == null) {
-        return webp;
+      // 3) 메타데이터가 있으면 형식에 맞게 이식
+      if (!hasParams) {
+        return encoded;
       }
-      return injectExifIntoWebp(webp, buildExifBlock(metaJson)) ?? webp;
+      switch (format.ext) {
+        case 'webp':
+          return injectExifIntoWebp(encoded, buildExifBlock(chunks)) ?? encoded;
+        default:
+          return encoded; // 이식 방법이 정해지지 않은 형식은 그림만
+      }
     } catch (e) {
-      debugPrint('WebP 변환 실패(원본 유지): $e');
+      debugPrint('${format.ext} 변환 실패(원본 유지): $e');
       return null;
     }
   }
@@ -6187,21 +7284,9 @@ class AppState extends ChangeNotifier {
     final sessionFolder = _resolveSessionFolder();
 
     String fileName = _getFormattedFileName("");
-    final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
-    String ext = isJpeg ? 'jpg' : 'png';
-
-    // ⚠️ 투명 배경으로 뽑은 이미지는 손실 WebP로 저장하면 알파가 뭉개진다.
-    //    이럴 때는 무손실로 강제해 투명도를 지킨다.
-    final bool forceLossless = transparentBackground;
-
-    // 설정이 켜져 있고 PNG일 때만 WebP로 변환 (실패하면 원본 그대로)
-    if (saveAsWebp && !isJpeg) {
-      final converted = await _convertToWebpWithMetadata(bytes, lossless: forceLossless);
-      if (converted != null) {
-        bytes = converted;
-        ext = 'webp';
-      }
-    }
+    // 설정에 맞춰 형식을 바꾸고 확장자를 정한다 (실패하면 원본 그대로)
+    final (saveBytes, ext) = await _prepareForSave(bytes);
+    bytes = saveBytes;
 
     // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
     if (safRootUri != null) {
@@ -6247,21 +7332,10 @@ class AppState extends ChangeNotifier {
     final sessionFolder = _resolveSessionFolder();
 
     String fileName = _getFormattedFileName("Manual");
-    final bool isJpeg = bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8;
-    String ext = isJpeg ? 'jpg' : 'png';
     final messenger = ScaffoldMessenger.of(context); // async gap 전에 캡처
-
-    // ⚠️ 투명 배경 이미지는 손실 WebP로 저장하면 알파가 뭉개진다 → 무손실 강제
-    final bool forceLossless = transparentBackground;
-
-    // 자동 저장과 동일하게 WebP 설정을 반영 (실패 시 원본 유지)
-    if (saveAsWebp && !isJpeg) {
-      final converted = await _convertToWebpWithMetadata(bytes, lossless: forceLossless);
-      if (converted != null) {
-        bytes = converted;
-        ext = 'webp';
-      }
-    }
+    // 자동 저장과 같은 준비 과정 (형식 변환·확장자 결정, 실패하면 원본 그대로)
+    final (saveBytes, ext) = await _prepareForSave(bytes);
+    bytes = saveBytes;
 
     // 0차: SAF 폴더가 지정돼 있으면 그곳에 저장 (MANAGE 권한 불필요)
     if (safRootUri != null) {
@@ -6292,8 +7366,8 @@ class AppState extends ChangeNotifier {
     }
 
     messenger.showSnackBar(
-      SnackBar(
-        duration: const Duration(milliseconds: 2400),
+      const SnackBar(
+        duration: Duration(milliseconds: 2400),
         content: Text("저장에 실패했습니다. 저장 경로를 확인해주세요."),
       ),
     );
@@ -6304,7 +7378,10 @@ class AppState extends ChangeNotifier {
     if (Platform.isAndroid) {
       try {
         MediaScanner.loadMedia(path: filePath);
-      } catch (_) {}
+      } catch (_) {
+        // 갤러리 앱에 새 파일을 알리는 작업. 실패해도 파일은 이미 저장돼 있고,
+        // 기기가 다음에 스캔할 때 잡힌다.
+      }
     }
   }
 
@@ -6395,7 +7472,137 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  bool checkIfAnlasConsumed() {
+  // ══════════════════════════════════════════════════════════════
+  // Anlas 추정
+  // ══════════════════════════════════════════════════════════════
+  //
+  // ⚠️ 공식 계산식을 재현하지 못했다.
+  //    널리 쓰이는 SDK 의 식(면적 x 스텝 선형)을 그대로 넣어 보면 실제 표시값과
+  //    1.5배쯤 어긋나고, 계수를 다시 맞춰 봐도 관측 12개를 동시에 만족하는
+  //    값이 존재하지 않았다. 식의 구조 자체가 다른 것으로 보인다.
+  //
+  //    그래서 공식 앱에서 직접 읽은 값을 표로 넣고, 표에 없는 조건은
+  //    가까운 값에서 비례로 추정한다. 어디까지나 '대략' 이므로
+  //    화면에도 '약 N Anlas' 로 표시한다.
+  //
+  //    측정 환경: Opus, 1장, V4.5 (2026-09)
+  //    표를 늘리려면 공식 웹에서 생성 버튼의 숫자를 읽어 아래에 추가하면 된다.
+  //    (1MP 이하 해상도는 28스텝까지 무료라 0 이 뜬다.
+  //     값을 보려면 스텝을 29 이상으로 올리거나 장수를 2로 둘 것)
+  static const Map<int, Map<int, int>> _anlasTable = {
+    // 1024x1536 (1,572,864px)
+    1572864: {23: 39, 24: 41, 25: 42, 26: 44, 27: 45, 28: 45},
+    // 1088x1920 (2,088,960px)
+    2088960: {23: 51, 24: 54, 25: 56, 26: 57, 27: 59, 28: 60},
+  };
+
+  /// 이미지 한 장을 만드는 데 드는 Anlas 추정치. 모르면 -1.
+  ///
+  /// [strength] 를 주면 인페인트·img2img 로 계산한다.
+  ///  (실측 확인: 생성 비용 x 강도, 올림. 최소 2)
+  int _estimateSingleAnlas(int width, int height, int steps, {double? strength}) {
+    final int pixels = width * height;
+
+    int? base;
+    final table = _anlasTable[pixels];
+    if (table != null) {
+      base = table[steps];
+      if (base == null && table.isNotEmpty) {
+        // 표에 없는 스텝은 가장 가까운 스텝에서 비례로 늘린다
+        final nearest = table.keys.reduce((a, b) => (a - steps).abs() <= (b - steps).abs() ? a : b);
+        base = (table[nearest]! * steps / nearest).ceil();
+      }
+    } else {
+      // 면적이 표에 없으면, 표에서 가장 가까운 면적을 찾아 면적 비로 늘린다
+      if (_anlasTable.isEmpty) {
+        return -1;
+      }
+      final nearPixels = _anlasTable.keys.reduce(
+        (a, b) => (a - pixels).abs() <= (b - pixels).abs() ? a : b,
+      );
+      final nearTable = _anlasTable[nearPixels]!;
+      final nearStep = nearTable.keys.reduce(
+        (a, b) => (a - steps).abs() <= (b - steps).abs() ? a : b,
+      );
+      base = (nearTable[nearStep]! * (pixels / nearPixels) * (steps / nearStep)).ceil();
+    }
+
+    if (base == null || base <= 0) {
+      return -1;
+    }
+    if (strength == null) {
+      return base;
+    }
+    final v = (base * strength).ceil();
+    return v < 2 ? 2 : v;
+  }
+
+  /// 이번에 실행할 작업의 Anlas 추정치를 돌려주는 단일 진입점.
+  ///
+  ///  · 0  = 소모 없음 (Opus 무료 범위 등)
+  ///  · -1 = 추정할 수 없음 (표에 없는 조건)
+  ///
+  /// 작업마다 계산 규칙이 꽤 다르기 때문에, 여기서는 '어느 계산기를 쓸지'만 고르고
+  /// 실제 셈은 각 계산기에 맡긴다. 규칙을 한 함수에 몰아넣으면 조건문이 겹겹이
+  /// 쌓여 오히려 고치기 어려워진다.
+  ///
+  /// 호출부는 이 함수 하나만 부르면 된다. '소모되는가'는 결과가 0인지로 판단한다.
+  int anlasFor(AnlasJob job) {
+    switch (job) {
+      case AnlasJob.generate:
+        return _estimateImageJob();
+      case AnlasJob.inpaint:
+        return _estimateImageJob(strength: infillStrength);
+      case AnlasJob.img2img:
+        return _estimateImageJob(strength: img2imgStrength);
+      case AnlasJob.director:
+        return directorCostFor(directorTool);
+      case AnlasJob.upscale:
+        // V5 업스케일러는 입력 크기·구독 등급과 무관하게 고정 비용이다
+        return NovelAiService.upscaleAnlasCost;
+    }
+  }
+
+  /// 생성·인페인트·img2img 공통 계산.
+  ///  [strength] 가 있으면 인페인트 계열(기본 비용 x 강도)로 본다.
+  int _estimateImageJob({double? strength}) {
+    if (!checkIfAnlasConsumed()) {
+      return 0; // 무료 조건이면 굳이 추정하지 않는다
+    }
+    final (w, h) = _plannedResolution();
+    final steps = int.tryParse(stepsController.text) ?? 28;
+
+    int per = _estimateSingleAnlas(w, h, steps, strength: strength);
+    if (per < 0) {
+      return -1;
+    }
+
+    // 배치: 무한(0)은 셀 수 없으므로 1장 기준으로 둔다
+    int count = batchCount <= 0 ? 1 : batchCount;
+    // Opus 는 28스텝 이하·1MP 이하 한 장을 무료로 만들어 준다
+    if (subscriptionTier >= 3 && steps <= 28 && (w * h) <= kMegapixelCap && count > 0) {
+      count -= 1;
+    }
+
+    final extras = calculateVibeAnlas() + calculatePreciseAnlas();
+    return per * count + extras;
+  }
+
+  /// 추정치를 화면에 보여 줄 문장으로 바꾼다.
+  ///  ⚠️ 공식 계산식을 재현하지 못해 실측 표 기반 추정이다. 그래서 '약' 을 붙인다.
+  static String anlasText(int cost) {
+    if (cost == 0) {
+      return "Anlas가 소모되지 않습니다.";
+    }
+    if (cost < 0) {
+      return "Anlas가 소모됩니다. (소모량은 추정할 수 없습니다)";
+    }
+    return "약 $cost Anlas가 소모됩니다.";
+  }
+
+  /// 지금 설정으로 생성했을 때 실제로 쓰일 해상도.
+  ///  비용 추정과 소모 여부 판단이 같은 값을 보도록 한 곳으로 모았다.
+  (int, int) _plannedResolution() {
     int width = 832;
     int height = 1216;
 
@@ -6441,6 +7648,12 @@ class AppState extends ChangeNotifier {
 
     // 64px 정렬 + 모델별 픽셀 상한 적용 (공용 헬퍼)
     (width, height) = clampResolution(width, height, modelCapsFor(selectedModel).maxPixels);
+
+    return (width, height);
+  }
+
+  bool checkIfAnlasConsumed() {
+    final (width, height) = _plannedResolution();
 
     int steps = int.tryParse(stepsController.text) ?? 28;
     bool isOpus = subscriptionTier >= 3;
@@ -6517,6 +7730,8 @@ class AppState extends ChangeNotifier {
     }
 
     wildcards.removeAt(index);
+    // 지운 와일드카드의 되돌리기 기록도 버린다
+    pruneUndoKeys('wildcard/', wildcards.map((w) => w.name));
 
     if (wildcards.isNotEmpty) {
       selectedWildcardIndex = 0;

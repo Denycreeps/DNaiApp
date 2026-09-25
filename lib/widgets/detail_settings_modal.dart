@@ -7,6 +7,7 @@ import '../models/image_metadata.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 import '../app_theme.dart';
+import '../widgets/app_toast.dart';
 
 const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full, NaiModels.v5Full];
 const List<String> _samplers = [
@@ -48,13 +49,9 @@ void showDetailSettingsModal(BuildContext context) {
             return GestureDetector(
               onTap: () {
                 if (!modelCapsFor(state.selectedModel).supportsVarietyPlus) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
-                      ),
-                      duration: const Duration(seconds: 2),
-                    ),
+                  showToast(
+                    context,
+                    "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
                   );
                   return;
                 }
@@ -817,12 +814,7 @@ void showSaveImageModal(
               onTap: alreadySaved
                   ? () {
                       Navigator.pop(modalContext);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          duration: const Duration(milliseconds: 2400),
-                          content: Text("이미 저장된 이미지입니다."),
-                        ),
-                      );
+                      showToast(context, "이미 저장된 이미지입니다.");
                     }
                   : () {
                       Navigator.pop(modalContext);
@@ -846,12 +838,7 @@ void showSaveImageModal(
                 // i2i 탭(2번 탭)으로 즉시 이동!
                 state.navigateToTab(2);
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    duration: const Duration(milliseconds: 2400),
-                    content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
-                  ),
-                );
+                showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
               },
             ),
 
@@ -866,12 +853,7 @@ void showSaveImageModal(
                 Navigator.pop(modalContext);
                 NaiMetadata? meta = extractNovelAIMetadata(imageBytes);
                 if (meta == null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      duration: const Duration(milliseconds: 2400),
-                      content: Text("이 이미지에서 메타데이터를 찾을 수 없습니다."),
-                    ),
-                  );
+                  showToast(context, "이 이미지에서 메타데이터를 찾을 수 없습니다.");
                   return;
                 }
                 showLoadPromptDialog(context, state, meta);
@@ -891,6 +873,8 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
   bool loadNegative = true;
   bool loadCharacters = true;
   bool addCharactersAsNew = true;
+  // 공식 NovelAI 와 같은 동작(기존 캐릭터를 모두 지우고 불러온 것만 남김)을 기본으로 둔다.
+  bool replaceAllCharacters = true;
   bool loadSettings = true;
 
   final int charCount = meta.characterPrompts.length;
@@ -991,8 +975,29 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
                     child: Padding(
                       padding: const EdgeInsets.only(left: 22),
                       child: row(
+                        // '한 명 제거'가 아니라 '목록을 통째로 바꾼다'는 뜻이라
+                        // 교체를 나타내는 아이콘을 쓴다
+                        icon: Icons.swap_horiz,
+                        label: "전체 교체",
+                        value: replaceAllCharacters,
+                        onChanged: (v) => setDialogState(() => replaceAllCharacters = v),
+                      ),
+                    ),
+                  ),
+                ),
+                // '기존 비우기'가 켜져 있으면 어차피 전부 지우므로 이 선택은 의미가 없다.
+                //  줄을 없애면 창 높이가 바뀌어 버튼을 잘못 누르게 되므로 흐리게만 둔다.
+                IgnorePointer(
+                  ignoring: !loadCharacters || charCount == 0 || replaceAllCharacters,
+                  child: Opacity(
+                    opacity: (loadCharacters && charCount > 0 && !replaceAllCharacters)
+                        ? 1.0
+                        : 0.35,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 22),
+                      child: row(
                         icon: Icons.playlist_add,
-                        label: "기존 뒤에 추가",
+                        label: "뒤에 이어 붙이기",
                         value: addCharactersAsNew,
                         onChanged: (v) => setDialogState(() => addCharactersAsNew = v),
                       ),
@@ -1025,6 +1030,7 @@ void showLoadPromptDialog(BuildContext context, AppState state, NaiMetadata meta
                   negative: loadNegative,
                   characters: loadCharacters,
                   addCharactersAsNew: addCharactersAsNew,
+                  replaceAllCharacters: replaceAllCharacters,
                   settings: loadSettings,
                 );
               },
@@ -1052,6 +1058,7 @@ void _applyMetadata(
   required bool negative,
   required bool characters,
   required bool addCharactersAsNew,
+  required bool replaceAllCharacters,
   required bool settings,
 }) {
   List<String> applied = [];
@@ -1067,9 +1074,17 @@ void _applyMetadata(
   }
 
   if (characters && meta.characterPrompts.isNotEmpty) {
-    // '새로 추가하기' 켜짐 → 뒤에 이어 붙인다
-    // '새로 추가하기' 꺼짐 → 1번부터 덮어쓴다 (나머지는 그대로 둔다)
-    final int startIndex = addCharactersAsNew ? state.characters.length : 0;
+    // '기존 캐릭터 비우기' 켜짐 → 전부 지우고 불러온 것만 남긴다 (공식과 같은 동작)
+    if (replaceAllCharacters) {
+      state.characters.clear();
+      state.selectedCharIndex = 0;
+    }
+    // '기존 뒤에 추가' 켜짐 → 뒤에 이어 붙인다
+    // 꺼짐 → 1번부터 덮어쓴다 (나머지는 그대로 둔다)
+    //  ※ 비우기를 했으면 목록이 비어 있으므로 어느 쪽이든 0부터 시작한다.
+    final int startIndex = (!replaceAllCharacters && addCharactersAsNew)
+        ? state.characters.length
+        : 0;
 
     for (int i = 0; i < meta.characterPrompts.length; i++) {
       final int slot = startIndex + i;
@@ -1104,15 +1119,23 @@ void _applyMetadata(
       }
     }
 
+    // 목록이 비어 버리면 캐릭터 화면이 빈 인덱스를 참조하게 된다.
+    //  (앱 시작·백업 복원 경로와 같은 방어)
+    if (state.characters.isEmpty) {
+      state.characters.add(NaiCharacter());
+    }
     // 선택 인덱스가 범위를 벗어나지 않게 보정
     if (state.selectedCharIndex >= state.characters.length) {
-      state.selectedCharIndex = state.characters.isEmpty ? 0 : state.characters.length - 1;
+      state.selectedCharIndex = state.characters.length - 1;
     }
 
+    // 화면이 캐시해 둔 캐릭터 입력 컨트롤러를 새 값으로 맞추게 한다.
+    //  (이게 없으면 편집창이 열려 있을 때 옛 프롬프트가 그대로 남는다)
+    state.markCharactersReplaced();
+
+    final int n = meta.characterPrompts.length;
     applied.add(
-      addCharactersAsNew
-          ? "캐릭터 ${meta.characterPrompts.length}개 추가"
-          : "캐릭터 ${meta.characterPrompts.length}개 덮어쓰기",
+      replaceAllCharacters ? "캐릭터 $n개로 교체" : (addCharactersAsNew ? "캐릭터 $n개 추가" : "캐릭터 $n개 덮어쓰기"),
     );
   }
 
@@ -1158,12 +1181,7 @@ void _applyMetadata(
   state.navigateToTab(0);
 
   if (applied.isNotEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(milliseconds: 2400),
-        content: Text("${applied.join(', ')}을(를) 불러왔습니다!"),
-      ),
-    );
+    showToast(context, "${applied.join(', ')}을(를) 불러왔습니다!");
   }
 }
 
@@ -1253,12 +1271,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                         wCtrl.clear();
                         hCtrl.clear();
                         final adjustNote = adjusted ? "\n입력: $w x $h → 조정됨" : "";
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            duration: const Duration(milliseconds: 2400),
-                            content: Text("$res 추가됨$warning$adjustNote"),
-                          ),
-                        );
+                        showToast(context, "$res 추가됨$warning$adjustNote");
                       }
                     },
                     style: ElevatedButton.styleFrom(

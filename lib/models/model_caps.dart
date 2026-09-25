@@ -184,7 +184,8 @@ class ModelCaps {
   }) {
     return ModelCaps(
       id: id ?? this.id,
-      serverModelIdOverride: serverModelIdOverride ?? this.serverModelIdOverride,
+      serverModelIdOverride:
+          serverModelIdOverride ?? this.serverModelIdOverride,
       displayName: displayName ?? this.displayName,
       supportsVibe: supportsVibe ?? this.supportsVibe,
       supportsPrecise: supportsPrecise ?? this.supportsPrecise,
@@ -199,7 +200,8 @@ class ModelCaps {
       tokenizer: tokenizer ?? this.tokenizer,
       maxCfgScale: maxCfgScale ?? this.maxCfgScale,
       maxSteps: maxSteps ?? this.maxSteps,
-      allowsSchedulerChoice: allowsSchedulerChoice ?? this.allowsSchedulerChoice,
+      allowsSchedulerChoice:
+          allowsSchedulerChoice ?? this.allowsSchedulerChoice,
       maxPixels: maxPixels ?? this.maxPixels,
       supportsTransparency: supportsTransparency ?? this.supportsTransparency,
       usesFreePositioning: usesFreePositioning ?? this.usesFreePositioning,
@@ -305,7 +307,10 @@ final Map<String, ModelCaps> _capsTable = {
   // ※ 참고: NovelAI 공식상 Precise Reference는 V4.5 전용이지만,
   //    현재 앱 동작(=V4/V4.5 동일 취급)에 맞춰 캡도 동일하게 둔다.
   //    실제 API 연결 단계에서 필요하면 이 부분만 갈라주면 된다.
-  NaiModels.v4Full: _v45Full.copyWith(id: NaiModels.v4Full, displayName: 'NAI Diffusion V4 Full'),
+  NaiModels.v4Full: _v45Full.copyWith(
+    id: NaiModels.v4Full,
+    displayName: 'NAI Diffusion V4 Full',
+  ),
   NaiModels.v4Curated: _v45Full.copyWith(
     id: NaiModels.v4Curated,
     displayName: 'NAI Diffusion V4 Curated',
@@ -317,7 +322,10 @@ final Map<String, ModelCaps> _capsTable = {
   // ---- V3 계열 (UI 선택지에는 없지만, 히스토리 메타데이터 재생성 경로로 들어온다) ----
   //  app_state._resolveModelId()가 "V3" 메타데이터를 만나면 이 값을 돌려준다.
   NaiModels.v3: _v3,
-  NaiModels.furryV3: _v3.copyWith(id: NaiModels.furryV3, displayName: 'NAI Diffusion Furry V3'),
+  NaiModels.furryV3: _v3.copyWith(
+    id: NaiModels.furryV3,
+    displayName: 'NAI Diffusion Furry V3',
+  ),
   // 레거시 V2 — 정확한 캡은 미확인이나, 최소한 V4.5로 오인되지 않게 V3 기준으로 둔다.
   NaiModels.v2: _v3.copyWith(id: NaiModels.v2, displayName: 'NAI Diffusion V2'),
 };
@@ -354,7 +362,9 @@ ModelCaps modelCapsFor(String model) {
   if (model.contains('3')) {
     return _v3.copyWith(
       id: model,
-      displayName: model.contains('furry') ? 'NAI Diffusion Furry V3' : 'NAI Diffusion Anime V3',
+      displayName: model.contains('furry')
+          ? 'NAI Diffusion Furry V3'
+          : 'NAI Diffusion Anime V3',
     );
   }
 

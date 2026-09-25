@@ -235,7 +235,9 @@ class QwenTokenizer {
       size--;
 
       // 합쳐진 자리와 그 왼쪽의 랭크를 다시 계산
-      rk[minIdx] = (minIdx + 2 < size) ? _rankOr(piece, idx[minIdx], idx[minIdx + 2]) : _maxRank;
+      rk[minIdx] = (minIdx + 2 < size)
+          ? _rankOr(piece, idx[minIdx], idx[minIdx + 2])
+          : _maxRank;
       if (minIdx > 0) {
         rk[minIdx - 1] = (minIdx + 1 < size)
             ? _rankOr(piece, idx[minIdx - 1], idx[minIdx + 1])

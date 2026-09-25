@@ -60,11 +60,17 @@ class AppTextStyles {
     fontWeight: FontWeight.bold,
   );
 
-  static const TextStyle label = TextStyle(color: Colors.white, fontWeight: FontWeight.bold);
+  static const TextStyle label = TextStyle(
+    color: Colors.white,
+    fontWeight: FontWeight.bold,
+  );
 
   static const TextStyle body = TextStyle(color: Colors.white, fontSize: 14);
 
-  static const TextStyle caption = TextStyle(color: Colors.white54, fontSize: 12);
+  static const TextStyle caption = TextStyle(
+    color: Colors.white54,
+    fontSize: 12,
+  );
 
   static const TextStyle chipBold = TextStyle(
     color: Colors.white,

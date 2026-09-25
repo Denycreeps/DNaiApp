@@ -278,14 +278,19 @@ String? _extractWebpMetadataJson(Uint8List bytes) {
   }
 }
 
-// PNG 텍스트 청크에서 파라미터 JSON 문자열을 그대로 꺼낸다.
-// (extractNovelAIMetadata는 파싱된 객체를 주지만, WebP로 이식할 땐 원문이 필요)
-String? extractPngCommentJson(Uint8List bytes) {
+// PNG 의 글자 청크(tEXt·zTXt·iTXt)를 전부 {키: 값} 으로 꺼낸다.
+//  NovelAI 는 Title · Description · Software · Source · Generation time · Comment 를 넣는다.
+//  (NovelAI 공식 스크립트도 메타데이터를 '글자 청크 전부를 담은 JSON' 으로 다룬다)
+Map<String, String> extractPngTextChunks(Uint8List bytes) {
+  final out = <String, String>{};
   try {
     const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (bytes.length < 8) {
+      return out;
+    }
     for (int i = 0; i < sig.length; i++) {
       if (bytes[i] != sig[i]) {
-        return null;
+        return out;
       }
     }
     final view = ByteData.sublistView(bytes);
@@ -293,10 +298,14 @@ String? extractPngCommentJson(Uint8List bytes) {
     while (offset + 8 <= bytes.length) {
       final length = view.getUint32(offset);
       final type = String.fromCharCodes(bytes.sublist(offset + 4, offset + 8));
+      if (offset + 8 + length > bytes.length) {
+        break; // 잘린 파일
+      }
       if (type == 'tEXt' || type == 'zTXt' || type == 'iTXt') {
         final data = bytes.sublist(offset + 8, offset + 8 + length);
         final nullIdx = data.indexOf(0);
-        if (nullIdx != -1) {
+        if (nullIdx > 0) {
+          final key = latin1.decode(data.sublist(0, nullIdx));
           final raw = data.sublist(nullIdx + 1);
           String? value;
           if (type == 'tEXt') {
@@ -305,9 +314,12 @@ String? extractPngCommentJson(Uint8List bytes) {
             if (raw.length > 1) {
               try {
                 value = utf8.decode(zlib.decode(raw.sublist(1)), allowMalformed: true);
-              } catch (_) {}
+              } catch (_) {
+                // 압축이 깨진 청크는 건너뛴다 (다른 청크는 계속 읽는다)
+              }
             }
           } else {
+            // iTXt: 압축표시(1) 압축방식(1) 언어\0 번역키\0 본문
             if (raw.length >= 2) {
               final compFlag = raw[0];
               final langEnd = raw.indexOf(0, 2);
@@ -318,7 +330,9 @@ String? extractPngCommentJson(Uint8List bytes) {
                   if (compFlag == 1) {
                     try {
                       value = utf8.decode(zlib.decode(body), allowMalformed: true);
-                    } catch (_) {}
+                    } catch (_) {
+                      // 압축이 깨진 청크는 건너뛴다
+                    }
                   } else {
                     value = utf8.decode(body, allowMalformed: true);
                   }
@@ -326,32 +340,63 @@ String? extractPngCommentJson(Uint8List bytes) {
               }
             }
           }
-          final v = value?.trim();
-          if (v != null &&
-              v.startsWith('{') &&
-              (v.contains('"prompt"') || v.contains('"v4_prompt"'))) {
-            return v;
+          if (value != null) {
+            out[key] = value;
           }
         }
       }
+      if (type == 'IEND') {
+        break;
+      }
       offset += 12 + length;
     }
-  } catch (_) {}
+  } catch (_) {
+    // 손상된 PNG — 그때까지 읽은 것만 돌려준다
+  }
+  return out;
+}
+
+// PNG 텍스트 청크에서 파라미터 JSON 문자열을 그대로 꺼낸다.
+// (extractNovelAIMetadata는 파싱된 객체를 주지만, WebP로 이식할 땐 원문이 필요)
+String? extractPngCommentJson(Uint8List bytes) => paramsJsonOf(extractPngTextChunks(bytes));
+
+/// 글자 청크들 가운데 '생성 파라미터 JSON' 을 고른다 (보통 Comment, 없으면 모양으로 찾는다)
+///  [extractPngTextChunks] 로 이미 꺼낸 청크가 있으면 PNG 를 다시 훑지 않고 이걸 쓴다.
+String? paramsJsonOf(Map<String, String> chunks) {
+  bool looksLikeParams(String v) =>
+      v.startsWith('{') && (v.contains('"prompt"') || v.contains('"v4_prompt"'));
+  final c = chunks['Comment']?.trim();
+  if (c != null && looksLikeParams(c)) {
+    return c;
+  }
+  for (final v in chunks.values) {
+    final t = v.trim();
+    if (looksLikeParams(t)) {
+      return t;
+    }
+  }
   return null;
 }
 
 // ── WebP 저장 (메타데이터 보존) ──
 // NovelAI 공식 WebP와 동일한 구조로 EXIF 청크를 만들어 붙인다.
 //   RIFF/WEBP → VP8X(EXIF 플래그) → VP8L/VP8(픽셀) → EXIF(TIFF)
-//   TIFF IFD0 → 0x8769(SubIFD) → 0x9286(UserComment) → {"Comment": "<파라미터 JSON>"}
+//   TIFF IFD0 → 0x8769(SubIFD) → 0x9286(UserComment) → {"Title":…, "Description":…, …, "Comment": "<파라미터 JSON>"}
 // 이렇게 하면 우리 앱은 물론 novelai.net/inspect 에서도 그대로 읽힌다.
 
-// UserComment에 넣을 JSON으로 TIFF/EXIF 블록 생성 (빅엔디안 MM)
-Uint8List buildExifBlock(String metadataJson) {
-  // NAI와 동일하게 바깥을 {"Comment": "..."} 로 감싼다
-  final wrapped = jsonEncode({'Comment': metadataJson});
-  // UserComment는 앞 8바이트가 인코딩 표기
-  final body = <int>[...utf8.encode('ASCII'), 0, 0, 0, ...utf8.encode(wrapped)];
+// UserComment에 넣을 TIFF/EXIF 블록 생성 (빅엔디안 MM)
+//
+// [fields] 는 원본 PNG 의 글자 청크 전부 (Title · Description · Software · Source ·
+// Generation time · Comment). NovelAI 가 메타데이터를 다루는 모양 그대로 JSON 하나에 담는다.
+//  ⚠️ 예전엔 {"Comment": …} 하나만 넣어서, novelai.net/inspect 가 Request Type
+//     (Comment 안의 request_type) 만 보여 주고 Title·Description·Software·Source 는
+//     비워 두었다. 키가 없었기 때문이다.
+Uint8List buildExifBlock(Map<String, String> fields) {
+  // 인코딩 표기를 'ASCII' 로 적으므로 본문도 실제로 ASCII 만 쓴다.
+  //  (한글·일본어 태그 같은 글자는 JSON 의 \uXXXX 로 바꾼다 — 어떤 뷰어가 ASCII 로
+  //   읽어도 깨지지 않고, JSON 으로 풀면 원래 글자로 돌아온다)
+  final wrapped = _asciiJson(fields);
+  final body = <int>[...ascii.encode('ASCII'), 0, 0, 0, ...ascii.encode(wrapped)];
 
   const ifd0Size = 2 + 12 + 4; // 엔트리1개 + 다음IFD포인터
   const subOffset = 8 + ifd0Size;
@@ -383,6 +428,20 @@ Uint8List buildExifBlock(String metadataJson) {
 
   out.add(body);
   return out.toBytes();
+}
+
+// JSON 으로 바꾸되 ASCII 밖의 글자는 \uXXXX 로 적는다 (파이썬 json.dumps 기본값과 같은 모양)
+String _asciiJson(Object value) {
+  final raw = jsonEncode(value);
+  final sb = StringBuffer();
+  for (final u in raw.codeUnits) {
+    if (u < 0x80) {
+      sb.writeCharCode(u);
+    } else {
+      sb.write('\\u${u.toRadixString(16).padLeft(4, '0')}');
+    }
+  }
+  return sb.toString();
 }
 
 // WebP 바이트에 VP8X + EXIF 청크를 주입한다.

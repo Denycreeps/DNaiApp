@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +20,10 @@ import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 import 'prompt_edit_dialog.dart';
 import '../app_theme.dart';
+import '../widgets/confirm_dialog.dart';
+import '../widgets/app_toast.dart';
+import '../utils/ui_safety.dart';
+import '../models/prompt_dict.dart';
 
 // ============================================================================
 // 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
@@ -99,53 +102,21 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
   }
 
   void onTextChanged() {
-    String text = widget.controller.text;
-    int cursor = widget.controller.selection.baseOffset;
-    if (cursor < 0) {
-      cursor = text.length;
-    }
-
-    String beforeCursor = text.substring(0, cursor);
-
-    int lastComma = beforeCursor.lastIndexOf(',');
-    int lastColon = beforeCursor.lastIndexOf(':');
-    int lastNewline = beforeCursor.lastIndexOf('\n');
-    // '(' ')'는 구분자에서 제외 — 태그 이름 자체에 괄호가 들어가기 때문
-    // (예: "zero (test)"). NovelAI 강조 문법은 {}/[]라 영향 없음.
-    int lastParen = max(beforeCursor.lastIndexOf('{'), beforeCursor.lastIndexOf('|'));
-    int lastDelimiter = max(lastComma, max(lastColon, max(lastNewline, lastParen)));
-
-    String currentWord = lastDelimiter == -1
-        ? beforeCursor
-        : beforeCursor.substring(lastDelimiter + 1);
-    currentWord = currentWord.trimLeft();
-
-    if (currentWord.isEmpty) {
-      setState(() {
-        suggestions = [];
-      });
-      return;
-    }
-
-    if (currentWord.startsWith('__')) {
-      String searchWord = currentWord.replaceAll('__', '').toLowerCase();
-      List<String> matches = widget.state.wildcards
-          .where((w) => w.name.toLowerCase().startsWith(searchWord))
-          .map((w) => "__${w.name}__")
-          .take(15)
-          .toList();
-
-      setState(() {
-        suggestions = matches;
-      });
-      return;
-    }
-
-    List<String> matches = smartMatchTags(widget.state.searchTags, currentWord);
+    // 단어 잘라내기·후보 만들기는 PromptUtils가 담당한다 (확대창·와일드카드탭과 공용)
+    final currentWord = PromptUtils.currentWordBefore(
+      widget.controller.text,
+      widget.controller.selection.baseOffset,
+    );
+    final matches = PromptUtils.suggestionsFor(
+      currentWord: currentWord,
+      tags: widget.state.searchTags,
+      wildcardNames: widget.state.wildcards.map((w) => w.name).toList(),
+    );
 
     setState(() {
       suggestions = matches;
-      _suggestionAnchor = widget.controller.selection.baseOffset;
+      // 후보가 없으면 앵커도 지운다 (엉뚱한 위치에 삽입되는 것 방지)
+      _suggestionAnchor = matches.isEmpty ? -1 : widget.controller.selection.baseOffset;
     });
   }
 
@@ -199,7 +170,9 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
           child: suggestions.isNotEmpty
               ? Container(
                   margin: const EdgeInsets.only(top: 4),
-                  constraints: const BoxConstraints(maxHeight: 150),
+                  // 한 번에 보이는 개수를 늘린다 (약 3~4개 → 8~9개).
+                  //  키보드가 올라온 상태에서도 입력창을 가리지 않는 선.
+                  constraints: const BoxConstraints(maxHeight: 320),
                   decoration: BoxDecoration(
                     color: AppColors.surface,
                     borderRadius: BorderRadius.circular(4),
@@ -209,6 +182,10 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
                     borderRadius: BorderRadius.circular(4),
                     child: ListView.separated(
                       padding: EdgeInsets.zero,
+                      // ⚠️ shrinkWrap은 반드시 유지한다.
+                      //    이게 없으면 제안이 2~3개일 때도 상자가 maxHeight까지
+                      //    벌어져 빈 공간이 생긴다. 항목이 단순한 텍스트 줄이라
+                      //    40개를 미리 재도 비용은 무시할 만하다.
                       shrinkWrap: true,
                       itemCount: suggestions.length,
                       separatorBuilder: (context, index) =>
@@ -217,7 +194,8 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
                         return InkWell(
                           onTap: () => insertTag(suggestions[index]),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                            // 세로 여백을 살짝 줄여 같은 높이에 한 줄이라도 더 담는다
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                             child: Text(
                               PromptUtils.displayTag(suggestions[index]),
                               style: TextStyle(
@@ -893,12 +871,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                           }
                                           if (text.isNotEmpty) {
                                             Clipboard.setData(ClipboardData(text: text));
-                                            ScaffoldMessenger.of(modalContext).showSnackBar(
-                                              SnackBar(
-                                                duration: const Duration(milliseconds: 2400),
-                                                content: Text("클립보드에 복사했습니다."),
-                                              ),
-                                            );
+                                            showToast(modalContext, "클립보드에 복사했습니다.");
                                           }
                                         }
                                       },
@@ -929,12 +902,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                           // 단일 카테고리: 바로 적용
                                           _applyPreset(consumerState, preset, preset.savedFields);
                                           Navigator.pop(modalContext);
-                                          ScaffoldMessenger.of(context).showSnackBar(
-                                            SnackBar(
-                                              duration: const Duration(milliseconds: 2400),
-                                              content: Text("'${preset.name}' 프리셋을 불러왔습니다."),
-                                            ),
-                                          );
+                                          showToast(context, "'${preset.name}' 프리셋을 불러왔습니다.");
                                         }
                                       },
                                       style: OutlinedButton.styleFrom(
@@ -1127,10 +1095,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         ],
       ),
     ).then((_) {
-      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        renameCtrl.dispose();
-      });
+      disposeAfterDialog(renameCtrl.dispose);
     });
   }
 
@@ -1158,6 +1123,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         newChar.isActive = true;
         state.characters.add(newChar);
       }
+      state.markCharactersReplaced();
     }
     state.saveAllSettings();
     state.refreshUI();
@@ -1289,12 +1255,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     _applyPreset(state, preset, selected);
                     Navigator.pop(ctx);
                     Navigator.pop(modalContext);
-                    ScaffoldMessenger.of(outerContext).showSnackBar(
-                      SnackBar(
-                        duration: const Duration(milliseconds: 2400),
-                        content: Text("'${preset.name}' 프리셋을 불러왔습니다."),
-                      ),
-                    );
+                    showToast(outerContext, "'${preset.name}' 프리셋을 불러왔습니다.");
                   }
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
@@ -1390,12 +1351,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: entry.value));
                   Navigator.pop(ctx);
-                  ScaffoldMessenger.of(parentContext).showSnackBar(
-                    SnackBar(
-                      duration: const Duration(milliseconds: 2400),
-                      content: Text("'$label' 클립보드에 복사했습니다."),
-                    ),
-                  );
+                  showToast(parentContext, "'$label' 클립보드에 복사했습니다.");
                 },
               );
             }).toList(),
@@ -1435,9 +1391,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       final zipData = ZipEncoder().encode(archive);
       if (zipData == null) {
         if (parentContext.mounted) {
-          ScaffoldMessenger.of(parentContext).showSnackBar(
-            SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
-          );
+          showToast(parentContext, "내보내기 실패");
         }
         return;
       }
@@ -1448,9 +1402,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
     } catch (e) {
       if (parentContext.mounted) {
-        ScaffoldMessenger.of(parentContext).showSnackBar(
-          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
-        );
+        showToast(parentContext, "내보내기 실패");
       }
     }
   }
@@ -1487,12 +1439,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
 
       if (metaFile == null) {
         if (parentContext.mounted) {
-          ScaffoldMessenger.of(parentContext).showSnackBar(
-            SnackBar(
-              duration: const Duration(milliseconds: 2400),
-              content: Text("metadata.json이 없는 파일입니다."),
-            ),
-          );
+          showToast(parentContext, "metadata.json이 없는 파일입니다.");
         }
         return;
       }
@@ -1518,18 +1465,11 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       final added = state.addPreciseFromImport(items);
       setDialogState(() {});
       if (parentContext.mounted) {
-        ScaffoldMessenger.of(parentContext).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text(added > 0 ? "$added개의 Reference를 불러왔습니다." : "불러올 이미지가 없습니다."),
-          ),
-        );
+        showToast(parentContext, added > 0 ? "$added개의 Reference를 불러왔습니다." : "불러올 이미지가 없습니다.");
       }
     } catch (e) {
       if (parentContext.mounted) {
-        ScaffoldMessenger.of(parentContext).showSnackBar(
-          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("불러오기 실패")),
-        );
+        showToast(parentContext, "불러오기 실패");
       }
     }
   }
@@ -1562,9 +1502,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         }
       } catch (e) {
         if (parentContext.mounted) {
-          ScaffoldMessenger.of(parentContext).showSnackBar(
-            SnackBar(duration: const Duration(milliseconds: 2400), content: Text("내보내기 실패")),
-          );
+          showToast(parentContext, "내보내기 실패");
         }
       }
     }
@@ -1986,27 +1924,18 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                       final added = state.importVibeFromNaiv4(jsonStr);
                                       setDialogState(() {});
                                       if (parentContext.mounted) {
-                                        ScaffoldMessenger.of(parentContext).showSnackBar(
-                                          SnackBar(
-                                            duration: const Duration(milliseconds: 2400),
-                                            content: Text(
-                                              added > 0
-                                                  ? "$added개의 vibe를 불러왔습니다."
-                                                  : added == 0
-                                                  ? "유효한 vibe 파일이 아닙니다."
-                                                  : "파일을 읽는 데 실패했습니다.",
-                                            ),
-                                          ),
+                                        showToast(
+                                          parentContext,
+                                          added > 0
+                                              ? "$added개의 vibe를 불러왔습니다."
+                                              : added == 0
+                                              ? "유효한 vibe 파일이 아닙니다."
+                                              : "파일을 읽는 데 실패했습니다.",
                                         );
                                       }
                                     } catch (e) {
                                       if (parentContext.mounted) {
-                                        ScaffoldMessenger.of(parentContext).showSnackBar(
-                                          SnackBar(
-                                            duration: const Duration(milliseconds: 2400),
-                                            content: Text("불러오기 실패"),
-                                          ),
-                                        );
+                                        showToast(parentContext, "불러오기 실패");
                                       }
                                     }
                                   },
@@ -2313,7 +2242,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                   final cost = state.calculatePreciseAnlas();
                                   if (cost > 0) {
                                     return Text(
-                                      "Anlas가 $cost 소모됩니다.",
+                                      AppState.anlasText(cost),
                                       style: TextStyle(
                                         color: Colors.amber.withValues(alpha: 0.8),
                                         fontSize: 10,
@@ -2335,7 +2264,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 final cost = state.calculateVibeAnlas();
                                 if (cost > 0) {
                                   return Text(
-                                    "Anlas가 $cost 소모됩니다.",
+                                    AppState.anlasText(cost),
                                     style: TextStyle(
                                       color: Colors.amber.withValues(alpha: 0.8),
                                       fontSize: 10,
@@ -2406,6 +2335,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                       ),
                                       ElevatedButton(
                                         onPressed: () {
+                                          // ⚠️ setDialogState 로 바깥 다이얼로그를 함께 갱신해야 해서
+                                          //    showConfirmDialog 로 바꾸지 않았다.
                                           setDialogState(() {
                                             if (tabIdx == 0) {
                                               state.vibeTransfers.clear();
@@ -3330,7 +3261,16 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     required String title,
   }) {
     return GestureDetector(
-      onTap: () => showPromptEditDialog(context, state, title, icon, color, controller),
+      onTap: () => showPromptEditDialog(
+        context,
+        state,
+        title,
+        icon,
+        color,
+        controller,
+        // i2i탭에도 같은 이름의 입력창이 있어 되돌리기 기록이 섞이지 않게 구분한다
+        undoKey: 'prompt/$title',
+      ),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.surface,
@@ -3558,56 +3498,26 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
   Future<void> _startGenerate(BuildContext context, AppState state) async {
     // API 연결 확인 먼저
     if (!state.isApiConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          duration: Duration(milliseconds: 2400),
-          content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
-        ),
-      );
+      showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
       return;
     }
-    if (state.checkIfAnlasConsumed()) {
+    final int anlas = state.anlasFor(AnlasJob.generate);
+    if (anlas != 0) {
       final batchInfo = state.batchCount > 1
           ? "\n${state.batchCount}회 연속 생성합니다."
           : state.batchCount == 0
-          ? "\n무한 생성합니다. 수동으로 중지하세요."
+          ? "\n무한 생성합니다. 수동으로 중지하세요. (1장 기준 추정)"
           : "";
-      final bool? confirm = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: AppColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.amber),
-              SizedBox(width: 8),
-              Text(
-                "포인트 소모 안내",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          content: Text(
-            "Anlas가 소모됩니다. 괜찮습니까?$batchInfo",
-            style: const TextStyle(color: Colors.white70, fontSize: 15),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("취소", style: TextStyle(color: Colors.grey, fontSize: 15)),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
-              child: const Text(
-                "생성하기",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
+      final bool confirm = await showConfirmDialog(
+        context,
+        title: "포인트 소모 안내",
+        message: "${AppState.anlasText(anlas)}$batchInfo",
+        confirmLabel: "생성하기",
+        icon: Icons.warning_amber_rounded,
+        iconColor: Colors.amber,
+        confirmColor: AppColors.purple,
       );
-      if (confirm != true) {
+      if (!confirm) {
         return;
       }
     }
@@ -3789,8 +3699,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         );
       },
     ).then((_) {
-      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
+      disposeAfterDialog(() {
         ctrl.dispose();
         repeatCtrl.dispose();
       });
@@ -3955,6 +3864,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 Icons.add_circle_outline,
                 AppColors.teal,
                 state.positiveController,
+                undoKey: kPositiveUndoKey, // 사전 탭 '추가'와 같은 열쇠 (prompt_dict.dart)
               ),
               child: Container(
                 width: double.infinity,
@@ -5051,6 +4961,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     final label = positive ? "긍정" : "부정";
     return GestureDetector(
       onTap: () {
+        // 탭과 실제 실행 사이에 캐릭터가 사라졌을 수 있다 (불러오기로 교체 등)
+        if (index >= state.characters.length) {
+          return;
+        }
         // 컨트롤러를 즉석 생성해 원본에 실시간 반영 (서랍과 동일한 방식)
         final ctrl = TextEditingController(
           text: positive ? state.characters[index].positive : state.characters[index].negative,
@@ -5071,6 +4985,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           positive ? Icons.add_circle_outline : Icons.remove_circle_outline,
           color,
           ctrl,
+          // 캐릭터마다 따로 기억한다 (1번과 2번이 섞이면 안 된다)
+          undoKey: 'char/${state.characters[index].uid}/${positive ? "긍정" : "부정"}',
           onClosed: () {
             // 리스너가 메모리는 갱신하지만 저장은 하지 않으므로 닫을 때 한 번 저장
             state.saveAllSettings();
@@ -5174,56 +5090,26 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
   Future<void> _onGeneratePressed(BuildContext context, AppState state) async {
     // API 연결 확인 먼저
     if (!state.isApiConnected) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          duration: const Duration(milliseconds: 2400),
-          content: Text("설정 탭에서 API 키를 먼저 연결해주세요."),
-        ),
-      );
+      showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
       return;
     }
-    if (state.checkIfAnlasConsumed()) {
+    final int anlas = state.anlasFor(AnlasJob.generate);
+    if (anlas != 0) {
       final batchInfo = state.batchCount > 1
           ? "\n${state.batchCount}회 연속 생성합니다."
           : state.batchCount == 0
-          ? "\n무한 생성합니다. 수동으로 중지하세요."
+          ? "\n무한 생성합니다. 수동으로 중지하세요. (1장 기준 추정)"
           : "";
-      bool? confirm = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: AppColors.surface,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.amber),
-              SizedBox(width: 8),
-              Text(
-                "포인트 소모 안내",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ],
-          ),
-          content: Text(
-            "Anlas가 소모됩니다. 괜찮습니까?$batchInfo",
-            style: const TextStyle(color: Colors.white70, fontSize: 15),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("취소", style: TextStyle(color: Colors.grey, fontSize: 15)),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
-              child: const Text(
-                "생성하기",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-            ),
-          ],
-        ),
+      final bool confirm = await showConfirmDialog(
+        context,
+        title: "포인트 소모 안내",
+        message: "${AppState.anlasText(anlas)}$batchInfo",
+        confirmLabel: "생성하기",
+        icon: Icons.warning_amber_rounded,
+        iconColor: Colors.amber,
+        confirmColor: AppColors.purple,
       );
-      if (confirm != true) {
+      if (!confirm) {
         return;
       }
     }
@@ -5398,12 +5284,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 return GestureDetector(
                   onTap: () {
                     if (locked) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text("${caps.displayName}에선 Vibe / Precise를 사용할 수 없어요"),
-                          duration: const Duration(seconds: 2),
-                        ),
-                      );
+                      showToast(context, "${caps.displayName}에선 Vibe / Precise를 사용할 수 없어요");
                       return;
                     }
                     _showVibeTransferDialog(context, state);
@@ -6427,11 +6308,21 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
 
   @override
   void dispose() {
-    for (final c in _charPosCtrls.values) {
-      c.dispose();
-    }
-    for (final c in _charNegCtrls.values) {
-      c.dispose();
+    // ⚠️ 입력창이 열려 있는 동안에는 컨트롤러를 버리면 안 된다.
+    //    그 컨트롤러를 다이얼로그의 TextField 가 아직 쓰고 있어서,
+    //    버리면 '버려진 컨트롤러'를 붙든 화면이 남아 앱이 멈춘다.
+    //    (main.dart 에서 이 위젯을 트리에 계속 두도록 고쳤지만,
+    //     탭 전환 등 다른 경로로 사라질 수도 있어 여기서도 막는다)
+    if (!_charEditingOpen) {
+      for (final c in _charPosCtrls.values) {
+        c.dispose();
+      }
+      for (final c in _charNegCtrls.values) {
+        c.dispose();
+      }
+      for (final c in _charTempCtrls.values) {
+        c.dispose();
+      }
     }
     super.dispose();
   }
@@ -6497,29 +6388,96 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
 
   // ── 캐릭터 목록 바텀시트 (손잡이 탭 → 화면 아래에서 올라옴) ──
   // 캐릭터별 긍정/부정 컨트롤러 (없으면 생성, 텍스트 변경 시 원본에 실시간 반영)
-  TextEditingController _charCtrl(AppState state, int index, bool positive) {
-    final cache = positive ? _charPosCtrls : _charNegCtrls;
+  // 각 컨트롤러가 마지막으로 맞춰진 charactersRevision.
+  //  이 값이 현재와 다르면 '외부에서 바뀐 직후'라는 뜻이다.
+  final Map<int, int> _charPosRev = {};
+  final Map<int, int> _charNegRev = {};
+
+  // 임시 프롬프트용 컨트롤러 캐시 (긍정·부정과 같은 구조)
+  final Map<int, TextEditingController> _charTempCtrls = {};
+  final Map<int, int> _charTempRev = {};
+
+  /// 목록 길이를 넘어선 컨트롤러를 정리한다.
+  ///  입력창이 열려 있는 동안에는 그 컨트롤러를 쓰고 있을 수 있어 건드리지 않는다.
+  void _dropOutOfRangeCharCtrls(int length) {
+    if (_charEditingOpen) {
+      return;
+    }
+    for (final pair in [
+      (_charPosCtrls, _charPosRev),
+      (_charNegCtrls, _charNegRev),
+      (_charTempCtrls, _charTempRev),
+    ]) {
+      final cache = pair.$1;
+      final revs = pair.$2;
+      final dead = cache.keys.where((k) => k >= length).toList();
+      for (final k in dead) {
+        cache.remove(k)?.dispose();
+        revs.remove(k);
+      }
+    }
+  }
+
+  /// 캐릭터 입력 컨트롤러를 꺼낸다.
+  ///  [temp] 가 true 면 '임시 프롬프트' 칸을 쓴다.
+  TextEditingController _charCtrl(AppState state, int index, bool positive, {bool temp = false}) {
+    final cache = temp ? _charTempCtrls : (positive ? _charPosCtrls : _charNegCtrls);
+    final revs = temp ? _charTempRev : (positive ? _charPosRev : _charNegRev);
+    final rev = state.charactersRevision;
+
+    // 캐릭터 수가 줄었으면 남아도는 컨트롤러를 먼저 버린다.
+    //  ⚠️ 캐시는 '몇 번째'로 묶여 있어서, 캐릭터가 3개에서 1개로 바뀌면
+    //     1·2번 컨트롤러가 갈 곳 없이 남는다. 그것들이 계속 살아 있으면
+    //     리스너가 사라진 캐릭터를 건드리려다 멈춘다.
+    _dropOutOfRangeCharCtrls(state.characters.length);
+    // 어느 칸을 읽고 쓸지 한 곳에서 정한다 (아래에서 두 번 쓰인다)
+    //  ⚠️ 범위 검사가 반드시 필요하다. 프롬프트 불러오기로 캐릭터가
+    //     3개에서 1개로 줄면 캐시에는 1·2번 컨트롤러가 남아 있는데,
+    //     그대로 state.characters[index] 를 읽으면 범위를 벗어난다.
+    String read() {
+      if (index >= state.characters.length) {
+        return '';
+      }
+      final c = state.characters[index];
+      return temp ? c.tempPositive : (positive ? c.positive : c.negative);
+    }
+
+    void write(String v) {
+      if (index >= state.characters.length) {
+        return;
+      }
+      final c = state.characters[index];
+      if (temp) {
+        c.tempPositive = v;
+      } else if (positive) {
+        c.positive = v;
+      } else {
+        c.negative = v;
+      }
+    }
+
     if (!cache.containsKey(index)) {
-      final char = state.characters[index];
-      final ctrl = TextEditingController(text: positive ? char.positive : char.negative);
+      revs[index] = rev;
+      final ctrl = TextEditingController(text: read());
       ctrl.addListener(() {
         if (index < state.characters.length) {
-          if (positive) {
-            state.characters[index].positive = ctrl.text;
-          } else {
-            state.characters[index].negative = ctrl.text;
-          }
+          write(ctrl.text);
         }
       });
       cache[index] = ctrl;
-    } else if (!_charEditingOpen) {
-      // 입력창이 '닫혀 있을 때만' 외부 변경(캐릭터 탭 등)을 반영한다.
+    } else if (!_charEditingOpen || revs[index] != rev) {
+      // 입력창이 '닫혀 있을 때' 외부 변경(캐릭터 탭 등)을 반영한다.
       //  ⚠️ 편집 중에 값을 다시 넣으면 TextField 내부 편집 상태가 재설정되어
       //     커서 이동·드래그 선택이 취소된다. 그래서 열려 있는 동안은 손대지 않는다.
       //  · 편집 중에는 리스너가 원본을 실시간 갱신하므로 값이 어차피 같다.
       //  · 아래에서 선택 범위를 보존하는 것은 이중 안전장치.
+      //
+      //  단, charactersRevision이 바뀐 직후(= 불러오기·프리셋 적용 등으로
+      //  캐릭터가 통째로 교체된 경우)에는 편집 중이라도 반드시 맞춘다.
+      //  안 그러면 옛 텍스트를 든 컨트롤러가 나중에 모델을 되돌려 버린다.
+      revs[index] = rev;
       final ctrl = cache[index]!;
-      final src = positive ? state.characters[index].positive : state.characters[index].negative;
+      final src = read();
       if (ctrl.text != src) {
         final sel = ctrl.selection;
         ctrl.value = ctrl.value.copyWith(
@@ -6668,6 +6626,11 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                   itemBuilder: (context, i) {
                     final char = state.characters[i];
                     final isOn = char.isActive;
+                    // 임시 프롬프트가 들어 있는 캐릭터는 목록에서 바로 알아볼 수 있어야 한다.
+                    //  (지우는 걸 잊은 채 생성하면 의도치 않은 결과가 나온다)
+                    final hasTemp = char.tempPositive.trim().isNotEmpty;
+                    // 내용은 있지만 꺼 둔 상태 — 번개를 회색으로 보여 준다
+                    final tempOn = hasTemp && char.tempEnabled;
                     final title = char.name.isEmpty ? "캐릭터 #${i + 1}" : char.name;
                     return Container(
                       margin: const EdgeInsets.only(bottom: 6),
@@ -6706,14 +6669,34 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                               },
                               child: Padding(
                                 padding: const EdgeInsets.symmetric(vertical: 14),
-                                child: Text(
-                                  title,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: isOn ? Colors.white : Colors.white54,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
+                                child: Row(
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        title,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          // 임시 프롬프트가 '쓰이는' 상태면 이름부터 주황으로
+                                          //  (꺼 둔 경우엔 이름은 평소 색, 번개만 회색)
+                                          color: tempOn
+                                              ? AppColors.orange
+                                              : (isOn ? Colors.white : Colors.white54),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                    ),
+                                    // 켜짐: 주황 번개 / 꺼짐: 회색 번개
+                                    //  (내용은 남아 있으나 이번 생성엔 안 붙는다는 뜻)
+                                    if (hasTemp) ...[
+                                      const SizedBox(width: 4),
+                                      Icon(
+                                        Icons.bolt,
+                                        size: 16,
+                                        color: tempOn ? AppColors.orange : Colors.white30,
+                                      ),
+                                    ],
+                                  ],
                                 ),
                               ),
                             ),
@@ -6792,6 +6775,10 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                   icon: Icons.add_circle_outline,
                   text: char.positive,
                   onTap: () {
+                    // 탭과 실제 실행 사이에 캐릭터가 사라졌을 수 있다
+                    if (index >= state.characters.length) {
+                      return;
+                    }
                     // 프롬프트 탭의 입력 다이얼로그 그대로 재사용 (세세한 경험 동일)
                     _charEditingOpen = true;
                     showPromptEditDialog(
@@ -6801,34 +6788,52 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                       Icons.add_circle_outline,
                       const Color(0xFF10B981),
                       _charCtrl(state, index, true),
+                      undoKey: 'char/${state.characters[index].uid}/긍정',
                       onClosed: () {
                         _charEditingOpen = false;
-                        // 리스너가 메모리는 실시간 갱신하지만 저장은 하지 않으므로
-                        // 창을 닫을 때 한 번만 저장한다 (매 타자마다 저장하면 무겁다)
-                        state.saveAllSettings();
+                        // 저장은 showPromptEditDialog 가 닫히면서 이미 한다.
+                        // 여기서 또 부르면 설정 116개를 두 번 쓰게 된다.
                         setLocal(() {});
                       },
                     );
                   },
                 ),
                 const SizedBox(height: 12),
+                // 부정 프롬프트 대신 '임시 프롬프트'를 둔다.
+                //  캐릭터 부정은 거의 손대지 않는 데다 캐릭터 탭에서 고칠 수 있다.
+                //  이 자리는 "이번엔 이것도 넣어 보자" 를 빠르게 썼다 지우는 칸이다.
                 _charPreviewCard(
-                  label: "부정 프롬프트",
-                  color: const Color(0xFFEF4444),
-                  icon: Icons.remove_circle_outline,
-                  text: char.negative,
+                  label: "임시 프롬프트",
+                  color: AppColors.orange,
+                  icon: Icons.bolt,
+                  text: char.tempPositive,
+                  // 내용은 그대로 두고 이번 생성에서만 빼 볼 수 있게
+                  enabled: char.tempEnabled,
+                  onEnabledChanged: (v) {
+                    char.tempEnabled = v;
+                    state.saveAllSettings();
+                    setLocal(() {});
+                  },
+                  // 강조는 캐릭터 목록 쪽에서 한다.
+                  //  여기는 이미 '임시 프롬프트'라고 적혀 있어 굳이 두 번 강조할 필요가 없고,
+                  //  목록에서 표시해야 어느 캐릭터가 남겨 뒀는지 한눈에 보인다.
                   onTap: () {
+                    // 탭과 실제 실행 사이에 캐릭터가 사라졌을 수 있다
+                    if (index >= state.characters.length) {
+                      return;
+                    }
                     _charEditingOpen = true;
                     showPromptEditDialog(
                       context,
                       state,
-                      "부정 프롬프트",
-                      Icons.remove_circle_outline,
-                      const Color(0xFFEF4444),
-                      _charCtrl(state, index, false),
+                      "임시 프롬프트",
+                      Icons.bolt,
+                      AppColors.orange,
+                      _charCtrl(state, index, true, temp: true),
+                      undoKey: 'char/${state.characters[index].uid}/임시',
                       onClosed: () {
                         _charEditingOpen = false;
-                        state.saveAllSettings();
+                        // 저장은 showPromptEditDialog 가 닫히면서 이미 한다.
                         setLocal(() {});
                       },
                     );
@@ -6849,7 +6854,12 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
     required IconData icon,
     required String text,
     required VoidCallback onTap,
+    // 주면 헤더 오른쪽에 ON/OFF 스위치가 붙는다 (가중치 규칙과 같은 모양)
+    bool? enabled,
+    ValueChanged<bool>? onEnabledChanged,
   }) {
+    // 꺼져 있으면 칸 전체를 흐리게 — 내용은 남아 있지만 쓰이지 않는다는 표시
+    final bool dimmed = enabled == false;
     return GestureDetector(
       onTap: onTap,
       child: Container(
@@ -6880,7 +6890,26 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                       ),
                     ],
                   ),
-                  Icon(Icons.edit, color: color, size: 15),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (enabled != null && onEnabledChanged != null) ...[
+                        SizedBox(
+                          height: 22,
+                          child: FittedBox(
+                            fit: BoxFit.fitHeight,
+                            child: Switch(
+                              value: enabled,
+                              activeThumbColor: color,
+                              onChanged: onEnabledChanged,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                      ],
+                      Icon(Icons.edit, color: color, size: 15),
+                    ],
+                  ),
                 ],
               ),
             ),
@@ -6891,7 +6920,7 @@ class _CharDrawerHandleState extends State<CharDrawerHandle> {
                 maxLines: 3, // 미리보기 3줄
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: text.isEmpty ? Colors.white30 : Colors.white,
+                  color: text.isEmpty ? Colors.white30 : (dimmed ? Colors.white38 : Colors.white),
                   fontSize: 12,
                   height: 1.4,
                 ),

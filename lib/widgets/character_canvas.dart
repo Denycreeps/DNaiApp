@@ -159,34 +159,36 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
           return RawGestureDetector(
             behavior: HitTestBehavior.opaque,
             gestures: <Type, GestureRecognizerFactory>{
-              _EagerPanRecognizer: GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-                () => _EagerPanRecognizer(),
-                (r) {
-                  // ⚠️ 콜백은 void를 돌려줘야 한다.
-                  //    `(d) => _onPanStart(...)` 형태로 쓰면 void 값을 반환하는
-                  //    꼴이 되어 분석기가 오류로 잡는다. 블록으로 감싼다.
-                  r.onStart = (d) {
-                    _onPanStart(d, size);
-                  };
-                  r.onUpdate = (d) {
-                    _onPanUpdate(d, size);
-                  };
-                  r.onEnd = (_) {
-                    setState(() => _dragging = null);
-                  };
-                  r.onCancel = () {
-                    setState(() => _dragging = null);
-                  };
-                },
-              ),
-              TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-                () => TapGestureRecognizer(),
-                (r) {
-                  r.onTapDown = (d) {
-                    _onTapDown(d, size);
-                  };
-                },
-              ),
+              _EagerPanRecognizer:
+                  GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
+                    () => _EagerPanRecognizer(),
+                    (r) {
+                      // ⚠️ 콜백은 void를 돌려줘야 한다.
+                      //    `(d) => _onPanStart(...)` 형태로 쓰면 void 값을 반환하는
+                      //    꼴이 되어 분석기가 오류로 잡는다. 블록으로 감싼다.
+                      r.onStart = (d) {
+                        _onPanStart(d, size);
+                      };
+                      r.onUpdate = (d) {
+                        _onPanUpdate(d, size);
+                      };
+                      r.onEnd = (_) {
+                        setState(() => _dragging = null);
+                      };
+                      r.onCancel = () {
+                        setState(() => _dragging = null);
+                      };
+                    },
+                  ),
+              TapGestureRecognizer:
+                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                    () => TapGestureRecognizer(),
+                    (r) {
+                      r.onTapDown = (d) {
+                        _onTapDown(d, size);
+                      };
+                    },
+                  ),
             },
             child: Stack(
               children: [
@@ -220,15 +222,22 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
                 if (widget.showGrid)
                   Positioned.fill(
                     child: CustomPaint(
-                      painter: _GridPainter(cols: widget.gridCols, rows: widget.gridRows),
+                      painter: _GridPainter(
+                        cols: widget.gridCols,
+                        rows: widget.gridRows,
+                      ),
                     ),
                   ),
                 // 캐릭터 마커
                 for (int i = 0; i < widget.characters.length; i++)
                   if (widget.characters[i].isActive)
                     Positioned(
-                      left: widget.characters[i].centerX * size.width - _markerSize / 2,
-                      top: widget.characters[i].centerY * size.height - _markerSize / 2,
+                      left:
+                          widget.characters[i].centerX * size.width -
+                          _markerSize / 2,
+                      top:
+                          widget.characters[i].centerY * size.height -
+                          _markerSize / 2,
                       child: _marker(i, i == widget.selectedIndex),
                     ),
               ],
@@ -278,7 +287,11 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
             label,
             maxLines: 1,
             softWrap: false,
-            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
       ),

@@ -9,6 +9,7 @@ import '../models/app_state.dart';
 import '../models/nai_character.dart';
 import '../models/preset_models.dart';
 import '../app_theme.dart';
+import '../utils/ui_safety.dart';
 
 // 프리셋 저장 다이얼로그 (프롬프트탭 + 갤러리 EXIF 메뉴 공용)
 // 데이터 소스를 인자로 받아 작업창/이미지 메타데이터 어느 쪽이든 동일 UI로 저장.
@@ -245,7 +246,11 @@ void showPresetSaveDialog(
                   charsToSave = selectedCharIndices
                       .toList()
                       .where((i) => i < characters.length)
-                      .map((i) => characters[i].toJson())
+                      // ⚠️ 프리셋에는 uid·임시 프롬프트를 담지 않는다.
+                      //    uid 를 담으면 프리셋을 적용할 때마다 같은 uid 를 가진
+                      //    캐릭터가 늘어나 되돌리기 기록이 서로 섞인다.
+                      //    임시 프롬프트는 '이번에만' 쓰는 메모라 프리셋에 맞지 않는다.
+                      .map((i) => characters[i].toJson(forPreset: true))
                       .toList();
                 } else {
                   savedFields.remove('characters');
@@ -282,9 +287,6 @@ void showPresetSaveDialog(
       },
     ),
   ).then((_) {
-    // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      nameCtrl.dispose();
-    });
+    disposeAfterDialog(nameCtrl.dispose);
   });
 }

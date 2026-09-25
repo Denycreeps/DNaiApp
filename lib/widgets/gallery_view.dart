@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui; // 이미지 헤더만 읽어 해상도를 얻는다
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
 import '../models/image_metadata.dart';
@@ -7,6 +8,9 @@ import 'preset_save_dialog.dart';
 import '../models/nai_character.dart';
 import 'detail_settings_modal.dart';
 import '../app_theme.dart';
+import '../widgets/confirm_dialog.dart';
+import '../widgets/app_toast.dart';
+import '../utils/image_codec.dart'; // 그림 확장자 목록 (앱 전체 공용)
 
 // 갤러리 뷰: 폴더를 탐색하고 이미지를 실제 갤러리 앱처럼 보여준다.
 // - 폴더 우선 표시 (상단), 그 아래 이미지
@@ -111,8 +115,6 @@ class GalleryViewState extends State<GalleryView> {
 
   // SAF 그리드 스크롤 컨트롤러 (자동 새로고침 시 위치 복원용)
   final ScrollController _safGridScroll = ScrollController();
-
-  static const Set<String> _imageExts = {'.png', '.jpg', '.jpeg', '.webp', '.gif'};
 
   @override
   void initState() {
@@ -337,7 +339,7 @@ class GalleryViewState extends State<GalleryView> {
           }
         } else if (e is File) {
           final lower = e.path.toLowerCase();
-          if (_imageExts.any((ext) => lower.endsWith(ext))) {
+          if (isImageFileName(lower)) {
             images.add(e);
           }
         }
@@ -370,7 +372,7 @@ class GalleryViewState extends State<GalleryView> {
       for (final f in folder.listSync()) {
         if (f is File) {
           final l = f.path.toLowerCase();
-          if (_imageExts.any((ext) => l.endsWith(ext))) {
+          if (isImageFileName(l)) {
             inner.add(f);
           }
         } else if (f is Directory) {
@@ -451,9 +453,20 @@ class GalleryViewState extends State<GalleryView> {
       return;
     }
     // 목록 조회에서 딸려온 미리보기 refs를 사전 시딩 → 폴더별 재조회 생략
+    //  ⚠️ refs 가 바뀌었으면 '그려 둔 썸네일'도 버려야 한다.
+    //     _safPreviewFutures 는 한 번 만든 Future 를 계속 재사용하므로,
+    //     refs 만 새로 넣어 봐야 화면에는 옛 그림이 그대로 나온다.
+    //     (이미지를 다른 폴더로 옮긴 뒤 위로 올라갔을 때 썸네일이 안 바뀌던 원인)
     for (final f in res.folders) {
-      if (f.previews.isNotEmpty) {
-        _safFolderPreview[f.uri] = f.previews;
+      if (f.previews.isEmpty) {
+        continue;
+      }
+      final before = _safFolderPreview[f.uri];
+      final changed =
+          before == null || before.length != f.previews.length || !_sameRefs(before, f.previews);
+      _safFolderPreview[f.uri] = f.previews;
+      if (changed) {
+        _safPreviewFutures.remove(f.uri);
       }
     }
     // ⚠️ 같은 폴더를 다시 읽는 경우(자동 새로고침)에는 진행 중인 썸네일 로딩을
@@ -522,6 +535,28 @@ class GalleryViewState extends State<GalleryView> {
       // 이 폴더의 미리보기만 새로 시딩 (다른 폴더 캐시는 유지)
       _safFolderPreview[folderUri] = previews;
       _safPreviewFutures.remove(folderUri);
+    });
+  }
+
+  /// 지금 보고 있는 폴더의 이미지 목록만 다시 읽는다.
+  ///
+  /// 폴더 타일과 다른 폴더의 썸네일 캐시는 건드리지 않는다.
+  /// 이동·삭제처럼 '지금 폴더의 내용이 바뀐 것이 확실할 때' 쓴다.
+  ///  (생성 후 자동 새로고침은 저장 위치를 따져야 하므로 _refreshSafImagesOnly 를 쓴다)
+  Future<void> _reloadCurrentSafImages() async {
+    final d = _safDirUri;
+    if (d == null) {
+      // 최상위에서는 목록이 폴더와 섞여 있어 전체를 다시 읽는다
+      await _reloadSafDir(keepThumbs: true, silent: true);
+      return;
+    }
+    final imgs = await widget.state.listSafImagesOnly(d);
+    if (!mounted || _safDirUri != d) {
+      return; // 그 사이 다른 폴더로 옮겨 갔으면 버린다
+    }
+    setState(() {
+      _safImages = imgs;
+      _sortSafLists();
     });
   }
 
@@ -598,6 +633,19 @@ class GalleryViewState extends State<GalleryView> {
       final c = a.name.toLowerCase().compareTo(b.name.toLowerCase());
       return desc ? -c : c;
     });
+  }
+
+  // 두 미리보기 목록이 같은 파일들인지 (순서까지 같아야 같은 것으로 본다)
+  static bool _sameRefs(List<({String uri, String name})> a, List<({String uri, String name})> b) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].uri != b[i].uri) {
+        return false;
+      }
+    }
+    return true;
   }
 
   // 폴더 미리보기 이미지들(최대 4장) — 썸네일 로드 (refs + thumb 캐시)
@@ -1306,6 +1354,15 @@ class GalleryViewState extends State<GalleryView> {
         startIndex: index,
         nameOf: (i) => _safImages[i].name,
         pageOf: _safViewerPage,
+        // 화면에 띄우려고 읽는 바이트를 그대로 쓴다 (같은 Future 라 두 번 읽지 않는다)
+        infoOf: (i) async {
+          if (i >= _safImages.length) {
+            return null;
+          }
+          final uri = _safImages[i].uri;
+          final bytes = await _safViewerFutures.putIfAbsent(uri, () => _loadFullSafBytes(uri));
+          return bytes == null ? null : _readImageInfo(bytes);
+        },
         onLongPress: (i, close) => _showGalleryImageMenu(_safItem(_safImages[i], close), close),
       ),
     );
@@ -1349,7 +1406,9 @@ class GalleryViewState extends State<GalleryView> {
     required int count,
     required VoidCallback onCancel,
     required VoidCallback? onInfo,
-    required VoidCallback? onDelete,
+    // 삭제는 확인 다이얼로그를 띄우느라 비동기다.
+    //  onTap 은 결과를 기다리지 않으므로 Future 를 그대로 넘겨도 된다.
+    required Future<void> Function()? onDelete,
   }) {
     final bool hasSel = count > 0;
     return Row(
@@ -1404,7 +1463,7 @@ class GalleryViewState extends State<GalleryView> {
         ),
         const SizedBox(width: 8),
         GestureDetector(
-          onTap: hasSel ? onDelete : null,
+          onTap: hasSel && onDelete != null ? () => onDelete() : null,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
@@ -1544,68 +1603,41 @@ class GalleryViewState extends State<GalleryView> {
       return;
     }
     _safExitSelect();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$added장을 히스토리에 추가했습니다.")));
+    showToast(context, "$added장을 히스토리에 추가했습니다.");
   }
 
-  void _safDeleteSelected() {
+  Future<void> _safDeleteSelected() async {
     final refs = _safSelectedRefs();
     if (refs.isEmpty) {
       return;
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.delete_outline, color: Colors.redAccent),
-            SizedBox(width: 8),
-            Text(
-              "이미지 삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: Text(
-          "${refs.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              int deleted = 0;
-              for (final ref in refs) {
-                final ok = await widget.state.deleteSafImage(ref.uri);
-                if (ok) {
-                  deleted++;
-                  _safImages.removeWhere((e) => e.uri == ref.uri);
-                  _safBytesCache.remove(ref.uri);
-                  _safThumbCache.remove(ref.uri);
-                  _safThumbFutures.remove(ref.uri);
-                  _safViewerFutures.remove(ref.uri);
-                }
-              }
-              if (!mounted) {
-                return;
-              }
-              _safExitSelect();
-              _showBriefSnack("$deleted장 삭제");
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text(
-              "삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmDialog(
+      context,
+      title: "이미지 삭제",
+      message: "${refs.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
+      confirmLabel: "삭제",
+      icon: Icons.delete_outline,
     );
+    if (!confirmed) {
+      return;
+    }
+    int deleted = 0;
+    for (final ref in refs) {
+      final ok = await widget.state.deleteSafImage(ref.uri);
+      if (ok) {
+        deleted++;
+        _safImages.removeWhere((e) => e.uri == ref.uri);
+        _safBytesCache.remove(ref.uri);
+        _safThumbCache.remove(ref.uri);
+        _safThumbFutures.remove(ref.uri);
+        _safViewerFutures.remove(ref.uri);
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    _safExitSelect();
+    _showBriefSnack("$deleted장 삭제");
   }
 
   // 이미지 꾹 메뉴 (SAF/파일 공용)
@@ -1720,9 +1752,7 @@ class GalleryViewState extends State<GalleryView> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text("이미지를 불러오는 데 실패했습니다.")));
+      showToast(context, "이미지를 불러오는 데 실패했습니다.");
     }
   }
 
@@ -1736,12 +1766,7 @@ class GalleryViewState extends State<GalleryView> {
       final meta = extractNovelAIMetadata(bytes);
       widget.state.sendToI2i(bytes, meta);
       widget.state.navigateToTab(2);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          duration: Duration(milliseconds: 2400),
-          content: Text("이미지를 i2i 탭으로 보냈습니다! 👉"),
-        ),
-      );
+      showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
     } catch (e) {
       debugPrint("i2i 전송 실패: $e");
     }
@@ -1776,9 +1801,7 @@ class GalleryViewState extends State<GalleryView> {
       }
       final meta = extractNovelAIMetadata(bytes);
       if (meta == null) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("이 이미지에는 저장된 프롬프트 데이터가 없습니다.")));
+        showToast(context, "이 이미지에는 저장된 프롬프트 데이터가 없습니다.");
         return;
       }
       // 메타데이터의 캐릭터 프롬프트를 NaiCharacter 목록으로 변환
@@ -1821,12 +1844,7 @@ class GalleryViewState extends State<GalleryView> {
       }
       final meta = extractNovelAIMetadata(bytes);
       if (meta == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 2400),
-            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
-          ),
-        );
+        showToast(context, "이 이미지에서 프롬프트 정보를 찾지 못했습니다.");
         return;
       }
       showLoadPromptDialog(context, widget.state, meta);
@@ -1884,53 +1902,37 @@ class GalleryViewState extends State<GalleryView> {
     }
   }
 
-  void _confirmDeleteSafImage(({String uri, String name}) item, [VoidCallback? onDeleted]) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Row(
-          children: [
-            Icon(Icons.delete_outline, color: Colors.redAccent),
-            SizedBox(width: 8),
-            Text("이미지 삭제", style: TextStyle(color: Colors.white, fontSize: 16)),
-          ],
-        ),
-        content: Text(
-          "${item.name}\n이 이미지를 삭제할까요?",
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.white54)),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              final ok = await widget.state.deleteSafImage(item.uri);
-              if (!mounted) {
-                return;
-              }
-              if (ok) {
-                onDeleted?.call(); // 뷰어에서 삭제 시 뷰어 닫기 (지운 목록 계속 넘기다 깨짐 방지)
-                setState(() {
-                  _safImages.removeWhere((e) => e.uri == item.uri);
-                  _safBytesCache.remove(item.uri);
-                  _safThumbCache.remove(item.uri);
-                  _safThumbFutures.remove(item.uri);
-                  _safViewerFutures.remove(item.uri);
-                });
-                _showBriefSnack("삭제 완료");
-              } else {
-                _showBriefSnack("삭제 실패");
-              }
-            },
-            child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
-          ),
-        ],
-      ),
+  Future<void> _confirmDeleteSafImage(
+    ({String uri, String name}) item, [
+    VoidCallback? onDeleted,
+  ]) async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: "이미지 삭제",
+      message: "${item.name}\n이 이미지를 삭제할까요?",
+      confirmLabel: "삭제",
+      icon: Icons.delete_outline,
     );
+    if (!confirmed || !mounted) {
+      return;
+    }
+    final ok = await widget.state.deleteSafImage(item.uri);
+    if (!mounted) {
+      return;
+    }
+    if (ok) {
+      onDeleted?.call(); // 뷰어에서 삭제 시 뷰어 닫기 (지운 목록 계속 넘기다 깨짐 방지)
+      setState(() {
+        _safImages.removeWhere((e) => e.uri == item.uri);
+        _safBytesCache.remove(item.uri);
+        _safThumbCache.remove(item.uri);
+        _safThumbFutures.remove(item.uri);
+        _safViewerFutures.remove(item.uri);
+      });
+      _showBriefSnack("삭제 완료");
+    } else {
+      _showBriefSnack("삭제 실패");
+    }
   }
 
   // ===== SAF 이미지 이동 (인플레이스 방식) =====
@@ -1966,16 +1968,9 @@ class GalleryViewState extends State<GalleryView> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context)
-      ..clearSnackBars() // 이전 것 즉시 제거 → 겹침 방지
-      ..showSnackBar(
-        SnackBar(
-          content: Text(msg, style: const TextStyle(fontSize: 12)),
-          duration: const Duration(milliseconds: 900),
-          behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.all(8),
-        ),
-      );
+    // 연속으로 뜨는 알림이라 이전 것을 먼저 지운다 (겹침 방지)
+    ScaffoldMessenger.of(context).clearSnackBars();
+    showToast(context, msg, length: ToastLength.short, floating: true, small: true);
   }
 
   // 현재 보고 있는 폴더로 이동 확정
@@ -2024,12 +2019,43 @@ class GalleryViewState extends State<GalleryView> {
     }
     setState(() {}); // 목록에서 제거된 것 즉시 반영
     _showBriefSnack("$moved장 이동");
-    // 이동한 이미지는 위에서 목록·캐시에서 이미 뺐으므로 현재 폴더는 그대로 두면 된다.
-    // 대상 폴더 타일이 화면에 있으면 개수·미리보기가 바뀌었으니 '그 타일만' 갱신한다.
-    //  (전체 재조회를 하면 나머지 폴더 썸네일까지 전부 다시 로드된다)
-    final destIdx = _safFolders.indexWhere((f) => f.uri == toParent);
-    if (destIdx >= 0) {
-      await _refreshOneSafFolder(destIdx, toParent);
+    if (moved == 0) {
+      return;
+    }
+
+    // 이동은 '두 폴더'를 바꾼다. 양쪽을 모두 챙겨야 한다.
+    //  ⚠️ 예전에는 대상 폴더 타일만 갱신해서 이런 문제가 있었다.
+    //     · 대상 폴더를 보고 있으면 옮긴 이미지가 안 보였다 (목록을 안 읽음)
+    //     · 위로 올라가면 두 폴더의 썸네일이 옛 그림 그대로였다
+    //  전체 재조회는 하지 않는다. 바뀐 두 폴더만 정확히 다시 읽는다.
+
+    // ① 지금 보고 있는 폴더가 '대상 폴더'라면 그 목록을 다시 읽는다.
+    //    (출발 폴더를 보고 있었다면 위에서 이미 빼 두었으므로 그대로 둔다)
+    if (_safDirUri == toParent) {
+      // ⚠️ _refreshSafImagesOnly 를 쓰면 안 된다.
+      //    그 함수는 '이미지 생성 후 저장' 용이라 "최근 저장된 폴더"
+      //    (lastSavedSafDirUri) 를 먼저 보고, 그게 지금 폴더와 다르면
+      //    지금 폴더는 다시 읽지 않고 돌아가 버린다.
+      //    이동은 저장과 무관하므로 그 판단이 엉뚱하게 걸려
+      //    옮긴 이미지가 보이지 않았다.
+      await _reloadCurrentSafImages();
+      if (!mounted) {
+        return;
+      }
+    }
+
+    // ② 폴더 타일의 개수·미리보기를 양쪽 다 갱신한다.
+    //    미리보기 캐시를 먼저 비워야 새 그림을 읽는다.
+    for (final uri in {fromParent, toParent}) {
+      _safFolderPreview.remove(uri);
+      _safPreviewFutures.remove(uri);
+      final idx = _safFolders.indexWhere((f) => f.uri == uri);
+      if (idx >= 0) {
+        await _refreshOneSafFolder(idx, uri);
+        if (!mounted) {
+          return;
+        }
+      }
     }
   }
 
@@ -2235,71 +2261,42 @@ class GalleryViewState extends State<GalleryView> {
   }
 
   // 선택 이미지 삭제 (실제 파일 삭제 → 폴더 새로고침)
-  void _deleteSelected() {
+  Future<void> _deleteSelected() async {
     final files = _selectedFiles();
     if (files.isEmpty) {
       return;
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.delete_outline, color: Colors.redAccent),
-            SizedBox(width: 8),
-            Text(
-              "이미지 삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: Text(
-          "${files.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
-          style: const TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(ctx);
-              int deleted = 0;
-              for (final f in files) {
-                try {
-                  await f.delete();
-                  // 히스토리의 '파일 있음' 표시가 낡지 않도록 캐시에서 지운다
-                  widget.state.invalidateFileExistsCache(f.path);
-                  deleted++;
-                } catch (e) {
-                  debugPrint("파일 삭제 실패 (${f.path}): $e");
-                }
-              }
-              if (!mounted) {
-                return;
-              }
-              _exitSelect();
-              if (_currentPath != null) {
-                await _loadFolder(_currentPath!);
-              }
-              if (mounted) {
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text("$deleted장을 삭제했습니다.")));
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text(
-              "삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmDialog(
+      context,
+      title: "이미지 삭제",
+      message: "${files.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
+      confirmLabel: "삭제",
+      icon: Icons.delete_outline,
     );
+    if (!confirmed) {
+      return;
+    }
+    int deleted = 0;
+    for (final f in files) {
+      try {
+        await f.delete();
+        // 히스토리의 '파일 있음' 표시가 낡지 않도록 캐시에서 지운다
+        widget.state.invalidateFileExistsCache(f.path);
+        deleted++;
+      } catch (e) {
+        debugPrint("파일 삭제 실패 (${f.path}): $e");
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    _exitSelect();
+    if (_currentPath != null) {
+      await _loadFolder(_currentPath!);
+    }
+    if (mounted) {
+      showToast(context, "$deleted장을 삭제했습니다.");
+    }
   }
 
   // 이미지 뷰어: 좌우 스와이프로 이전/다음 이미지
@@ -2311,6 +2308,18 @@ class GalleryViewState extends State<GalleryView> {
         startIndex: startIndex,
         nameOf: (i) => _ioFileName(_images[i]),
         pageOf: _ioViewerPage,
+        infoOf: (i) async {
+          if (i >= _images.length) {
+            return null;
+          }
+          try {
+            // ⚠️ await 를 붙여야 한다. 없으면 _readImageInfo 안에서 난 오류가
+            //    try 를 빠져나간 뒤에 터져 catch 가 잡지 못한다.
+            return await _readImageInfo(await _images[i].readAsBytes());
+          } catch (_) {
+            return null; // 파일이 사라졌으면 정보 줄만 비운다
+          }
+        },
         onLongPress: (i, close) => _showGalleryImageMenu(_fileItem(_images[i]), close),
       ),
     );
@@ -2336,18 +2345,56 @@ void _trimSafBytesCache(Map<String, Uint8List> cache, {int max = 120}) {
 }
 
 // IO/SAF 공용 이미지 뷰어 — 좌우 스와이프 + 상단바(파일명·순번·닫기) + 꾹 눌러 메뉴
+/// 뷰어 상단에 보여 줄 이미지 정보.
+typedef _ImageInfo = ({int width, int height, int bytes});
+
+/// 이미지의 해상도와 용량을 읽는다.
+///
+/// 해상도는 [ui.ImageDescriptor] 로 '헤더만' 읽어서 얻는다.
+///  ⚠️ 이미지를 통째로 디코딩(img.decodeImage 등)하면 1MB짜리도 수백 ms가 걸려
+///     넘길 때마다 화면이 멈칫한다. 헤더에는 가로·세로가 적혀 있어 그것만 보면 된다.
+Future<_ImageInfo?> _readImageInfo(Uint8List bytes) async {
+  ui.ImmutableBuffer? buffer;
+  ui.ImageDescriptor? desc;
+  try {
+    buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    desc = await ui.ImageDescriptor.encoded(buffer);
+    return (width: desc.width, height: desc.height, bytes: bytes.length);
+  } catch (_) {
+    // 형식을 못 알아보면 용량만이라도 보여 준다
+    return (width: 0, height: 0, bytes: bytes.length);
+  } finally {
+    desc?.dispose();
+    buffer?.dispose();
+  }
+}
+
+/// 1,468,006 → "1.4MB", 830,000 → "811KB"
+String _formatBytes(int b) {
+  if (b >= 1024 * 1024) {
+    return "${(b / (1024 * 1024)).toStringAsFixed(1)}MB";
+  }
+  if (b >= 1024) {
+    return "${(b / 1024).round()}KB";
+  }
+  return "${b}B";
+}
+
 class _GalleryImageViewer extends StatefulWidget {
   final int itemCount;
   final int startIndex;
   final String Function(int index) nameOf;
   final Widget Function(int index) pageOf;
   final void Function(int index, VoidCallback closeViewer)? onLongPress;
+  // 상단에 해상도·용량을 보여 주기 위한 정보. 없으면 그 줄을 생략한다.
+  final Future<_ImageInfo?> Function(int index)? infoOf;
   const _GalleryImageViewer({
     required this.itemCount,
     required this.startIndex,
     required this.nameOf,
     required this.pageOf,
     this.onLongPress,
+    this.infoOf,
   });
 
   @override
@@ -2357,6 +2404,16 @@ class _GalleryImageViewer extends StatefulWidget {
 class _GalleryImageViewerState extends State<_GalleryImageViewer> {
   late PageController _pageController;
   late int _index;
+  // 넘길 때마다 다시 읽지 않도록 페이지별로 한 번만 계산해 둔다
+  final Map<int, Future<_ImageInfo?>> _infoCache = {};
+
+  Future<_ImageInfo?>? _infoFor(int i) {
+    final f = widget.infoOf;
+    if (f == null) {
+      return null;
+    }
+    return _infoCache.putIfAbsent(i, () => f(i));
+  }
 
   @override
   void initState() {
@@ -2411,11 +2468,42 @@ class _GalleryImageViewerState extends State<_GalleryImageViewer> {
                 children: [
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text(
-                      widget.nameOf(_index),
-                      style: const TextStyle(color: Colors.white, fontSize: 13),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.nameOf(_index),
+                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        // 해상도 · 용량 (이름과 같은 크기, 조금 흐리게)
+                        if (_infoFor(_index) != null)
+                          FutureBuilder<_ImageInfo?>(
+                            // 키가 없으면 넘길 때 이전 페이지 값이 잠깐 남는다
+                            key: ValueKey(_index),
+                            future: _infoFor(_index),
+                            builder: (ctx, snap) {
+                              final info = snap.data;
+                              final String text;
+                              if (info == null) {
+                                text = snap.connectionState == ConnectionState.done ? "" : "…";
+                              } else if (info.width > 0) {
+                                text = "${info.width}×${info.height}   ${_formatBytes(info.bytes)}";
+                              } else {
+                                text = _formatBytes(info.bytes);
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  text,
+                                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                                ),
+                              );
+                            },
+                          ),
+                      ],
                     ),
                   ),
                   const SizedBox(width: 8),

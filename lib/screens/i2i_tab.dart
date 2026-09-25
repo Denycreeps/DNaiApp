@@ -7,7 +7,10 @@ import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
 import 'prompt_edit_dialog.dart';
 import '../models/model_caps.dart';
+import '../models/director_tools.dart';
+import '../widgets/confirm_dialog.dart';
 import '../app_theme.dart';
+import '../widgets/app_toast.dart';
 
 class I2iTab extends StatefulWidget {
   const I2iTab({super.key});
@@ -137,6 +140,10 @@ class _I2iTabState extends State<I2iTab>
   // i2i 모드: 'inpaint', 'mosaic', 'upscale'
   String _i2iMode = 'inpaint';
 
+  /// Director Tools 화면인지. true면 모드 칩 자리에 도구 목록이 대신 들어간다.
+  ///  일반 모드(_i2iMode)와는 별개로 관리한다 — 돌아왔을 때 쓰던 모드가 그대로 남게.
+  bool _directorMode = false;
+
   // 캔버스/프롬프트 뷰 토글
   bool _showCanvasView = true;
 
@@ -256,13 +263,14 @@ class _I2iTabState extends State<I2iTab>
     );
   }
 
-  // ── 툴바 버튼 구성 (기본 배치: 한 줄 합침 / 대체 배치: 2줄 분리) ──
+  // ── 툴바 버튼 구성 (공통 도구 줄 + 모드 도구 줄, 두 줄) ──
 
   // 공통 도구: 연필/지우개(마스킹 모드만) + 돋보기/손
   List<Widget> _commonToolWidgets() {
     return [
-      // 그리기 도구는 마스킹이 필요한 모드에서만 (img2img는 불필요)
-      if (_i2iMode != 'img2img') ...[
+      // 그리기 도구는 마스킹이 필요한 모드에서만
+      //  (img2img·Director 는 이미지 전체를 그대로 보내므로 마스크가 없다)
+      if (_i2iMode != 'img2img' && !_directorMode) ...[
         _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
         const SizedBox(width: 6),
         _buildToolIcon('eraser', Icons.cleaning_services, "지우개 (한 번 더 누르면 크기 변경)"),
@@ -285,9 +293,7 @@ class _I2iTabState extends State<I2iTab>
       onTapOverride: () {
         final st = _appStateRef;
         if (st == null || st.i2iResults.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(duration: Duration(milliseconds: 2000), content: Text("저장할 결과가 없습니다.")),
-          );
+          showToast(context, "저장할 결과가 없습니다.");
           return;
         }
         // 릴의 마지막 항목이 가장 최근 결과
@@ -318,7 +324,23 @@ class _I2iTabState extends State<I2iTab>
           },
         ),
       ],
-      if (_i2iMode == 'inpaint') ...[
+      // Director 화면에서는 도구를 칩으로 고르므로 툴바에 따로 둘 게 없다.
+      //  직전 이미지 되돌리기만 남긴다.
+      if (_directorMode) ...[
+        _buildToolIcon(
+          'view_back',
+          Icons.undo,
+          "탭: 직전 이미지 · 꾹: 앞으로",
+          selectedOverride: false,
+          onTapOverride: () {
+            _appStateRef?.i2iGoBackView();
+          },
+          onLongPressOverride: () {
+            _appStateRef?.i2iGoForwardView();
+          },
+        ),
+      ],
+      if (!_directorMode && _i2iMode == 'inpaint') ...[
         _buildStrengthButton(state),
         const SizedBox(width: 6),
         // 직전에 본 이미지로 전환 (탭=뒤로, 꾹=앞으로)
@@ -426,16 +448,6 @@ class _I2iTabState extends State<I2iTab>
     ];
   }
 
-  // 기본 배치용: 공통 + 모드 도구를 한 줄로 합침
-  List<Widget> _classicToolbarChildren(AppState state) {
-    final modeBtns = _modeToolWidgets(state);
-    return [
-      ..._commonToolWidgets(),
-      if (modeBtns.isNotEmpty) const SizedBox(width: 6),
-      ...modeBtns,
-    ];
-  }
-
   // 실행 버튼 (두 배치가 크기만 다르게 공유)
   Widget _buildExecuteButton(AppState state, {required double width, required double height}) {
     return SizedBox(
@@ -450,7 +462,11 @@ class _I2iTabState extends State<I2iTab>
           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
         ),
         style: ElevatedButton.styleFrom(
-          backgroundColor: (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading)
+          backgroundColor:
+              (state.isLoading ||
+                  state.isInpaintLoading ||
+                  state.isUpscaleLoading ||
+                  state.isDirectorLoading)
               ? Colors.grey[700]
               : _getExecuteColor(),
           padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -460,11 +476,17 @@ class _I2iTabState extends State<I2iTab>
     );
   }
 
-  // 대체 배치 하단: 툴 2줄(좌) + 실행 버튼(우하단)
-  Widget _buildAltBottomBar(AppState state) {
-    // 업스케일은 도구가 없으므로 실행 버튼만 우측 정렬
+  // 하단: 도구 2줄(왼쪽) + 실행 버튼(오른쪽)
+  Widget _buildBottomBar(AppState state) {
+    // 업스케일은 그리는 도구가 필요 없어 '저장'만 왼쪽에 둔다 (다른 모드와 같은 자리)
     if (_i2iMode == 'upscale') {
-      return Row(children: [const Spacer(), _buildExecuteButton(state, width: 140, height: 56)]);
+      return Row(
+        children: [
+          _saveResultButton(),
+          const Spacer(),
+          _buildExecuteButton(state, width: 140, height: 56),
+        ],
+      );
     }
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
@@ -496,7 +518,7 @@ class _I2iTabState extends State<I2iTab>
   // 켜져 있는 모드를 배치한다. 칩들은 주어진 폭을 균등하게 나눠 가지므로
   // 모드 개수가 몇 개든 전체 영역(과 실행 버튼)의 크기는 변하지 않는다.
   //  4개 → 2×2 / 3개 → 가로 3개 / 2개 → 가로 2개 / 1개 → 크게 1개
-  List<Widget> _buildModeChipRows(AppState state, {bool singleRow = false}) {
+  List<Widget> _buildModeChipRows(AppState state) {
     // 모델이 지원하지 않는 모드는 아예 내보내지 않는다.
     //  (지금 쓰는 V4/V4.5/V5는 셋 다 지원하므로 화면 변화는 없다.
     //   미지원 모델이 추가될 때 이 한 곳만 보면 되도록 캡으로 연결해 둔다.)
@@ -506,6 +528,7 @@ class _I2iTabState extends State<I2iTab>
       'inpaint' || 'mosaic' => caps.supportsInpaint,
       'img2img' => caps.supportsImg2img,
       'upscale' => caps.supportsUpscale,
+      // Director Tools 는 모델과 무관하다 (이미지만 보내는 별도 엔드포인트)
       _ => true,
     };
     // ⚠️ AppColors.accent는 런타임에 바뀌므로 const 리스트에 담을 수 없다 → final
@@ -527,21 +550,7 @@ class _I2iTabState extends State<I2iTab>
     Widget chip((String, String, IconData, Color) s) =>
         Expanded(child: _buildModeChip(s.$1, s.$2, s.$3, s.$4));
 
-    if (singleRow) {
-      // 대체 배치: 켜진 모드 전부를 가로 한 줄로
-      return [
-        Row(children: [for (final s in active) chip(s)]),
-      ];
-    }
-
-    if (active.length == 4) {
-      // 2×2 (두 줄)
-      return [
-        Row(children: [chip(active[0]), chip(active[1])]),
-        Row(children: [chip(active[2]), chip(active[3])]),
-      ];
-    }
-    // 1~3개는 한 줄에 균등 분배
+    // 켜진 모드 전부를 가로 한 줄로
     return [
       Row(children: [for (final s in active) chip(s)]),
     ];
@@ -563,8 +572,15 @@ class _I2iTabState extends State<I2iTab>
   }
 
   String _getExecuteLabel(AppState state) {
-    final bool anyLoading = state.isLoading || state.isInpaintLoading || state.isUpscaleLoading;
+    final bool anyLoading =
+        state.isLoading ||
+        state.isInpaintLoading ||
+        state.isUpscaleLoading ||
+        state.isDirectorLoading;
     if (anyLoading) return "생성중...";
+    if (_directorMode) {
+      return "${directorToolFor(state.directorTool).label} 실행";
+    }
     switch (_i2iMode) {
       case 'inpaint':
         return "인페인트 실행";
@@ -584,6 +600,7 @@ class _I2iTabState extends State<I2iTab>
         state.isLoading ||
         state.isInpaintLoading ||
         state.isUpscaleLoading ||
+        state.isDirectorLoading ||
         (_i2iMode == 'mosaic' && _isMosaicProcessing);
     if (isLoading) {
       return const SizedBox(
@@ -606,29 +623,82 @@ class _I2iTabState extends State<I2iTab>
     }
   }
 
+  /// 작업 실행 전 Anlas 안내. 진행해도 되면 true.
+  ///  소모가 없으면(0) 묻지 않고 바로 통과시킨다.
+  ///  비용 계산과 문구 만들기는 모두 AppState 가 담당한다.
+  Future<bool> _confirmAnlas(AppState state, AnlasJob job, String label, {String? extra}) async {
+    final cost = state.anlasFor(job);
+    if (cost == 0) {
+      return true;
+    }
+    final body = [
+      "$label을(를) 실행합니다.",
+      AppState.anlasText(cost),
+      // null-aware 원소 — extra 가 null 이면 이 줄은 목록에서 빠진다
+      ?extra,
+      "",
+      "계속 진행할까요?",
+    ].join("\n");
+    return showConfirmDialog(
+      context,
+      title: "포인트 소모 안내",
+      message: body,
+      confirmLabel: "실행",
+      icon: Icons.warning_amber_rounded,
+      iconColor: Colors.amber,
+      confirmColor: AppColors.purple,
+    );
+  }
+
   VoidCallback? _getExecuteOnPressed(AppState state, BuildContext context) {
+    // Director 화면은 _i2iMode 와 무관하게 도구를 실행한다
+    if (_directorMode) {
+      if (state.isDirectorLoading) {
+        return null; // 도는 중엔 잠근다 (배경 제거는 느려서 연타하기 쉽다)
+      }
+      return () async {
+        if (state.targetI2iImage == null) {
+          showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
+          return;
+        }
+        final tool = directorToolFor(state.directorTool);
+        final ok = await _confirmAnlas(
+          state,
+          AnlasJob.director,
+          tool.label,
+          extra: tool.multiResult ? "결과가 3장 만들어져 비용이 더 큽니다." : null,
+        );
+        // ⚠️ mounted(State) 가 아니라 context.mounted 로 검사해야 한다.
+        //    이 context 는 build 에서 받은 파라미터이기 때문이다.
+        if (!ok || !context.mounted) {
+          return;
+        }
+        state.handleDirectorTool(context);
+      };
+    }
     // 어떤 생성이든 진행 중이면 전부 비활성화
-    if (state.isLoading || state.isInpaintLoading || state.isUpscaleLoading) return null;
+    if (state.isLoading ||
+        state.isInpaintLoading ||
+        state.isUpscaleLoading ||
+        state.isDirectorLoading) {
+      return null;
+    }
 
     switch (_i2iMode) {
       case 'inpaint':
         return () async {
           if (state.targetI2iImage == null || state.targetI2iMetadata == null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                duration: const Duration(milliseconds: 2400),
-                content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
-              ),
-            );
+            showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
             return;
           }
           if (_strokes.isEmpty) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                duration: const Duration(milliseconds: 2400),
-                content: Text("마스크를 그려주세요! 🖍️"),
-              ),
-            );
+            showToast(context, "마스크를 그려주세요! 🖍️");
+            return;
+          }
+          if (!await _confirmAnlas(state, AnlasJob.inpaint, "인페인트")) {
+            return;
+          }
+          if (!context.mounted) {
             return;
           }
           final maskBytes = await _captureMask(
@@ -645,25 +715,21 @@ class _I2iTabState extends State<I2iTab>
       case 'upscale':
         return () {
           if (state.targetI2iImage == null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                duration: const Duration(milliseconds: 2400),
-                content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
-              ),
-            );
+            showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
             return;
           }
           state.handleUpscaleGenerate(context);
         };
       case 'img2img':
-        return () {
+        return () async {
           if (state.targetI2iImage == null || state.targetI2iMetadata == null) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                duration: const Duration(milliseconds: 2400),
-                content: Text("히스토리에서 먼저 이미지를 선택해주세요!"),
-              ),
-            );
+            showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
+            return;
+          }
+          if (!await _confirmAnlas(state, AnlasJob.img2img, "img2img")) {
+            return;
+          }
+          if (!context.mounted) {
             return;
           }
           state.handleImg2ImgGenerate(context);
@@ -922,9 +988,7 @@ class _I2iTabState extends State<I2iTab>
     if (state.targetI2iImage == null) return;
     if (_strokes.isEmpty) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(duration: const Duration(milliseconds: 2400), content: Text("마스크를 그려주세요! 🖍️")),
-        );
+        showToast(context, "마스크를 그려주세요! 🖍️");
       }
       return;
     }
@@ -969,15 +1033,12 @@ class _I2iTabState extends State<I2iTab>
     } catch (e) {
       debugPrint("모자이크 처리 실패: $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            duration: const Duration(milliseconds: 2400),
-            content: Text("모자이크 처리 중 오류가 발생했습니다."),
-          ),
-        );
+        showToast(context, "모자이크 처리 중 오류가 발생했습니다.");
       }
     } finally {
-      if (mounted) setState(() => _isMosaicProcessing = false);
+      if (mounted) {
+        setState(() => _isMosaicProcessing = false);
+      }
     }
   }
 
@@ -1152,7 +1213,9 @@ class _I2iTabState extends State<I2iTab>
       }
     } catch (e) {
       debugPrint("미리보기 생성 실패: $e");
-      if (mounted) setState(() => _isPreviewLoading = false);
+      if (mounted) {
+        setState(() => _isPreviewLoading = false);
+      }
     }
   }
 
@@ -1368,6 +1431,121 @@ class _I2iTabState extends State<I2iTab>
     );
   }
 
+  // Director 화면으로 들어가고 나오는 전환 버튼.
+  //  탭 바로 아래, 모드 칩 위에 둔다. 눌리면 아래 칩 영역이 통째로 바뀐다.
+  Widget _buildDirectorToggle(AppState state) {
+    final on = _directorMode;
+    // 켜고 꺼도 아이콘·글자는 그대로 두고 색만 바꾼다.
+    //  (모양이 바뀌면 폭이 흔들려 탭 바 아래에서 덜컹거린다)
+    final Color tint = on ? AppColors.purple : Colors.white54;
+    return Center(
+      child: InkWell(
+        onTap: () => setState(() {
+          _directorMode = !_directorMode;
+          if (_directorMode) {
+            // 마스크 그리던 중이면 도구를 손 모양으로 되돌린다 (Director 는 마스크가 없다)
+            _currentTool = 'pan';
+          }
+        }),
+        // 탭 바에 붙어 내려온 것처럼 보이도록 위쪽만 각지게 둔다
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(10)),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+          decoration: BoxDecoration(
+            color: on ? AppColors.purple.withValues(alpha: 0.18) : Colors.transparent,
+            borderRadius: const BorderRadius.vertical(bottom: Radius.circular(10)),
+            border: Border(
+              left: BorderSide(color: on ? AppColors.purple : Colors.white24),
+              right: BorderSide(color: on ? AppColors.purple : Colors.white24),
+              bottom: BorderSide(color: on ? AppColors.purple : Colors.white24),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.auto_awesome, size: 14, color: tint),
+              const SizedBox(width: 6),
+              Text(
+                "Director tool",
+                style: TextStyle(color: tint, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Director 도구 칩. 모드 칩과 같은 크기·같은 배치 규칙을 쓴다.
+  //  (모드 칩 자리에 '대신' 들어가므로 높이가 어긋나면 캔버스가 밀린다)
+  // Director 도구 칩 — 모드 칩과 같은 자리에 가로 한 줄로
+  List<Widget> _buildDirectorChipRows(AppState state) {
+    return [_directorChipRow(state, kDirectorTools)];
+  }
+
+  Widget _directorChipRow(AppState state, List<DirectorTool> tools) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final t in tools)
+          Expanded(
+            child: GestureDetector(
+              onTap: () => state.setDirectorTool(t.reqType),
+              child: Container(
+                height: 22,
+                margin: const EdgeInsets.symmetric(horizontal: 1.5, vertical: 1.5),
+                decoration: BoxDecoration(
+                  color: state.directorTool == t.reqType
+                      ? AppColors.purple.withValues(alpha: 0.22)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(
+                    color: state.directorTool == t.reqType ? AppColors.purple : Colors.transparent,
+                  ),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      t.icon,
+                      size: 12,
+                      color: state.directorTool == t.reqType ? AppColors.purple : Colors.white38,
+                    ),
+                    const SizedBox(width: 3),
+                    Flexible(
+                      child: Text(
+                        t.label,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: state.directorTool == t.reqType ? Colors.white : Colors.white38,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    // 예상 Anlas. 0(무료)이거나 계산 불가면 표시하지 않는다.
+                    if (state.directorCostFor(t.reqType) > 0) ...[
+                      const SizedBox(width: 3),
+                      Text(
+                        "${state.directorCostFor(t.reqType)}",
+                        style: TextStyle(
+                          color: state.directorTool == t.reqType
+                              ? Colors.amber
+                              : Colors.amber.withValues(alpha: 0.5),
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
   Widget _buildMosaicStrengthButton() {
     return Tooltip(
       message: "모자이크 강도",
@@ -1567,8 +1745,16 @@ class _I2iTabState extends State<I2iTab>
                   ),
                   // 접혀 있어도 바로 편집할 수 있게 연필은 항상 표시
                   GestureDetector(
-                    onTap: () =>
-                        showPromptEditDialog(context, state, title, icon, color, controller),
+                    onTap: () => showPromptEditDialog(
+                      context,
+                      state,
+                      title,
+                      icon,
+                      color,
+                      controller,
+                      // 프롬프트탭과 이름이 같아 되돌리기 기록이 섞이지 않게 구분한다
+                      undoKey: 'i2i/$title',
+                    ),
                     behavior: HitTestBehavior.opaque,
                     child: Padding(
                       padding: const EdgeInsets.only(left: 8),
@@ -1582,7 +1768,15 @@ class _I2iTabState extends State<I2iTab>
           // 본문(미리보기): 접히면 감춤. 탭하면 편집 다이얼로그
           if (!isCollapsed)
             GestureDetector(
-              onTap: () => showPromptEditDialog(context, state, title, icon, color, controller),
+              onTap: () => showPromptEditDialog(
+                context,
+                state,
+                title,
+                icon,
+                color,
+                controller,
+                undoKey: 'i2i/$title',
+              ),
               behavior: HitTestBehavior.opaque,
               child: Padding(
                 padding: const EdgeInsets.all(16.0),
@@ -1639,17 +1833,26 @@ class _I2iTabState extends State<I2iTab>
         _handleBottomOverride ??
         (state.i2iHandleBottom >= 0 ? state.i2iHandleBottom : defaultBottom);
     final double handleBottom = rawBottom.clamp(minBottom, maxBottom);
+    // ⚠️ Stack 의 자식 '개수'를 바꾸지 않는다.
+    //    조건부로 넣었다 뺐다 하면 Flutter 가 남은 자식들을 순서로 다시 맞추면서
+    //    엉뚱한 요소끼리 짝지어지고, 멀쩡한 화면(body 전체)이 통째로
+    //    해제·재생성된다. 그 과정에서 아직 쓰이는 것이 정리되면 앱이 죽는다.
+    //    항상 자리를 지키게 두고 보이기만 감춘다. 키로 짝도 고정한다.
+    //    (DEVNOTES.md 2번 항목)
     return Stack(
       children: [
-        Positioned.fill(child: body),
+        Positioned.fill(key: const ValueKey('i2iBody'), child: body),
         // 패널 열렸을 때 바깥 영역 탭하면 닫기
-        if (_reelOpen)
-          Positioned.fill(
+        Positioned.fill(
+          key: const ValueKey('i2iReelScrim'),
+          child: Offstage(
+            offstage: !_reelOpen,
             child: GestureDetector(
               onTap: () => setState(() => _reelOpen = false),
               child: Container(color: Colors.black54),
             ),
           ),
+        ),
         // 오른쪽 슬라이드 패널
         AnimatedPositioned(
           duration: const Duration(milliseconds: 220),
@@ -1660,11 +1863,13 @@ class _I2iTabState extends State<I2iTab>
           width: _reelPanelWidth,
           child: _buildReelPanel(state),
         ),
-        // 트리거 핸들 (항상 보임, 오른쪽 아래) — 닫혀 있을 때만
-        if (!_reelOpen)
-          Positioned(
-            right: 0,
-            bottom: handleBottom,
+        // 트리거 핸들 (오른쪽 아래) — 패널이 닫혀 있을 때만 보인다
+        Positioned(
+          key: const ValueKey('i2iReelHandle'),
+          right: 0,
+          bottom: handleBottom,
+          child: Offstage(
+            offstage: _reelOpen,
             child: GestureDetector(
               onTap: () {
                 setState(() => _reelOpen = true);
@@ -1746,6 +1951,7 @@ class _I2iTabState extends State<I2iTab>
               ),
             ),
           ),
+        ),
       ],
     );
   }
@@ -1853,13 +2059,9 @@ class _I2iTabState extends State<I2iTab>
                                     onTap: () {
                                       final ok = state.toggleI2iFavorite(realIndex);
                                       if (!ok && mounted) {
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(
-                                            duration: const Duration(milliseconds: 1800),
-                                            content: Text(
-                                              "즐겨찾기는 최대 ${AppState.i2iFavoriteCap}개까지예요",
-                                            ),
-                                          ),
+                                        showToast(
+                                          context,
+                                          "즐겨찾기는 최대 ${AppState.i2iFavoriteCap}개까지예요",
                                         );
                                       }
                                     },
@@ -1899,10 +2101,28 @@ class _I2iTabState extends State<I2iTab>
                                           width: 1,
                                         ),
                                       ),
-                                      child: Icon(
-                                        _sourceIcon(r.source),
-                                        size: 13,
-                                        color: _sourceColor(r.source),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            _sourceIcon(r.source),
+                                            size: 13,
+                                            color: _sourceColor(r.source),
+                                          ),
+                                          // 배경 제거는 결과가 3장(M/G/B)이라 아이콘만으로는
+                                          // 구분되지 않는다. 종류 글자를 한 자 덧붙인다.
+                                          if (_variantLetter(r.source) != null) ...[
+                                            const SizedBox(width: 1),
+                                            Text(
+                                              _variantLetter(r.source)!,
+                                              style: TextStyle(
+                                                color: _sourceColor(r.source),
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -1920,7 +2140,35 @@ class _I2iTabState extends State<I2iTab>
   }
 
   // 릴 배지: 어떤 모드로 만들어진 결과인지 (모드 칩과 같은 색/아이콘)
+  /// Director 결과인지 판별하고, 맞으면 그 도구를 돌려준다.
+  ///  source 에는 도구 배지가 들어간다 ('LINE', 'BG-M' 처럼).
+  ///  배경 제거는 결과가 3장이라 '-M/-G/-B' 접미사가 붙는다.
+  DirectorTool? _directorToolOfSource(String source) {
+    final base = source.split('-').first; // 'BG-M' → 'BG'
+    for (final t in kDirectorTools) {
+      if (t.badge == base) {
+        return t;
+      }
+    }
+    return null;
+  }
+
+  /// 결과가 여러 장인 도구에서 몇 번째 종류인지 ('BG-M' → 'M').
+  ///  한 장짜리 도구나 일반 모드면 null.
+  String? _variantLetter(String source) {
+    final parts = source.split('-');
+    if (parts.length < 2) {
+      return null;
+    }
+    return parts.last;
+  }
+
   IconData _sourceIcon(String source) {
+    // Director 도구는 각자의 아이콘을 쓴다 (인페인트와 헷갈리지 않게)
+    final dt = _directorToolOfSource(source);
+    if (dt != null) {
+      return dt.icon;
+    }
     switch (source) {
       case 'mosaic':
         return Icons.grid_on;
@@ -1937,6 +2185,10 @@ class _I2iTabState extends State<I2iTab>
   }
 
   Color _sourceColor(String source) {
+    // Director 결과는 전부 보라색 계열로 묶어 한눈에 구분되게 한다
+    if (_directorToolOfSource(source) != null) {
+      return AppColors.purple;
+    }
     switch (source) {
       case 'mosaic':
         return AppColors.accent;
@@ -2010,7 +2262,7 @@ class _I2iTabState extends State<I2iTab>
     }
 
     bool canDraw =
-        (_i2iMode != 'upscale' && _i2iMode != 'img2img') &&
+        (_i2iMode != 'upscale' && _i2iMode != 'img2img' && !_directorMode) &&
         (_currentTool == 'pencil' || _currentTool == 'eraser');
 
     if (_showCanvasView) {
@@ -2026,57 +2278,52 @@ class _I2iTabState extends State<I2iTab>
             // 캔버스는 Expanded로 남는 공간을 자동으로 차지하므로 높이 계산이 필요 없다.
             // (모드 칩 줄 수가 바뀌어도 UI가 밀리지 않음)
 
+            // 설정에서 Director 버튼을 끈 채로 Director 화면에 있으면
+            // 돌아올 방법이 없어진다. 그럴 땐 일반 모드로 되돌린다.
+            //  ⚠️ build 도중 setState 를 부를 수 없어 프레임 뒤로 미룬다.
+            if (_directorMode && !state.directorToolVisible) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted && _directorMode && !state.directorToolVisible) {
+                  setState(() => _directorMode = false);
+                }
+              });
+            }
+
+            // ⚠️ 위쪽 여백을 0으로 두고, Director 버튼 아래에서 다시 확보한다.
+            //    버튼이 탭 바에 딱 붙어 내려온 것처럼 보이게 하기 위함.
             return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 16.0),
+              padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (!state.i2iAltLayout)
-                    // ── 기본 배치: [모드 칩 2×2 | 실행 버튼] 고정 높이 56 ──
-                    // (칩이 1줄이든 2줄이든 캔버스 시작 위치가 같도록 높이 고정)
-                    SizedBox(
-                      height: 56,
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: Center(
-                              child: Container(
-                                // 높이 예산: 테두리2 + 패딩4 + (칩22+마진3)×2줄 = 정확히 56
-                                padding: const EdgeInsets.all(2),
-                                decoration: BoxDecoration(
-                                  color: AppColors.surface,
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(color: Colors.white24),
-                                ),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: _buildModeChipRows(state),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          _buildExecuteButton(state, width: 140, height: 56),
-                        ],
-                      ),
-                    )
-                  else
-                    // ── 대체 배치: 모드 칩 가로 1줄 (실행 버튼은 하단 우측으로 이동) ──
-                    Container(
-                      padding: const EdgeInsets.all(2),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: _buildModeChipRows(state, singleRow: true),
+                  // Director 화면 전환 버튼 (탭 바에 붙임)
+                  //  설정에서 끄면 버튼만 감춘다. 켜져 있던 화면은 아래에서 되돌린다.
+                  if (state.directorToolVisible) ...[
+                    _buildDirectorToggle(state),
+                    const SizedBox(height: 12),
+                  ] else
+                    const SizedBox(height: 16),
+                  // 모드 칩 가로 1줄 (실행 버튼은 아래 도구 줄 오른쪽에 있다)
+                  Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: _directorMode
+                            ? AppColors.purple.withValues(alpha: 0.5)
+                            : Colors.white24,
                       ),
                     ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: _directorMode
+                          ? _buildDirectorChipRows(state)
+                          : _buildModeChipRows(state),
+                    ),
+                  ),
                   const SizedBox(height: 12),
-                  // 캔버스: 남는 공간을 그대로 차지 (모드 칩이 1줄이든 2줄이든 자동으로 맞음)
+                  // 캔버스: 남는 공간을 그대로 차지
                   // → 높이를 직접 계산하면 실제 위젯 높이와 어긋나 UI가 밀리는 문제가 생김
                   Expanded(
                     child: Container(
@@ -2155,53 +2402,42 @@ class _I2iTabState extends State<I2iTab>
                     ),
                   ),
                   const SizedBox(height: 12),
-                  if (!state.i2iAltLayout) ...[
-                    // ── 기본 배치: 툴바 한 줄 (업스케일 모드에서는 숨김) ──
-                    if (_i2iMode != 'upscale') ...[
-                      SizedBox(
-                        height: 46,
-                        child: Center(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Row(children: _classicToolbarChildren(state)),
-                          ),
+                  // 도구 2줄(왼쪽) + 실행 버튼(오른쪽)
+                  _buildBottomBar(state),
+                  const SizedBox(height: 12),
+                  // 프롬프트 보기 토글
+                  //  ⚠️ Director 도구는 프롬프트를 쓰지 않으므로 숨긴다.
+                  //     대신 시스템 내비게이션 바 여백은 남겨야 버튼이 가리지 않는다.
+                  if (_directorMode)
+                    SizedBox(height: bottomPad)
+                  else
+                    GestureDetector(
+                      onTap: () => setState(() => _showCanvasView = false),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        margin: EdgeInsets.only(bottom: bottomPad),
+                        decoration: BoxDecoration(
+                          color: AppColors.surface,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.expand_more, color: Colors.white54, size: 20),
+                            SizedBox(width: 4),
+                            Text(
+                              "프롬프트 보기",
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 12),
-                    ],
-                  ] else ...[
-                    // ── 대체 배치: 툴 2줄(좌) + 실행 버튼(우하단) ──
-                    _buildAltBottomBar(state),
-                    const SizedBox(height: 12),
-                  ],
-                  // 프롬프트 보기 토글 (전 모드)
-                  GestureDetector(
-                    onTap: () => setState(() => _showCanvasView = false),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      margin: EdgeInsets.only(bottom: bottomPad),
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.expand_more, color: Colors.white54, size: 20),
-                          SizedBox(width: 4),
-                          Text(
-                            "프롬프트 보기",
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
                     ),
-                  ),
                 ],
               ),
             );
@@ -2299,12 +2535,7 @@ class _I2iTabState extends State<I2iTab>
                       state.inpaintSuffixController.text = state.suffixController.text;
                       state.inpaintNegativeController.text = state.negativeController.text;
                     });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        duration: const Duration(milliseconds: 2400),
-                        content: Text("프롬프트 탭의 값을 가져왔습니다!"),
-                      ),
-                    );
+                    showToast(context, "프롬프트 탭의 값을 가져왔습니다!");
                   },
                   icon: const Icon(Icons.content_copy, color: Colors.white70, size: 18),
                   label: const Text(

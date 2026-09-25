@@ -6,6 +6,8 @@ import '../widgets/detail_settings_modal.dart';
 import '../widgets/gallery_view.dart';
 import 'package:image_picker/image_picker.dart';
 import '../app_theme.dart';
+import '../widgets/confirm_dialog.dart';
+import '../widgets/app_toast.dart';
 
 // ============================================================================
 // 히스토리 탭 메인 UI
@@ -36,6 +38,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   //  같은 컨트롤러를 붙잡아 'attached to multiple scroll views'로 멈추던 문제)
   final ScrollController _listScrollController = ScrollController();
   int _lastScrollToEndRevision = 0;
+  int _lastEnterRevision = 0;
   late AppState _appState;
 
   int _currentIndex = 0;
@@ -266,45 +269,17 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     });
   }
 
-  void _showDeleteDialog(BuildContext context, AppState state, int index) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.delete_outline, color: Colors.redAccent),
-            SizedBox(width: 8),
-            Text(
-              "히스토리 삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        content: const Text(
-          "이 이미지를 히스토리 목록에서 삭제하시겠습니까?\n(기기에 저장된 실제 파일은 삭제되지 않습니다.)",
-          style: TextStyle(color: Colors.white70, fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              state.deleteHistoryImage(index);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text(
-              "삭제",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
+  Future<void> _showDeleteDialog(BuildContext context, AppState state, int index) async {
+    final ok = await showConfirmDialog(
+      context,
+      title: "히스토리 삭제",
+      message: "이 이미지를 히스토리 목록에서 삭제하시겠습니까?\n(기기에 저장된 실제 파일은 삭제되지 않습니다.)",
+      confirmLabel: "삭제",
+      icon: Icons.delete_outline,
     );
+    if (ok) {
+      state.deleteHistoryImage(index);
+    }
   }
 
   // ============================================================================
@@ -406,50 +381,19 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   "히스토리의 모든 이미지를 삭제합니다. (실제 파일은 유지)",
                   style: TextStyle(color: Colors.white54, fontSize: 12),
                 ),
-                onTap: () {
+                onTap: () async {
                   Navigator.pop(modalContext);
-                  showDialog(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      backgroundColor: AppColors.surface,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                      title: const Row(
-                        children: [
-                          Icon(Icons.warning_amber_rounded, color: Colors.amber),
-                          SizedBox(width: 8),
-                          Text(
-                            "정말 삭제하시겠습니까?",
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                          ),
-                        ],
-                      ),
-                      content: const Text(
-                        "히스토리의 모든 이미지가 삭제됩니다.\n이 작업은 되돌릴 수 없습니다.",
-                        style: TextStyle(color: Colors.white70, fontSize: 14),
-                      ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx),
-                          child: const Text("취소", style: TextStyle(color: Colors.grey)),
-                        ),
-                        ElevatedButton(
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            state.deleteAllHistory();
-                          },
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-                          child: const Text(
-                            "전부 삭제",
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ),
+                  final ok = await showConfirmDialog(
+                    context,
+                    title: "정말 삭제하시겠습니까?",
+                    message: "히스토리의 모든 이미지가 삭제됩니다.\n이 작업은 되돌릴 수 없습니다.",
+                    confirmLabel: "전부 삭제",
+                    icon: Icons.warning_amber_rounded,
+                    iconColor: Colors.amber,
                   );
+                  if (ok) {
+                    state.deleteAllHistory();
+                  }
                 },
               ),
               ListTile(
@@ -1150,12 +1094,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
       }
       final meta = extractNovelAIMetadata(bytes);
       if (meta == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            duration: Duration(milliseconds: 2400),
-            content: Text("이 이미지에서 프롬프트 정보를 찾지 못했습니다."),
-          ),
-        );
+        showToast(context, "이 이미지에서 프롬프트 정보를 찾지 못했습니다.");
         return;
       }
       showLoadPromptDialog(context, state, meta);
@@ -1184,6 +1123,15 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           ],
         ),
       );
+    }
+
+    // 탭을 떠날 때 보낸 신호 — 화면 밖에 있는 동안 갤러리를 닫아 둔다.
+    //  (이 탭은 KeepAlive 라 화면 밖에서도 다시 그려진다 → 돌아오면 이미 목록/그리드)
+    //  ⚠️ build 도중에 setState 를 부를 수 없어 이번 build 에서는 값만 바꾼다.
+    //     (_isGalleryMode 는 이 build 안에서 바로 아래 분기가 읽으므로 즉시 반영된다)
+    if (state.historyGalleryResetRevision != _lastEnterRevision) {
+      _lastEnterRevision = state.historyGalleryResetRevision;
+      _isGalleryMode = false;
     }
 
     // 갤러리 모드: 폴더 탐색 뷰
@@ -1424,62 +1372,23 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                       GestureDetector(
                         onTap: _selectedIndices.isEmpty
                             ? null
-                            : () {
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => AlertDialog(
-                                    backgroundColor: AppColors.surface,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(16),
-                                    ),
-                                    title: const Row(
-                                      children: [
-                                        Icon(Icons.delete_outline, color: Colors.redAccent),
-                                        SizedBox(width: 8),
-                                        Text(
-                                          "선택 삭제",
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    content: Text(
+                            : () async {
+                                final ok = await showConfirmDialog(
+                                  context,
+                                  title: "선택 삭제",
+                                  message:
                                       "${_selectedIndices.length}장의 이미지를 히스토리에서 삭제하시겠습니까?\n(실제 파일은 삭제되지 않습니다.)",
-                                      style: const TextStyle(color: Colors.white70, fontSize: 14),
-                                    ),
-                                    actions: [
-                                      TextButton(
-                                        onPressed: () => Navigator.pop(ctx),
-                                        child: const Text(
-                                          "취소",
-                                          style: TextStyle(color: Colors.grey),
-                                        ),
-                                      ),
-                                      ElevatedButton(
-                                        onPressed: () {
-                                          Navigator.pop(ctx);
-                                          state.deleteHistoryByIndices(_selectedIndices);
-                                          setState(() {
-                                            _isSelectMode = false;
-                                            _selectedIndices.clear();
-                                          });
-                                        },
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.redAccent,
-                                        ),
-                                        child: const Text(
-                                          "삭제",
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                  confirmLabel: "삭제",
+                                  icon: Icons.delete_outline,
                                 );
+                                if (!ok || !mounted) {
+                                  return;
+                                }
+                                state.deleteHistoryByIndices(_selectedIndices);
+                                setState(() {
+                                  _isSelectMode = false;
+                                  _selectedIndices.clear();
+                                });
                               },
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

@@ -24,13 +24,19 @@ class NaiPresets {
   // ── Quality Tags (긍정) ──
   //  프롬프트 '뒤'에 붙는다.
   static const List<NaiPresetOption> _qualityV45Full = [
-    NaiPresetOption('Standard', 'location, very aesthetic, masterpiece, no text'),
+    NaiPresetOption(
+      'Standard',
+      'location, very aesthetic, masterpiece, no text',
+    ),
     NaiPresetOption('Light', 'location, masterpiece, no text'),
     NaiPresetOption('None', ''),
   ];
 
   static const List<NaiPresetOption> _qualityV4Full = [
-    NaiPresetOption('Standard', 'no text, best quality, very aesthetic, absurdres'),
+    NaiPresetOption(
+      'Standard',
+      'no text, best quality, very aesthetic, absurdres',
+    ),
     NaiPresetOption('Light', 'no text, best quality'),
     NaiPresetOption('None', ''),
   ];
