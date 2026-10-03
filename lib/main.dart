@@ -12,6 +12,8 @@ import 'screens/character_tab.dart';
 import 'screens/wildcard_tab.dart';
 import 'screens/settings_tab.dart';
 import 'widgets/detail_settings_modal.dart';
+import 'widgets/update_dialog.dart';
+import 'models/app_tabs.dart';
 import 'utils/qwen_tokenizer.dart';
 
 void main() {
@@ -77,8 +79,8 @@ class _NovelAiAppState extends State<NovelAiApp>
   TabController? _tabController;
   // 키보드 내리기를 탭당 한 번만 하기 위한 표시
   int _lastKeyboardHideTab = -1;
-  // 직전에 보고 있던 탭 (원래 번호). 히스토리를 '떠났는지' 알아내는 데 쓴다.
-  int _lastTabOrigIdx = -1;
+  // 직전에 보고 있던 탭. 히스토리를 '떠났는지' 알아내는 데 쓴다.
+  AppTab? _lastTab;
 
   // 키보드가 떠 있는지. build 에서 갱신해 두고 콜백에서는 이 값만 읽는다.
   //  ⚠️ 콜백 안에서 MediaQuery.of(context) 를 부르면 안 된다.
@@ -88,15 +90,15 @@ class _NovelAiAppState extends State<NovelAiApp>
   //     '_dependents.isEmpty: is not true' 단언에 걸려 앱이 죽는다.
   bool _keyboardOpen = false;
   late PageController _pageController;
-  bool _updateDialogVisible = false;
-  List<int> _visibleTabIndices = [0, 1, 2, 3, 4, 5]; // 현재 화면에 보이는 원본 탭 인덱스들
+  List<AppTab> _visibleTabs = AppTab.values.toList(); // 지금 화면에 보이는 탭들 (순서대로)
   DateTime? _lastBackPress; // 두 번 눌러 종료 판정용
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _pageController = PageController(initialPage: 6000);
+    // 첫 build 에서 탭 목록이 정해지면 그 탭 번호로 다시 만든다 (아래 build 참고)
+    _pageController = PageController();
   }
 
   @override
@@ -122,114 +124,6 @@ class _NovelAiAppState extends State<NovelAiApp>
       appState.saveAllSettings();
       appState.savePromptDict();
     }
-  }
-
-  void _showUpdateDialog(BuildContext context, AppState state) {
-    // 이미 업데이트 다이얼로그가 떠 있으면 중복 표시 방지
-    if (_updateDialogVisible) {
-      return;
-    }
-    _updateDialogVisible = true;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.system_update, color: AppColors.accent, size: 24),
-            const SizedBox(width: 8),
-            Text(
-              "v${state.latestVersion} 업데이트",
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                "v${AppState.currentVersion} → v${state.latestVersion}",
-                style: TextStyle(
-                  color: AppColors.accent,
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              if (state.releaseNotePreview.isNotEmpty) ...[
-                const SizedBox(height: 12),
-                const Text(
-                  "변경 사항",
-                  style: TextStyle(
-                    color: Colors.white54,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: state.releaseNotePreview
-                        .map(
-                          (line) => Padding(
-                            padding: const EdgeInsets.only(bottom: 3),
-                            child: Text(
-                              line,
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 13,
-                                height: 1.4,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("닫기", style: TextStyle(color: Colors.grey)),
-          ),
-          if (state.apkDownloadUrl != null)
-            ElevatedButton.icon(
-              onPressed: () {
-                Navigator.pop(ctx);
-                state.downloadAndInstallUpdate(context);
-              },
-              icon: const Icon(Icons.download, color: Colors.white, size: 16),
-              label: const Text(
-                "업데이트",
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.accent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-            ),
-        ],
-      ),
-    ).then((_) {
-      _updateDialogVisible = false;
-    });
   }
 
   Widget _buildImageArea(AppState state) {
@@ -259,26 +153,83 @@ class _NovelAiAppState extends State<NovelAiApp>
           );
   }
 
-  Widget _buildTabScrollContent(AppState state, int tabIndex, Widget content) {
-    if (tabIndex == 1 || tabIndex == 2 || tabIndex == 5) {
+  // 탭을 눌러(또는 다른 곳의 요청으로) 페이지가 넘어가는 중인지 — 이동마다 번호가 는다.
+  //  넘어가는 동안 지나치는 페이지로 위쪽 탭 표시를 바꾸지 않는다 (onPageChanged 참고).
+  int _tabJumpId = 0;
+  bool _tabJumping = false;
+
+  /// 보이는 탭 [target] 번으로 넘긴다.
+  ///  · 바로 옆 탭이면 슬라이드, 더 멀면 중간 탭을 지나가지 않고 바로 바꾼다.
+  ///  · 탭은 양 끝에서 멈춘다 (끝없이 돌지 않는다).
+  ///  ⚠️ 예전엔 양옆으로 끝없이 도는 페이지(6000번부터)였다. 페이지 '번호'마다 탭 화면이
+  ///     따로 만들어지고 버려지지 않아, 멀리 돌아가면 같은 탭 화면이 또 생겼다
+  ///     (탭 몇 번 누르면 프롬프트·히스토리 화면이 둘씩 — 새로 만드느라 넘어가다 끊겼고,
+  ///     i2i 화면이 둘로 갈리면 그려 둔 마스크가 다른 쪽에선 안 보였다).
+  ///     먼 탭으로 슬라이드하면 중간 탭들을 전부 스쳐 그리느라 또 끊겼다.
+  ///     이제 탭마다 화면은 하나뿐이고, 멀리 갈 땐 스쳐 그리지 않는다.
+  ///  ⚠️ 가는 길에 위쪽 탭 표시를 다른 탭으로 돌려세우지 않는다 — 탭 막대의 색 계산이
+  ///     0~1 을 넘어가 '프롬프트' 글자가 무지개색으로 번쩍였다 (onPageChanged 참고).
+  Future<void> _animateToVisibleTab(int target, int tabCount) async {
+    if (target < 0 || target >= tabCount) {
+      return;
+    }
+    final int current = (_pageController.hasClients ? _pageController.page?.round() : null) ?? target;
+    // 위쪽 탭은 바로 목적지로 (탭을 눌렀을 때는 탭 막대가 이미 그리로 가는 중이라 그대로 둔다)
+    final TabController? tabs = _tabController;
+    if (tabs != null && tabs.index != target) {
+      tabs.animateTo(target);
+    }
+    if (current == target || !_pageController.hasClients) {
+      return;
+    }
+    final int jumpId = ++_tabJumpId;
+    _tabJumping = true;
+    if ((target - current).abs() == 1) {
+      await _pageController.animateToPage(
+        target,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+    } else {
+      _pageController.jumpToPage(target);
+    }
+    if (!mounted || jumpId != _tabJumpId) {
+      return; // 가는 도중 다른 탭을 또 눌렀다 — 그 이동이 이어받는다
+    }
+    _tabJumping = false;
+    // 도착한 페이지와 위쪽 탭이 어긋나 있으면 맞춘다 (가는 도중 손으로 끌었을 때 등)
+    if (_pageController.hasClients && _tabController != null) {
+      final int landed = _pageController.page?.round() ?? target;
+      if (landed >= 0 && landed < _tabController!.length && _tabController!.index != landed) {
+        _tabController!.animateTo(landed);
+      }
+    }
+  }
+
+  // 프롬프트 탭 화면은 한 번만 만들어 둔다 — 탭을 옮길 때마다 새로 만들면(콜백을 넘기느라
+  //  const 가 아니다) 무거운 프롬프트 화면 전체가 다시 그려진다. 다른 탭은 const 라 괜찮다.
+  Widget? _promptTabPage;
+
+  Widget _buildTabScrollContent(AppState state, AppTab tab, Widget content) {
+    if (tab == AppTab.history || tab == AppTab.i2i || tab == AppTab.settings) {
       return content;
     }
 
     // 캐릭터 탭은 내부에서 높이를 스스로 나눠 쓴다(상단 편집 + 하단 Position).
     //  여기서 스크롤로 감싸면 화면에 딱 맞는데도 위아래로 밀려 어색하다.
-    if (tabIndex == 3) {
+    if (tab == AppTab.character) {
       return content;
     }
 
-    // 와일드카드 탭은 목록이 길어질 수 있어 스크롤을 유지한다
-    if (tabIndex == 4) {
+    // 라이브러리 탭은 목록이 길어질 수 있어 스크롤을 유지한다
+    if (tab == AppTab.library) {
       return SingleChildScrollView(child: Column(children: [content, const SizedBox(height: 80)]));
     }
 
     return SingleChildScrollView(
       child: Column(
         children: [
-          if (tabIndex == 0)
+          if (tab == AppTab.prompt)
             Container(
               height: 480,
               width: double.infinity,
@@ -336,45 +287,34 @@ class _NovelAiAppState extends State<NovelAiApp>
         if (!mounted) {
           return;
         }
-        _showUpdateDialog(context, state);
+        showUpdateDialog(context, state); // 공용 창 (설정탭에서 직접 열 때도 같은 창)
       });
     }
 
-    // 활성 탭 리스트 계산 (원본 인덱스 기준)
-    // 0=프롬프트, 1=히스토리, 2=i2i, 3=캐릭터, 4=와일드카드, 5=설정
-    List<int> newVisibleIndices = [0];
-    if (state.historyTabEnabled) {
-      newVisibleIndices.add(1);
-    }
-    if (state.i2iTabEnabled) {
-      newVisibleIndices.add(2);
-    }
-    if (state.characterTabEnabled) {
-      newVisibleIndices.add(3);
-    }
-    if (state.wildcardTabEnabled) {
-      newVisibleIndices.add(4);
-    }
-    newVisibleIndices.add(5); // 설정은 항상
+    // 보이는 탭 — 적힌 순서대로, 켜진 것만 (프롬프트·설정은 늘)
+    final List<AppTab> newVisibleTabs = [
+      for (final t in AppTab.values)
+        if (state.isTabShown(t)) t,
+    ];
 
     // TabController 재생성 (활성 탭 수가 바뀌었을 때만)
-    if (_tabController == null || _tabController!.length != newVisibleIndices.length) {
+    if (_tabController == null || _tabController!.length != newVisibleTabs.length) {
       // navigateToTab 요청이 있으면 그 탭으로, 아니면 현재 탭 유지
-      int targetOrigIdx = 0;
-      if (state.requestedTabIndex != null) {
-        targetOrigIdx = state.requestedTabIndex!;
-      } else if (_tabController != null && _visibleTabIndices.isNotEmpty) {
-        final idx = _tabController!.index.clamp(0, _visibleTabIndices.length - 1);
-        targetOrigIdx = _visibleTabIndices[idx];
+      AppTab target = AppTab.prompt;
+      if (state.requestedTab != null) {
+        target = state.requestedTab!;
+      } else if (_tabController != null && _visibleTabs.isNotEmpty) {
+        final idx = _tabController!.index.clamp(0, _visibleTabs.length - 1);
+        target = _visibleTabs[idx];
       }
 
-      final int newTabCount = newVisibleIndices.length;
-      int newInitialIndex = newVisibleIndices.indexOf(targetOrigIdx);
+      final int newTabCount = newVisibleTabs.length;
+      int newInitialIndex = newVisibleTabs.indexOf(target);
       if (newInitialIndex == -1) {
         newInitialIndex = 0;
       }
 
-      if (state.requestedTabIndex != null) {
+      if (state.requestedTab != null) {
         state.clearNavigation();
       }
 
@@ -386,9 +326,9 @@ class _NovelAiAppState extends State<NovelAiApp>
       );
       // 지금 보이는 탭을 '직전 탭'으로 잡아 둔다.
       //  (앱을 히스토리 탭에서 시작해도 첫 이동 때 갤러리 닫기가 제대로 동작하게)
-      //  ⚠️ _visibleTabIndices 는 이 아래에서야 새 값으로 바뀌므로 새 목록을 직접 본다
-      if (newInitialIndex >= 0 && newInitialIndex < newVisibleIndices.length) {
-        _lastTabOrigIdx = newVisibleIndices[newInitialIndex];
+      //  ⚠️ _visibleTabs 는 이 아래에서야 새 값으로 바뀌므로 새 목록을 직접 본다
+      if (newInitialIndex >= 0 && newInitialIndex < newVisibleTabs.length) {
+        _lastTab = newVisibleTabs[newInitialIndex];
       }
       _tabController!.addListener(() {
         // ⚠️ TabController 의 리스너는 애니메이션이 도는 '매 프레임' 불린다.
@@ -409,17 +349,16 @@ class _NovelAiAppState extends State<NovelAiApp>
             SystemChannels.textInput.invokeMethod('TextInput.hide');
           }
         }
-        final origIdx =
-            _visibleTabIndices.isNotEmpty && _tabController!.index < _visibleTabIndices.length
-            ? _visibleTabIndices[_tabController!.index]
-            : -1;
+        final AppTab? tab = _tabController!.index < _visibleTabs.length
+            ? _visibleTabs[_tabController!.index]
+            : null;
         // 히스토리 탭을 막 떠났으면 갤러리 모드를 뒤에서 닫아 둔다.
         //  (다시 들어왔을 때 이미 목록/그리드로 바뀌어 있게 — 들어온 뒤 바꾸면 눈에 보인다)
-        if (_lastTabOrigIdx == 1 && origIdx != 1) {
+        if (_lastTab == AppTab.history && tab != AppTab.history) {
           state.resetHistoryGalleryInBackground();
         }
-        _lastTabOrigIdx = origIdx;
-        if (origIdx == 1 && !state.isHistoryGridView) {
+        _lastTab = tab;
+        if (tab == AppTab.history && !state.isHistoryGridView) {
           // 컨트롤러를 직접 만지지 않고 요청만 보낸다 (HistoryTab이 처리)
           state.requestHistoryScrollToEnd();
         }
@@ -428,50 +367,38 @@ class _NovelAiAppState extends State<NovelAiApp>
 
       // PageController를 올바른 페이지로 재생성 (old는 프레임 후 dispose)
       final oldPageController = _pageController;
-      final int targetPage = newTabCount * 1000 + newInitialIndex;
-      _pageController = PageController(initialPage: targetPage);
+      // 탭 번호가 곧 페이지 번호다 (끝없이 돌지 않는다 — _animateToVisibleTab 참고)
+      _pageController = PageController(initialPage: newInitialIndex);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         oldPageController.dispose();
       });
     }
-    _visibleTabIndices = newVisibleIndices;
-    final int tabCount = _visibleTabIndices.length;
+    _visibleTabs = newVisibleTabs;
+    final int tabCount = _visibleTabs.length;
 
     // 현재 선택된 원본 탭 인덱스
     final int currentVisibleIdx = _tabController!.index.clamp(0, tabCount - 1);
-    final int currentOrigIdx = _visibleTabIndices[currentVisibleIdx];
+    final AppTab currentTab = _visibleTabs[currentVisibleIdx];
 
-    bool isPromptTab = currentOrigIdx == 0;
+    bool isPromptTab = currentTab == AppTab.prompt;
     bool isKeyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
     // 콜백에서 쓰려고 기록해 둔다 (콜백에서 직접 MediaQuery 를 읽으면 안 된다)
     _keyboardOpen = isKeyboardOpen;
     double bottomNavBarHeight = MediaQuery.of(context).padding.bottom;
 
-    if (state.requestedTabIndex != null) {
-      int targetOrigTab = state.requestedTabIndex!;
+    if (state.requestedTab != null) {
+      final AppTab requested = state.requestedTab!;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) {
           return;
         }
-        int targetVisibleTab = _visibleTabIndices.indexOf(targetOrigTab);
+        final int targetVisibleTab = _visibleTabs.indexOf(requested);
         if (targetVisibleTab == -1) {
-          state.clearNavigation();
+          state.clearNavigation(); // 꺼진 탭이면 옮기지 않는다
           return;
         }
         if (_pageController.hasClients) {
-          int currentPage = _pageController.page?.round() ?? 6000;
-          int currentTab = currentPage % tabCount;
-          int diff = targetVisibleTab - currentTab;
-          if (diff > tabCount ~/ 2) {
-            diff -= tabCount;
-          } else if (diff < -(tabCount ~/ 2)) {
-            diff += tabCount;
-          }
-          _pageController.animateToPage(
-            currentPage + diff,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
+          _animateToVisibleTab(targetVisibleTab, tabCount);
         }
         state.clearNavigation();
       });
@@ -484,14 +411,14 @@ class _NovelAiAppState extends State<NovelAiApp>
           return;
         }
         // 1. 히스토리 탭이면 갤러리에게 먼저 위임 (선택 해제 / 상위 폴더 이동)
-        if (currentOrigIdx == 1) {
+        if (currentTab == AppTab.history) {
           final handled = state.galleryBackHandler?.call() ?? false;
           if (handled) {
             return;
           }
         }
         // 1-2. i2i 탭이면 릴(핸들) 닫기 위임
-        if (currentOrigIdx == 2) {
+        if (currentTab == AppTab.i2i) {
           final handled = state.i2iBackHandler?.call() ?? false;
           if (handled) {
             return;
@@ -524,26 +451,9 @@ class _NovelAiAppState extends State<NovelAiApp>
               indicatorColor: AppColors.accent,
               labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
               unselectedLabelStyle: const TextStyle(fontSize: 11.5),
-              onTap: (targetVisibleTab) {
-                int currentPage = _pageController.page?.round() ?? 6000;
-                int currentTab = currentPage % tabCount;
-                int diff = targetVisibleTab - currentTab;
-                if (diff > tabCount ~/ 2) {
-                  diff -= tabCount;
-                } else if (diff < -(tabCount ~/ 2)) {
-                  diff += tabCount;
-                }
-                _pageController.animateToPage(
-                  currentPage + diff,
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOut,
-                );
-              },
-              tabs: _visibleTabIndices.map((origIdx) {
-                // 4번 탭은 와일드카드·프롬프트 사전을 함께 담아 "라이브러리"라 부른다
-                const labels = ["프롬프트", "히스토리", "i2i", "캐릭터", "라이브러리", "설정"];
-                return Tab(text: labels[origIdx]);
-              }).toList(),
+              onTap: (targetVisibleTab) => _animateToVisibleTab(targetVisibleTab, tabCount),
+              // 탭 이름은 AppTab 에 (라이브러리 = 와일드카드·프롬프트 사전)
+              tabs: [for (final t in _visibleTabs) Tab(text: t.label)],
             ),
           ),
           body: Stack(
@@ -552,10 +462,11 @@ class _NovelAiAppState extends State<NovelAiApp>
                 // 탭 구성(보이는 탭 목록)이 바뀌면 PageView 자체를 새로 만든다.
                 // key가 없으면 Flutter가 같은 위젯으로 보고 "옛 탭 개수로 그려둔 페이지"를
                 // 그대로 재사용해, 상단 탭 표시와 실제 화면이 어긋나는 문제가 생긴다.
-                key: ValueKey('pv_${_visibleTabIndices.join("_")}'),
+                key: ValueKey('pv_${_visibleTabs.map((t) => t.index).join("_")}'),
                 controller: _pageController,
+                itemCount: tabCount, // 탭마다 페이지 하나 (양 끝에서 멈춘다)
                 // i2i 탭이거나 좌우 스와이프 비활성화 시 차단
-                physics: (currentOrigIdx == 2 || !state.horizontalSwipeEnabled)
+                physics: (currentTab == AppTab.i2i || !state.horizontalSwipeEnabled)
                     ? const NeverScrollableScrollPhysics()
                     : const AlwaysScrollableScrollPhysics(),
                 onPageChanged: (index) {
@@ -564,34 +475,27 @@ class _NovelAiAppState extends State<NovelAiApp>
                   if (_keyboardOpen) {
                     SystemChannels.textInput.invokeMethod('TextInput.hide');
                   }
-                  int targetVisibleTab = index % tabCount;
-                  if (_tabController!.index != targetVisibleTab) {
-                    _tabController!.animateTo(targetVisibleTab);
+                  // 탭을 눌러 넘어가는 중이면 지나치는 페이지로 탭 표시를 바꾸지 않는다
+                  //  (_animateToVisibleTab 이 도착한 뒤 맞춘다 — 무지개색 번쩍임의 원인이었다)
+                  if (_tabJumping) {
+                    return;
+                  }
+                  if (index < tabCount && _tabController!.index != index) {
+                    _tabController!.animateTo(index);
                   }
                 },
                 itemBuilder: (context, index) {
-                  int visibleIdx = index % tabCount;
-                  int origIdx = _visibleTabIndices[visibleIdx];
-                  switch (origIdx) {
-                    case 0:
-                      return _buildTabScrollContent(
-                        state,
-                        0,
-                        PromptTab(onScrollToHistoryEnd: state.requestHistoryScrollToEnd),
-                      );
-                    case 1:
-                      return _buildTabScrollContent(state, 1, const HistoryTab());
-                    case 2:
-                      return _buildTabScrollContent(state, 2, const I2iTab());
-                    case 3:
-                      return _buildTabScrollContent(state, 3, const CharacterTab());
-                    case 4:
-                      return _buildTabScrollContent(state, 4, const WildcardTab());
-                    case 5:
-                      return _buildTabScrollContent(state, 5, const SettingsTab());
-                    default:
-                      return const SizedBox();
-                  }
+                  final AppTab tab = _visibleTabs[index];
+                  return _buildTabScrollContent(state, tab, switch (tab) {
+                    AppTab.prompt => _promptTabPage ??= PromptTab(
+                      onScrollToHistoryEnd: state.requestHistoryScrollToEnd,
+                    ),
+                    AppTab.history => const HistoryTab(),
+                    AppTab.i2i => const I2iTab(),
+                    AppTab.character => const CharacterTab(),
+                    AppTab.library => const WildcardTab(),
+                    AppTab.settings => const SettingsTab(),
+                  });
                 },
               ),
 

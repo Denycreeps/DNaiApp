@@ -6,15 +6,15 @@ import '../models/preset_models.dart';
 import '../app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/app_toast.dart';
-import 'dart:async'; // unawaited
+import 'dart:math' as math; // 이름 창 흔들기
 import 'package:image_picker/image_picker.dart';
 import 'dart:convert'; // 미리보기 base64
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import '../models/prompt_dict.dart';
-import '../utils/ui_safety.dart';
 import 'prompt_edit_dialog.dart'; // 모든 프롬프트 칸이 같은 확대 입력창을 쓴다
 import '../widgets/dict_image_viewer.dart'; // 사전 이미지 크게 보기
+import '../widgets/prompt_preview_card.dart';
 import '../utils/image_codec.dart'; // WebP 굽기 (한곳)
 
 class WildcardTab extends StatefulWidget {
@@ -97,108 +97,40 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     }
   }
 
-  void _showCreateDialog(BuildContext context, AppState state) {
-    TextEditingController nameController = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text(
-          "새 와일드카드 생성",
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        content: TextField(
-          controller: nameController,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: "이름 입력 (예: 의상, 배경)",
-            hintStyle: TextStyle(color: Colors.white30),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
-            focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.accent, width: 2),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-            onPressed: () {
-              String newName = nameController.text.trim();
-              if (newName.isNotEmpty) {
-                state.wildcards.insert(0, NaiWildcard(name: newName, content: ""));
-                state.selectedWildcardIndex = 0;
-                state.saveAllSettings();
-                state.refreshUI();
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text("생성", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    ).then((_) {
-      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        nameController.dispose();
-      });
-    });
+  // 새 와일드카드 — 이름 규칙(빈 이름·중복·부르는 기호)은 AppState.wildcardNameProblem
+  Future<void> _showCreateDialog(AppState state) async {
+    final name = await _askName(
+      title: "새 와일드카드 생성",
+      hint: "이름 입력 (예: 의상, 배경)",
+      confirmLabel: "생성",
+      validate: (n) => state.wildcardNameProblem(n),
+    );
+    if (name == null || !mounted) {
+      return;
+    }
+    final problem = state.createWildcard(name);
+    if (problem != null) {
+      showToast(context, problem);
+    }
   }
 
-  void _showEditNameDialog(BuildContext context, AppState state) {
-    TextEditingController nameController = TextEditingController(
-      text: state.wildcards[state.selectedWildcardIndex].name,
+  // 지금 와일드카드의 이름 바꾸기 (되돌리기 기록도 새 이름으로 옮겨진다)
+  Future<void> _showEditNameDialog(AppState state) async {
+    final card = state.wildcards[state.selectedWildcardIndex];
+    final name = await _askName(
+      initial: card.name,
+      title: "이름 수정",
+      hint: "새 이름 입력",
+      confirmLabel: "저장",
+      validate: (n) => state.wildcardNameProblem(n, except: card),
     );
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text(
-          "이름 수정",
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-        content: TextField(
-          controller: nameController,
-          style: const TextStyle(color: Colors.white),
-          decoration: InputDecoration(
-            hintText: "새 이름 입력",
-            hintStyle: TextStyle(color: Colors.white30),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
-            focusedBorder: UnderlineInputBorder(
-              borderSide: BorderSide(color: AppColors.accent, width: 2),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-            onPressed: () {
-              final card = state.wildcards[state.selectedWildcardIndex];
-              final newName = nameController.text.trim();
-              // 되돌리기 기록은 이름으로 묶여 있어 함께 옮긴다
-              state.renameUndoKey('wildcard/${card.name}', 'wildcard/$newName');
-              card.name = newName;
-              state.saveAllSettings();
-              state.refreshUI();
-              Navigator.pop(ctx);
-            },
-            child: const Text("저장", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    ).then((_) {
-      // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        nameController.dispose();
-      });
-    });
+    if (name == null || !mounted) {
+      return;
+    }
+    final problem = state.renameWildcard(card, name);
+    if (problem != null) {
+      showToast(context, problem);
+    }
   }
 
   @override
@@ -236,20 +168,14 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
   }
 
   Widget _buildWildcardPage(BuildContext context, AppState state) {
+    // 목록이 비지 않게·선택 번호가 범위 안에 있게는 AppState.ensureWildcards 가 맡는다
+    //  (앱 켤 때·백업 복원·삭제 때). 여기서는 그리기만 한다 — 예전엔 그리는 도중에
+    //  빈 와일드카드를 넣고 번호를 고쳤다.
     if (state.wildcards.isEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        state.wildcards.add(NaiWildcard(name: "기본", content: ""));
-        state.selectedWildcardIndex = 0;
-        state.refreshUI();
-      });
       return const SizedBox();
     }
-
-    if (state.selectedWildcardIndex >= state.wildcards.length) {
-      state.selectedWildcardIndex = state.wildcards.length - 1;
-    }
-
-    final currentCard = state.wildcards[state.selectedWildcardIndex];
+    final currentCard =
+        state.wildcards[state.selectedWildcardIndex.clamp(0, state.wildcards.length - 1)];
 
     if (_lastSelectedCard != currentCard) {
       _lastSelectedCard = currentCard;
@@ -264,7 +190,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
           Row(
             children: [
               InkWell(
-                onTap: () => _showCreateDialog(context, state),
+                onTap: () => _showCreateDialog(state),
                 borderRadius: BorderRadius.circular(24),
                 child: Container(
                   width: 44,
@@ -354,7 +280,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
                 ),
               ),
               InkWell(
-                onTap: () => _showEditNameDialog(context, state),
+                onTap: () => _showEditNameDialog(state),
                 child: const Padding(
                   padding: EdgeInsets.all(8.0),
                   child: Icon(Icons.edit, color: AppColors.blue, size: 22),
@@ -609,57 +535,38 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
   }
 
   /// 분류 이름을 입력받는 작은 창. 취소하면 null.
-  Future<String?> _askCategoryName({String initial = '', required String title}) async {
-    final ctrl = TextEditingController(text: initial);
-    final ok = await showDialog<bool>(
+  /// 이름 하나를 입력받는 작은 창. 취소하면 null.
+  ///  와일드카드 만들기·이름 바꾸기, 사전 분류 만들기·이름 바꾸기가 모두 이 창을 쓴다.
+  ///  (예전엔 와일드카드용 창 두 개가 따로 있었다 — 76% 같은 코드)
+  Future<String?> _askName({
+    String initial = '',
+    required String title,
+    String hint = "예: 작가, 캐릭터, 의상",
+    String confirmLabel = "확인",
+    // 쓸 수 없는 이름이면 이유를 돌려준다 — 창을 닫지 않고 그 자리에서 알려 준다
+    String? Function(String name)? validate,
+  }) {
+    return showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          title,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            hintText: "예: 작가, 캐릭터, 의상",
-            hintStyle: TextStyle(color: Colors.white30),
-          ),
-          onSubmitted: (_) => Navigator.pop(ctx, true),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("취소", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-            child: const Text("확인", style: TextStyle(color: Colors.white)),
-          ),
-        ],
+      builder: (_) => _NameDialog(
+        initial: initial,
+        title: title,
+        hint: hint,
+        confirmLabel: confirmLabel,
+        validate: validate,
       ),
     );
-    final name = ctrl.text.trim();
-    // ⚠️ 닫히는 애니메이션이 끝난 뒤에 버린다 (DEVNOTES 1번)
-    disposeAfterDialog(ctrl.dispose);
-    return ok == true ? name : null;
   }
 
   Future<void> _addCategory(AppState state) async {
-    final name = await _askCategoryName(title: "새 분류");
+    final name = await _askName(title: "새 분류", validate: (n) => state.categoryNameProblem(n));
     if (name == null || !mounted) {
       return;
     }
     final c = state.addPromptDictCategory(name);
     if (c == null) {
-      showToast(
-        context,
-        name.isEmpty ? "이름을 입력해 주세요." : "'$name' 은(는) 쓸 수 없는 이름입니다. (이미 있거나 예약된 이름)",
-      );
+      // 창에서 이미 걸렀으므로 보통 여기로 오지 않는다 (만약을 위한 안내)
+      showToast(context, state.categoryNameProblem(name) ?? "만들지 못했습니다.");
       return;
     }
     // 만든 분류를 바로 보여 준다 (이어서 저장하면 그 분류로 들어간다)
@@ -690,7 +597,11 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
               title: const Text("이름 바꾸기", style: TextStyle(color: Colors.white)),
               onTap: () async {
                 Navigator.pop(ctx);
-                final name = await _askCategoryName(initial: c.name, title: "분류 이름 바꾸기");
+                final name = await _askName(
+                  initial: c.name,
+                  title: "분류 이름 바꾸기",
+                  validate: (n) => state.categoryNameProblem(n, exceptId: c.id),
+                );
                 if (name == null || !mounted) {
                   return;
                 }
@@ -859,8 +770,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     //    (열쇠는 프롬프트탭 긍정 입력창과 같아야 한다)
     state.pushPromptUndo(kPositiveUndoKey, before);
     ctrl.text = appendPromptPiece(before, e.prompt);
-    state.saveAllSettings();
-    state.refreshUI();
+    state.saveAndRefresh();
     showToast(context, "긍정 프롬프트 뒤에 '${e.displayTitle}'을(를) 붙였습니다.");
   }
 
@@ -870,308 +780,28 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
   }
 
   /// 새로 저장하거나([editing] == null) 기존 항목을 고친다.
-  ///  프리셋 편집 창과 같은 배치 — 가운데 미리보기(탭하면 갤러리), 아래에 이름·프롬프트.
+  ///  창(_DictEditorDialog)은 값만 모아 돌려주고, 여기서 파일 쓰기·목록 반영을 한다.
   Future<void> _showDictEditor(AppState state, {PromptDictEntry? editing}) async {
-    final titleCtrl = TextEditingController(text: editing?.title ?? '');
-    final promptCtrl = TextEditingController(
-      text: editing?.prompt ?? state.positiveController.text,
-    );
-
-    // 분류: 고치는 중이면 그 항목의 분류, 새로 만들면 '지금 보고 있는 분류'
-    //  (캐릭터 분류를 보다가 저장하면 캐릭터로 들어가는 게 자연스럽다.
-    //   전체·미분류를 보고 있었으면 미분류)
-    String? categoryId = editing != null
-        ? editing.categoryId
-        : (_dictFilter == kDictFilterAll || _dictFilter == kDictFilterNone ? null : _dictFilter);
-
-    // 미리보기 상태 (창 안에서 바꿔도 '저장'을 누르기 전까지는 반영하지 않는다)
-    String? thumb = editing?.thumbnail;
-    Uint8List? thumbBytes = editing != null ? state.dictThumb(editing) : null;
-    bool busy = false;
-    bool open = true;
-    StateSetter? setD;
-
-    // 크게 볼 이미지 — 새로 고른 것 (저장을 누르기 전까지는 파일에 쓰지 않는다)
-    Uint8List? pendingLarge;
-    // 이번 창에서 이미지를 바꾸거나 지웠는지 (그대로면 저장할 때 파일을 건드리지 않는다)
-    bool imageChanged = false;
-
-    // 고른 그림으로 '크게 볼 이미지'와 '목록용 썸네일'을 함께 만든다.
-    //  네이티브 WebP 인코더라 화면이 멈추지 않는다.
-    //  인코더가 안 되는 기기면 옛 방식(isolate 에서 200px JPEG 썸네일)만 만든다 — 크게 보기는 썸네일로.
-    Future<void> useImage(Uint8List src) async {
-      busy = true;
-      if (open) {
-        setD?.call(() {});
-      }
-      final large = await makeDictLargeImage(src);
-      final small = await makeDictThumb(large ?? src);
-      final String? t = small != null
-          ? base64Encode(small)
-          : await compute(_legacyDictThumbJpeg, src);
-      busy = false;
-      // ⚠️ 그림을 전혀 읽지 못했으면 아무것도 바꾸지 않는다.
-      //    그대로 '바뀜'으로 표시하면 저장할 때 원래 있던 이미지까지 지워진다
-      //    (사용자는 바꾸려다 실패했을 뿐인데 기존 이미지를 잃는다).
-      if (t == null) {
-        if (open) {
-          setD?.call(() {});
-        }
-        if (mounted) {
-          showToast(context, "이미지를 읽지 못했습니다. 다른 이미지를 골라 주세요.");
-        }
-        return;
-      }
-      thumb = t;
-      thumbBytes = base64Decode(t); // 위에서 null 을 이미 걸렀다
-      pendingLarge = large;
-      imageChanged = true;
-      // 창이 닫힌 뒤에 끝났으면 다시 그리지 않는다
-      if (open) {
-        setD?.call(() {});
-      }
-    }
-
-    // 지금 창에서 보이는 이미지를 크게 본다 (새로 고른 것이 있으면 그것, 없으면 저장된 파일)
-    Future<void> viewLarge() => showDictImageViewer(
-      context,
-      title: titleCtrl.text.trim().isNotEmpty ? titleCtrl.text.trim() : "미리보기",
-      loadLarge: () async {
-        if (imageChanged) {
-          return pendingLarge;
-        }
-        return editing == null ? null : state.loadDictImage(editing.id);
-      },
-      thumb: thumbBytes,
-    );
-
-    Future<void> pickFromGallery() async {
-      final picked = await ImagePicker().pickImage(
-        source: ImageSource.gallery,
-        // 크게 볼 이미지로 쓰므로 원본에 가깝게 받는다.
-        //  (카메라 사진처럼 아주 큰 그림은 받아 올 때부터 줄여 메모리를 아낀다)
-        maxWidth: 2048,
-        maxHeight: 2048,
-      );
-      if (picked == null) {
-        return;
-      }
-      await useImage(await picked.readAsBytes());
-    }
-
-    // 새로 저장할 때는 마지막 생성 이미지를 기본 미리보기로 (창을 먼저 띄우고 뒤에서 만든다)
-    if (editing == null && state.currentImageBytes != null) {
-      unawaited(useImage(state.currentImageBytes!));
-    }
-
-    final result = await showDialog<String>(
+    final r = await showDialog<_DictEditResult>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          setD = setDialogState;
-          final hasLast = state.currentImageBytes != null;
-          return AlertDialog(
-            backgroundColor: AppColors.surface,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            title: Text(
-              editing == null ? "프롬프트 저장" : "프롬프트 편집",
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 17,
-              ),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // 미리보기 + 오른쪽에 버튼 세로로
-                  //  (예전엔 미리보기 아래에 버튼을 가로로 늘어놓아, 좁은 화면에서 넘치고
-                  //   미리보기 옆의 넓은 공간은 비어 있었다)
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // 이미지가 있으면 누르면 크게 보고, 없으면 갤러리에서 고른다
-                      GestureDetector(
-                        onTap: busy ? null : (thumbBytes != null ? viewLarge : pickFromGallery),
-                        child: _dictPreviewBox(thumbBytes, busy),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            _dictImageAction(
-                              icon: Icons.photo_library_outlined,
-                              label: "갤러리",
-                              onPressed: busy ? null : pickFromGallery,
-                            ),
-                            if (hasLast)
-                              _dictImageAction(
-                                icon: Icons.auto_awesome,
-                                label: "마지막 이미지",
-                                onPressed: busy ? null : () => useImage(state.currentImageBytes!),
-                              ),
-                            if (thumbBytes != null)
-                              _dictImageAction(
-                                icon: Icons.close,
-                                label: "지우기",
-                                dim: true,
-                                onPressed: busy
-                                    ? null
-                                    : () => setDialogState(() {
-                                        thumb = null;
-                                        thumbBytes = null;
-                                        pendingLarge = null;
-                                        imageChanged = true; // 저장하면 큰 이미지 파일도 지운다
-                                      }),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  const SizedBox(height: 4),
-                  // 분류 고르기 — 누르면 목록이 펼쳐진다 (미분류가 기본)
-                  //  칩을 늘어놓는 방식은 분류가 많아지면 창을 가득 채워서 목록으로 했다.
-                  Row(
-                    children: [
-                      const Text("분류", style: TextStyle(color: Colors.white54, fontSize: 13)),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        // ⚠️ PopupMenuButton 은 메뉴를 '글자 길이만큼'만 그리고 버튼 오른쪽 끝에
-                        //    붙여 띄워서, 긴 입력칸 옆에 쪼그만 목록이 떠 어색했다.
-                        //    DropdownButton(isExpanded) 은 목록을 '버튼 너비 그대로' 버튼 위에 펼친다.
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          decoration: BoxDecoration(
-                            color: AppColors.background,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              // 미분류는 null 이라 메뉴 값으로 쓸 수 없어 kDictFilterNone 로 대신한다
-                              value: categoryId ?? kDictFilterNone,
-                              isExpanded: true,
-                              dropdownColor: AppColors.surface,
-                              borderRadius: BorderRadius.circular(10),
-                              // 분류가 많아도 화면을 다 덮지 않게 (그 안에서 스크롤)
-                              menuMaxHeight: 320,
-                              icon: const Icon(Icons.arrow_drop_down, color: Colors.white54),
-                              style: const TextStyle(color: Colors.white, fontSize: 13),
-                              onChanged: (v) => setDialogState(
-                                () => categoryId = (v == null || v == kDictFilterNone) ? null : v,
-                              ),
-                              items: [
-                                for (final c in state.promptDictCategories)
-                                  DropdownMenuItem(
-                                    value: c.id,
-                                    child: Text(c.name, overflow: TextOverflow.ellipsis),
-                                  ),
-                                // 미분류는 항상 맨 아래 — 흐린 글씨와 아이콘으로 다른 분류와 구분한다
-                                const DropdownMenuItem(
-                                  value: kDictFilterNone,
-                                  child: Row(
-                                    children: [
-                                      Icon(
-                                        Icons.folder_off_outlined,
-                                        size: 16,
-                                        color: Colors.white38,
-                                      ),
-                                      SizedBox(width: 6),
-                                      Text("미분류", style: TextStyle(color: Colors.white70)),
-                                    ],
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  TextField(
-                    controller: titleCtrl,
-                    style: const TextStyle(color: Colors.white),
-                    decoration: const InputDecoration(
-                      labelText: "이름 (비우면 첫 태그)",
-                      labelStyle: TextStyle(color: Colors.white54),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  // 프롬프트 — 다른 프롬프트 칸과 똑같은 확대 입력창으로 편집한다.
-                  //  (자동완성 후보·가중치 색·되돌리기·사전 불러오기를 그대로 쓸 수 있다)
-                  //  여기는 미리보기만 보여 주고, 누르면 확대 입력창이 열린다.
-                  _promptPreviewBox(
-                    label: "프롬프트",
-                    text: promptCtrl.text,
-                    color: AppColors.accent,
-                    height: 110,
-                    onTap: () async {
-                      await showPromptEditDialog(
-                        ctx,
-                        state,
-                        "사전 프롬프트",
-                        Icons.menu_book,
-                        AppColors.accent,
-                        promptCtrl,
-                        // 항목마다 되돌리기 기록을 따로 (새 항목은 'new' 한 칸을 같이 쓴다)
-                        undoKey: 'dict/${editing?.id ?? 'new'}',
-                      );
-                      // 확대 입력창에서 고친 내용을 미리보기에 반영
-                      if (open) {
-                        setDialogState(() {});
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              if (editing != null)
-                TextButton(
-                  onPressed: () => Navigator.pop(ctx, 'delete'),
-                  child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
-                ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text("취소", style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton(
-                // 미리보기를 만드는 중에는 저장을 막는다 (반쯤 된 값이 들어가지 않게)
-                onPressed: busy ? null : () => Navigator.pop(ctx, 'save'),
-                style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-                child: const Text(
-                  "저장",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ],
-          );
-        },
+      builder: (_) => _DictEditorDialog(
+        state: state,
+        editing: editing,
+        // 분류: 고치는 중이면 그 항목의 분류, 새로 만들면 '지금 보고 있는 분류'
+        //  (캐릭터 분류를 보다가 저장하면 캐릭터로 들어가는 게 자연스럽다.
+        //   전체·미분류를 보고 있었으면 미분류)
+        initialCategoryId: editing != null
+            ? editing.categoryId
+            : (_dictFilter == kDictFilterAll || _dictFilter == kDictFilterNone
+                  ? null
+                  : _dictFilter),
       ),
     );
-    open = false;
-
-    // 값은 컨트롤러를 버리기 전에 꺼내 둔다
-    final title = titleCtrl.text.trim();
-    final prompt = promptCtrl.text.trim();
-    // ⚠️ 닫히는 애니메이션이 끝난 뒤에 버린다 (DEVNOTES 1번)
-    disposeAfterDialog(() {
-      titleCtrl.dispose();
-      promptCtrl.dispose();
-    });
-
-    if (!mounted) {
+    if (r == null || !mounted) {
       return;
     }
 
-    if (result == 'delete' && editing != null) {
+    if (r.delete && editing != null) {
       final ok = await showConfirmDialog(
         context,
         title: "프롬프트 사전 삭제",
@@ -1186,9 +816,11 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
       return;
     }
 
-    if (result != 'save') {
+    if (r.delete) {
       return;
     }
+    final title = r.title;
+    final prompt = r.prompt;
     if (prompt.isEmpty) {
       showToast(context, "프롬프트가 비어 있어 저장하지 않았습니다.");
       return;
@@ -1200,10 +832,10 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     //  (순서가 반대면 방금 저장한 항목을 바로 크게 볼 때 파일이 아직 없어 흐리게 보인다)
     //  이미지를 건드리지 않았으면 파일도 그대로 둔다.
     Future<void> applyLargeImage(String id) async {
-      if (!imageChanged) {
+      if (!r.imageChanged) {
         return;
       }
-      final large = pendingLarge;
+      final large = r.pendingLarge;
       if (large != null) {
         await state.saveDictImage(id, large);
       } else {
@@ -1215,8 +847,8 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
       final entry = PromptDictEntry(
         title: name,
         prompt: prompt,
-        thumbnail: thumb,
-        categoryId: categoryId,
+        thumbnail: r.thumb,
+        categoryId: r.categoryId,
       );
       await applyLargeImage(entry.id);
       if (!mounted) {
@@ -1232,69 +864,346 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
       editing
         ..title = name
         ..prompt = prompt
-        ..thumbnail = thumb
-        ..categoryId = categoryId;
+        ..thumbnail = r.thumb
+        ..categoryId = r.categoryId;
       state.updatePromptDictEntry(editing);
       showToast(context, "수정했습니다.");
     }
   }
+}
 
-  /// 프롬프트 미리보기 칸 — 누르면 확대 입력창이 열린다.
-  ///  사전 편집 창과 와일드카드 편집이 같은 모양을 쓴다 (프롬프트탭 카드와 같은 역할).
-  ///  ⚠️ [height] 가 정해져 있어야 한다 — 스크롤 뷰 안에서 쓰이므로 무한 높이가 되면 멈춘다.
-  Widget _promptPreviewBox({
-    required String label,
-    required String text,
-    required Color color,
-    required double height,
-    required VoidCallback onTap,
-    String hint = "눌러서 입력…",
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        height: height,
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-        decoration: BoxDecoration(
-          color: AppColors.background,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: color.withValues(alpha: 0.5)),
-        ),
+/// 사전 편집 창이 돌려주는 결과. 취소하면 null.
+class _DictEditResult {
+  final bool delete;
+  final String title;
+  final String prompt;
+  final String? categoryId;
+  final String? thumb; // 목록용 썸네일 (base64)
+  final bool imageChanged; // 이번 창에서 이미지를 바꾸거나 지웠는지
+  final Uint8List? pendingLarge; // 새로 고른 큰 이미지 (지웠으면 null)
+
+  const _DictEditResult({
+    required this.title,
+    required this.prompt,
+    required this.categoryId,
+    required this.thumb,
+    required this.imageChanged,
+    required this.pendingLarge,
+  }) : delete = false;
+
+  const _DictEditResult.delete()
+    : delete = true,
+      title = '',
+      prompt = '',
+      categoryId = null,
+      thumb = null,
+      imageChanged = false,
+      pendingLarge = null;
+}
+
+/// 프롬프트 사전 편집 창 — 새로 저장하거나([editing] == null) 기존 항목을 고친다.
+///
+///  ⚠️ 예전엔 이 창이 _showDictEditor 함수 안의 지역 변수(busy·open·setD …)로 상태를 들고,
+///     '창이 닫혔나'를 open 깃발로 직접 관리했다. 이제 창의 상태는 이 위젯의 필드이고,
+///     닫혔는지는 mounted, 컨트롤러는 창이 사라질 때 dispose() 에서 정리한다.
+///  창은 값만 모아 돌려주고, 파일 쓰기·목록 반영은 부른 쪽(_showDictEditor)이 한다.
+class _DictEditorDialog extends StatefulWidget {
+  final AppState state;
+  final PromptDictEntry? editing;
+  final String? initialCategoryId;
+
+  const _DictEditorDialog({required this.state, this.editing, this.initialCategoryId});
+
+  @override
+  State<_DictEditorDialog> createState() => _DictEditorDialogState();
+}
+
+class _DictEditorDialogState extends State<_DictEditorDialog> {
+  AppState get state => widget.state;
+
+  late final TextEditingController _titleCtrl = TextEditingController(
+    text: widget.editing?.title ?? '',
+  );
+  // 새 항목은 빈 칸에서 시작한다.
+  //  (예전엔 지금 긍정 프롬프트를 미리 넣었는데, 이미 있는 프롬프트를 쓸 때는
+  //   프리셋을 쓰고 사전은 직접 적어 넣는 경우가 대부분이라 매번 지워야 했다)
+  late final TextEditingController _promptCtrl = TextEditingController(
+    text: widget.editing?.prompt ?? '',
+  );
+
+  late String? _categoryId = widget.initialCategoryId;
+
+  // 미리보기 상태 (창 안에서 바꿔도 '저장'을 누르기 전까지는 반영하지 않는다)
+  late String? _thumb = widget.editing?.thumbnail;
+  late Uint8List? _thumbBytes = widget.editing != null ? state.dictThumb(widget.editing!) : null;
+  bool _busy = false;
+  // 크게 볼 이미지 — 새로 고른 것 (저장을 누르기 전까지는 파일에 쓰지 않는다)
+  Uint8List? _pendingLarge;
+  // 이번 창에서 이미지를 바꾸거나 지웠는지 (그대로면 저장할 때 파일을 건드리지 않는다)
+  bool _imageChanged = false;
+
+  // 새 항목은 이미지 없이 시작한다 — 빈 칸을 누르거나 [갤러리]·[마지막 이미지] 로
+  //  사용자가 고른다. (예전엔 마지막 생성 이미지를 자동으로 넣어서, 그걸 만드는 동안
+  //  저장이 잠겼고 원치 않는 그림이 들어가면 지워야 했다)
+
+  @override
+  void dispose() {
+    _titleCtrl.dispose();
+    _promptCtrl.dispose();
+    super.dispose();
+  }
+
+  _DictEditResult _result() => _DictEditResult(
+    title: _titleCtrl.text.trim(),
+    prompt: _promptCtrl.text.trim(),
+    categoryId: _categoryId,
+    thumb: _thumb,
+    imageChanged: _imageChanged,
+    pendingLarge: _pendingLarge,
+  );
+
+  // 고른 그림으로 '크게 볼 이미지'와 '목록용 썸네일'을 함께 만든다.
+  //  네이티브 WebP 인코더라 화면이 멈추지 않는다.
+  //  인코더가 안 되는 기기면 옛 방식(isolate 에서 200px JPEG 썸네일)만 만든다 — 크게 보기는 썸네일로.
+  Future<void> _useImage(Uint8List src) async {
+    setState(() => _busy = true);
+    final large = await makeDictLargeImage(src);
+    final small = await makeDictThumb(large ?? src);
+    final String? t = small != null
+        ? base64Encode(small)
+        : await compute(_legacyDictThumbJpeg, src);
+    // 창이 닫힌 뒤에 끝났으면 아무것도 하지 않는다
+    if (!mounted) {
+      return;
+    }
+    // ⚠️ 그림을 전혀 읽지 못했으면 아무것도 바꾸지 않는다.
+    //    그대로 '바뀜'으로 표시하면 저장할 때 원래 있던 이미지까지 지워진다
+    //    (사용자는 바꾸려다 실패했을 뿐인데 기존 이미지를 잃는다).
+    if (t == null) {
+      setState(() => _busy = false);
+      showToast(context, "이미지를 읽지 못했습니다. 다른 이미지를 골라 주세요.");
+      return;
+    }
+    setState(() {
+      _busy = false;
+      _thumb = t;
+      _thumbBytes = base64Decode(t);
+      _pendingLarge = large;
+      _imageChanged = true;
+    });
+  }
+
+  // 지금 창에서 보이는 이미지를 크게 본다 (새로 고른 것이 있으면 그것, 없으면 저장된 파일)
+  Future<void> _viewLarge() => showDictImageViewer(
+    context,
+    title: _titleCtrl.text.trim().isNotEmpty ? _titleCtrl.text.trim() : "미리보기",
+    loadLarge: () async {
+      if (_imageChanged) {
+        return _pendingLarge;
+      }
+      final e = widget.editing;
+      return e == null ? null : state.loadDictImage(e.id);
+    },
+    thumb: _thumbBytes,
+  );
+
+  Future<void> _pickFromGallery() async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      // 크게 볼 이미지로 쓰므로 원본에 가깝게 받는다.
+      //  (카메라 사진처럼 아주 큰 그림은 받아 올 때부터 줄여 메모리를 아낀다)
+      maxWidth: 2048,
+      maxHeight: 2048,
+    );
+    if (picked == null || !mounted) {
+      return;
+    }
+    await _useImage(await picked.readAsBytes());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hasLast = state.currentImageBytes != null;
+    return AlertDialog(
+      backgroundColor: AppColors.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Text(
+        widget.editing == null ? "프롬프트 저장" : "프롬프트 편집",
+        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 17),
+      ),
+      content: SingleChildScrollView(
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // 미리보기 + 오른쪽에 버튼 세로로
+            //  (예전엔 미리보기 아래에 버튼을 가로로 늘어놓아, 좁은 화면에서 넘치고
+            //   미리보기 옆의 넓은 공간은 비어 있었다)
             Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                Text(
-                  label,
-                  style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+                // 이미지가 있으면 누르면 크게 보고, 없으면 갤러리에서 고른다
+                GestureDetector(
+                  onTap: _busy ? null : (_thumbBytes != null ? _viewLarge : _pickFromGallery),
+                  child: _previewBox(),
                 ),
-                const Spacer(),
-                Icon(Icons.edit, size: 14, color: color),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Text(
-                  text.isEmpty ? hint : text,
-                  style: TextStyle(
-                    color: text.isEmpty ? Colors.white30 : Colors.white,
-                    fontSize: 13,
-                    height: 1.5,
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _imageAction(
+                        icon: Icons.photo_library_outlined,
+                        label: "갤러리",
+                        onPressed: _busy ? null : _pickFromGallery,
+                      ),
+                      if (hasLast)
+                        _imageAction(
+                          icon: Icons.auto_awesome,
+                          label: "마지막 이미지",
+                          onPressed: _busy ? null : () => _useImage(state.currentImageBytes!),
+                        ),
+                      if (_thumbBytes != null)
+                        _imageAction(
+                          icon: Icons.close,
+                          label: "지우기",
+                          dim: true,
+                          onPressed: _busy
+                              ? null
+                              : () => setState(() {
+                                  _thumb = null;
+                                  _thumbBytes = null;
+                                  _pendingLarge = null;
+                                  _imageChanged = true; // 저장하면 큰 이미지 파일도 지운다
+                                }),
+                        ),
+                    ],
                   ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            // 분류 고르기 — 누르면 목록이 펼쳐진다 (미분류가 기본)
+            //  칩을 늘어놓는 방식은 분류가 많아지면 창을 가득 채워서 목록으로 했다.
+            Row(
+              children: [
+                const Text("분류", style: TextStyle(color: Colors.white54, fontSize: 13)),
+                const SizedBox(width: 10),
+                Expanded(
+                  // ⚠️ PopupMenuButton 은 메뉴를 '글자 길이만큼'만 그리고 버튼 오른쪽 끝에
+                  //    붙여 띄워서, 긴 입력칸 옆에 쪼그만 목록이 떠 어색했다.
+                  //    DropdownButton(isExpanded) 은 목록을 '버튼 너비 그대로' 버튼 위에 펼친다.
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.background,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: AppColors.accent.withValues(alpha: 0.5)),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        // 미분류는 null 이라 메뉴 값으로 쓸 수 없어 kDictFilterNone 로 대신한다
+                        value: _categoryId ?? kDictFilterNone,
+                        isExpanded: true,
+                        dropdownColor: AppColors.surface,
+                        borderRadius: BorderRadius.circular(10),
+                        // 분류가 많아도 화면을 다 덮지 않게 (그 안에서 스크롤)
+                        menuMaxHeight: 320,
+                        icon: const Icon(Icons.arrow_drop_down, color: Colors.white54),
+                        style: const TextStyle(color: Colors.white, fontSize: 13),
+                        onChanged: (v) => setState(
+                          () => _categoryId = (v == null || v == kDictFilterNone) ? null : v,
+                        ),
+                        items: [
+                          for (final c in state.promptDictCategories)
+                            DropdownMenuItem(
+                              value: c.id,
+                              child: Text(c.name, overflow: TextOverflow.ellipsis),
+                            ),
+                          // 미분류는 항상 맨 아래 — 흐린 글씨와 아이콘으로 다른 분류와 구분한다
+                          const DropdownMenuItem(
+                            value: kDictFilterNone,
+                            child: Row(
+                              children: [
+                                Icon(Icons.folder_off_outlined, size: 16, color: Colors.white38),
+                                SizedBox(width: 6),
+                                Text("미분류", style: TextStyle(color: Colors.white70)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _titleCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: "이름 (비우면 첫 태그)",
+                labelStyle: TextStyle(color: Colors.white54),
               ),
+            ),
+            const SizedBox(height: 12),
+            // 프롬프트 — 다른 프롬프트 칸과 똑같은 확대 입력창으로 편집한다.
+            //  (자동완성 후보·가중치 색·되돌리기·사전 불러오기를 그대로 쓸 수 있다)
+            //  여기는 미리보기만 보여 주고, 누르면 확대 입력창이 열린다.
+            PromptPreviewCard(
+              title: "프롬프트",
+              text: _promptCtrl.text,
+              color: AppColors.accent,
+              onTap: () async {
+                await showPromptEditDialog(
+                  context,
+                  state,
+                  "사전 프롬프트",
+                  Icons.menu_book,
+                  AppColors.accent,
+                  _promptCtrl,
+                  // 항목마다 되돌리기 기록을 따로 (새 항목은 'new' 한 칸을 같이 쓴다)
+                  undoKey: 'dict/${widget.editing?.id ?? 'new'}',
+                );
+                // 확대 입력창에서 고친 내용을 미리보기에 반영
+                if (mounted) {
+                  setState(() {});
+                }
+              },
+              icon: Icons.menu_book,
+              maxLines: 4,
+              background: AppColors.background, // 다이얼로그 바탕(surface)과 구분되게
             ),
           ],
         ),
       ),
+      actions: [
+        if (widget.editing != null)
+          TextButton(
+            onPressed: () => Navigator.pop(context, const _DictEditResult.delete()),
+            child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
+          ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text("취소", style: TextStyle(color: Colors.grey)),
+        ),
+        ElevatedButton(
+          // 미리보기를 만드는 중에는 저장을 막는다 (반쯤 된 값이 들어가지 않게)
+          onPressed: _busy ? null : () => Navigator.pop(context, _result()),
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+          child: const Text(
+            "저장",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
     );
   }
 
-  /// 사전 편집 창의 이미지 버튼 한 줄 (미리보기 오른쪽에 세로로 쌓인다)
-  Widget _dictImageAction({
+  /// 이미지 버튼 한 줄 (미리보기 오른쪽에 세로로 쌓인다)
+  Widget _imageAction({
     required IconData icon,
     required String label,
     required VoidCallback? onPressed,
@@ -1314,9 +1223,10 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     );
   }
 
-  /// 편집 창의 미리보기 칸 (프리셋 편집 창과 같은 100×100)
-  Widget _dictPreviewBox(Uint8List? bytes, bool busy) {
-    if (busy) {
+  /// 미리보기 칸 (프리셋 편집 창과 같은 100×100)
+  Widget _previewBox() {
+    final bytes = _thumbBytes;
+    if (_busy) {
       return Container(
         width: 100,
         height: 100,
@@ -1347,7 +1257,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
               gaplessPlayback: true,
             ),
           ),
-          // 탭하면 바꿀 수 있다는 표시
+          // 누르면 크게 본다는 표시 (바꾸기는 오른쪽 버튼으로)
           Positioned(
             right: 4,
             bottom: 4,
@@ -1357,7 +1267,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
                 color: Colors.black54,
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: const Icon(Icons.edit, size: 13, color: Colors.white70),
+              child: const Icon(Icons.zoom_in, size: 13, color: Colors.white70),
             ),
           ),
         ],
@@ -1377,6 +1287,108 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
           Icon(Icons.add_photo_alternate_outlined, color: Colors.white30, size: 28),
           SizedBox(height: 4),
           Text("미리보기 추가", style: TextStyle(color: Colors.white30, fontSize: 11)),
+        ],
+      ),
+    );
+  }
+}
+
+/// 이름 하나를 입력받는 창. 쓸 수 없는 이름이면 닫지 않고 그 자리에서 알려 준다
+/// (입력칸 아래 빨간 안내 + 창이 좌우로 흔들림).
+///  진동은 쓰지 않는다 — 진동은 이미지 생성 완료 같은 알림용으로 아껴 둔다.
+///
+///  ⚠️ 컨트롤러를 이 창이 직접 갖고 dispose() 에서 버린다. 창이 완전히 사라질 때(닫히는
+///     애니메이션이 끝난 뒤) 불리므로, 밖에서 만든 컨트롤러처럼 0.4초를 기다릴 필요가 없다.
+class _NameDialog extends StatefulWidget {
+  final String initial;
+  final String title;
+  final String hint;
+  final String confirmLabel;
+  final String? Function(String name)? validate;
+
+  const _NameDialog({
+    required this.initial,
+    required this.title,
+    required this.hint,
+    required this.confirmLabel,
+    this.validate,
+  });
+
+  @override
+  State<_NameDialog> createState() => _NameDialogState();
+}
+
+class _NameDialogState extends State<_NameDialog> with SingleTickerProviderStateMixin {
+  late final TextEditingController _ctrl = TextEditingController(text: widget.initial);
+  late final AnimationController _shake = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+  );
+  String? _error;
+
+  @override
+  void dispose() {
+    _shake.dispose();
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final name = _ctrl.text.trim();
+    final problem = widget.validate?.call(name) ?? (name.isEmpty ? "이름을 입력해 주세요." : null);
+    if (problem != null) {
+      setState(() => _error = problem);
+      _shake.forward(from: 0);
+      return;
+    }
+    Navigator.pop(context, name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _shake,
+      // 좌우로 세 번쯤 흔들리다 점점 작아지며 멈춘다
+      builder: (context, child) {
+        final t = _shake.value;
+        final dx = math.sin(t * math.pi * 6) * 10 * (1 - t);
+        return Transform.translate(offset: Offset(dx, 0), child: child);
+      },
+      child: AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text(
+          widget.title,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: TextField(
+          controller: _ctrl,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            hintText: widget.hint,
+            hintStyle: const TextStyle(color: Colors.white30),
+            errorText: _error,
+            errorMaxLines: 2,
+          ),
+          // 고치기 시작하면 안내를 지운다
+          onChanged: (_) {
+            if (_error != null) {
+              setState(() => _error = null);
+            }
+          },
+          onSubmitted: (_) => _submit(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: _submit,
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            child: Text(widget.confirmLabel, style: const TextStyle(color: Colors.white)),
+          ),
         ],
       ),
     );

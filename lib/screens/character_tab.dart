@@ -3,13 +3,14 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
-import '../models/nai_character.dart';
 import 'prompt_edit_dialog.dart';
 import '../models/model_caps.dart';
 import '../widgets/character_canvas.dart';
 import '../app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../utils/ui_safety.dart';
+import '../widgets/prompt_preview_card.dart';
+import '../widgets/color_sliders.dart'; // 색상·채도·밝기 슬라이더 (액센트 색 고르기와 같이 쓴다)
 
 class CharacterTab extends StatefulWidget {
   const CharacterTab({super.key});
@@ -34,14 +35,27 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     IconData icon,
     Color color,
     String currentText,
-    ValueChanged<String> onSaved,
-  ) {
+    ValueChanged<String> onSaved, {
+    required String undoKey,
+  }) {
     final tc = TextEditingController(text: currentText);
     // 입력 내용을 실시간으로 콜백에 전달 (공용 다이얼로그는 컨트롤러 기반)
     tc.addListener(() => onSaved(tc.text));
     // 이 컨트롤러는 여기서 만들었으므로 다이얼로그가 닫힐 때 직접 정리한다
     // (공용 다이얼로그는 외부에서 받은 컨트롤러를 dispose 하지 않는다)
-    showPromptEditDialog(context, state, title, icon, color, tc, onClosed: tc.dispose);
+    showPromptEditDialog(
+      context,
+      state,
+      title,
+      icon,
+      color,
+      tc,
+      onClosed: tc.dispose,
+      // ⚠️ 캐릭터마다 따로 — 예전엔 열쇠를 안 넘겨 제목("긍정적 프롬프트")이 열쇠가 됐고,
+      //    캐릭터 1·2·3 이 기록을 같이 써서 ↺ 로 다른 캐릭터의 프롬프트가 나왔다.
+      //    프롬프트탭 서랍과 같은 열쇠라 같은 캐릭터는 두 곳이 기록을 함께 쓴다.
+      undoKey: undoKey,
+    );
   }
 
   // 캐릭터 칩 줄 — 가로 스크롤.
@@ -128,8 +142,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                   value: state.charGridCols,
                   onChanged: (v) {
                     setSheet(() => state.charGridCols = v);
-                    state.saveAllSettings();
-                    state.refreshUI();
+                    state.saveAndRefresh();
                   },
                 ),
                 const SizedBox(height: 10),
@@ -138,8 +151,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                   value: state.charGridRows,
                   onChanged: (v) {
                     setSheet(() => state.charGridRows = v);
-                    state.saveAllSettings();
-                    state.refreshUI();
+                    state.saveAndRefresh();
                   },
                 ),
               ],
@@ -208,29 +220,12 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     if (index < 0 || index >= state.characters.length) {
       return;
     }
-    // 기본 팔레트 + 자주 쓰는 색
-    const swatches = [
-      AppColors.purple,
-      AppColors.teal,
-      Color(0xFFFF7043),
-      Color(0xFF42A5F5),
-      Color(0xFFEC407A),
-      Color(0xFF9CCC65),
-      Color(0xFFFFCA28),
-      Color(0xFF26C6DA),
-      Color(0xFFEF5350),
-      Color(0xFFAB47BC),
-      Color(0xFF5C6BC0),
-      Color(0xFF66BB6A),
-      Color(0xFFFFA726),
-      Color(0xFF78909C),
-      Color(0xFFD4E157),
-      Color(0xFFFFFFFF),
-    ];
+    // 기본 팔레트 + 자주 쓰는 색 (둘 다 app_theme.dart 에)
+    const swatches = [...AppColors.characterPalette, ...AppColors.characterExtraSwatches];
     // 슬라이더로 미세 조정할 때 쓰는 현재 색
     Color current = state.characters[index].colorArgb != null
         ? Color(state.characters[index].colorArgb!)
-        : _charColor(index);
+        : _charColor(state, index);
     HSVColor hsv = HSVColor.fromColor(current);
 
     showModalBottomSheet(
@@ -248,8 +243,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
             });
             // 반투명 값이 섞이지 않게 알파는 항상 불투명으로 저장한다
             state.characters[index].colorArgb = c.withValues(alpha: 1.0).toARGB32();
-            state.saveAllSettings();
-            state.refreshUI();
+            state.saveAndRefresh();
             setState(() {});
           }
 
@@ -285,8 +279,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                       TextButton(
                         onPressed: () {
                           state.characters[index].colorArgb = null;
-                          state.saveAllSettings();
-                          state.refreshUI();
+                          state.saveAndRefresh();
                           setState(() {});
                           Navigator.pop(ctx);
                         },
@@ -327,13 +320,13 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                   const Text("직접 고르기", style: TextStyle(color: Colors.white54, fontSize: 12)),
                   const SizedBox(height: 8),
                   // 색상(Hue)
-                  _hueSlider(hsv, (h) => apply(hsv.withHue(h).toColor())),
+                  HueSlider(hue: hsv.hue, onChanged: (h) => apply(hsv.withHue(h).toColor())),
                   const SizedBox(height: 8),
                   // 채도
-                  _hsvSlider(
+                  HsvGradientSlider(
                     label: "채도",
                     value: hsv.saturation,
-                    gradient: [
+                    colors: [
                       HSVColor.fromAHSV(1, hsv.hue, 0, hsv.value).toColor(),
                       HSVColor.fromAHSV(1, hsv.hue, 1, hsv.value).toColor(),
                     ],
@@ -341,10 +334,10 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                   ),
                   const SizedBox(height: 8),
                   // 밝기
-                  _hsvSlider(
+                  HsvGradientSlider(
                     label: "밝기",
                     value: hsv.value,
-                    gradient: [
+                    colors: [
                       Colors.black,
                       HSVColor.fromAHSV(1, hsv.hue, hsv.saturation, 1).toColor(),
                     ],
@@ -356,83 +349,6 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
           );
         },
       ),
-    );
-  }
-
-  Widget _hueSlider(HSVColor hsv, ValueChanged<double> onChanged) {
-    return Row(
-      children: [
-        const SizedBox(
-          width: 34,
-          child: Text("색상", style: TextStyle(color: Colors.white54, fontSize: 11)),
-        ),
-        Expanded(
-          child: Container(
-            height: 26,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(13),
-              gradient: const LinearGradient(
-                colors: [
-                  Color(0xFFFF0000),
-                  Color(0xFFFFFF00),
-                  Color(0xFF00FF00),
-                  Color(0xFF00FFFF),
-                  Color(0xFF0000FF),
-                  Color(0xFFFF00FF),
-                  Color(0xFFFF0000),
-                ],
-              ),
-            ),
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 0,
-                activeTrackColor: Colors.transparent,
-                inactiveTrackColor: Colors.transparent,
-                thumbColor: Colors.white,
-                overlayShape: SliderComponentShape.noOverlay,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
-              ),
-              child: Slider(value: hsv.hue, min: 0, max: 360, onChanged: onChanged),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _hsvSlider({
-    required String label,
-    required double value,
-    required List<Color> gradient,
-    required ValueChanged<double> onChanged,
-  }) {
-    return Row(
-      children: [
-        SizedBox(
-          width: 34,
-          child: Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-        ),
-        Expanded(
-          child: Container(
-            height: 26,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(13),
-              gradient: LinearGradient(colors: gradient),
-            ),
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 0,
-                activeTrackColor: Colors.transparent,
-                inactiveTrackColor: Colors.transparent,
-                thumbColor: Colors.white,
-                overlayShape: SliderComponentShape.noOverlay,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
-              ),
-              child: Slider(value: value, onChanged: onChanged),
-            ),
-          ),
-        ),
-      ],
     );
   }
 
@@ -453,8 +369,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
           }
           _isGridActive = false;
         });
-        state.saveAllSettings();
-        state.refreshUI();
+        state.saveAndRefresh();
       },
       // 꾹 누르면 색을 고른다
       onLongPress: () => _showColorPicker(state, index),
@@ -464,7 +379,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
         height: h,
         decoration: BoxDecoration(
           color: isActive
-              ? _charColor(index).withValues(alpha: isSelected ? 1.0 : 0.45)
+              ? _charColor(state, index).withValues(alpha: isSelected ? 1.0 : 0.45)
               : AppColors.surfaceAlt,
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
@@ -514,13 +429,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
   // 추가 버튼 칩 (슬롯이 남았을 때만 호출된다)
   Widget _addChip(AppState state, double w, double h) {
     return GestureDetector(
-      onTap: () {
-        state.characters.add(NaiCharacter());
-        state.markCharactersReplaced();
-        state.selectedCharIndex = state.characters.length - 1;
-        state.saveAllSettings();
-        state.refreshUI();
-      },
+      onTap: () => state.addCharacter(),
       child: Container(
         width: w,
         height: h,
@@ -533,30 +442,13 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     );
   }
 
-  // 캐릭터 번호별 색 — 캔버스 마커와 같은 팔레트를 써서 서로 대응된다
-  static const List<Color> _charPalette = [
-    AppColors.purple,
-    AppColors.teal,
-    Color(0xFFFF7043),
-    Color(0xFF42A5F5),
-    Color(0xFFEC407A),
-    Color(0xFF9CCC65),
-    Color(0xFFFFCA28),
-    Color(0xFF26C6DA),
-  ];
-
-  // 사용자가 정한 색이 있으면 그걸 쓰고, 없으면 번호별 기본 팔레트
-  //  (캔버스 마커와 같은 규칙이라 서로 대응된다)
-  Color _charColor(int i) {
-    final state = context.read<AppState>();
-    if (i < state.characters.length) {
-      final custom = state.characters[i].colorArgb;
-      if (custom != null) {
-        return Color(custom);
-      }
-    }
-    return _charPalette[i % _charPalette.length];
-  }
+  // 캐릭터 색 — 사용자가 정한 색이 있으면 그걸 쓰고, 없으면 번호별 기본 팔레트.
+  //  규칙은 app_theme.dart 의 AppColors.characterColor 한 곳 (프롬프트탭 서랍과 같은 색).
+  //  (state 를 받아 쓴다 — 화면을 그리는 중에 context.read 를 하지 않게)
+  Color _charColor(AppState state, int i) => AppColors.characterColor(
+    i < state.characters.length ? state.characters[i].colorArgb : null,
+    i,
+  );
 
   // 편집 영역 높이 — 실제로 쓸 수 있는 세로 공간의 40%
   //  MediaQuery.size는 시스템 UI를 포함하므로 padding을 빼야 정확하다.
@@ -605,8 +497,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                       // 자동으로 되돌린다 (히스토리 최신을 따라감)
                       state.charCanvasPickedImage = null;
                       state.charCanvasShowImage = true;
-                      state.saveAllSettings();
-                      state.refreshUI();
+                      state.saveAndRefresh();
                       setState(() {});
                       Navigator.pop(ctx);
                     },
@@ -850,78 +741,6 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     return 832 / 1216;
   }
 
-  Widget _buildPromptCard({
-    required String title,
-    required IconData icon,
-    required Color color,
-    required String text,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 0, vertical: 0),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: color.withValues(alpha: 0.3)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 제목바 — 세로 공간을 아끼려고 최대한 얇게
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.15),
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Icon(icon, color: color, size: 14),
-                      const SizedBox(width: 5),
-                      Text(
-                        title,
-                        style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 12),
-                      ),
-                    ],
-                  ),
-                  Icon(Icons.edit, color: color, size: 13),
-                ],
-              ),
-            ),
-            // 내용이 아무리 길어도 카드 높이는 2줄로 고정한다.
-            //  길이에 따라 늘어나면 아래 Position이 밀려 스크롤해야 해서 불편하다.
-            //  전문은 카드를 탭하면 편집창에서 볼 수 있다.
-            SizedBox(
-              height: 56, // 글자 13 × 1.4 × 2줄 + 위아래 여백
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-                child: Align(
-                  alignment: text.isEmpty ? Alignment.center : Alignment.topLeft,
-                  child: Text(
-                    text.isEmpty ? "프롬프트를 입력하세요." : text,
-                    textAlign: text.isEmpty ? TextAlign.center : TextAlign.start,
-                    style: TextStyle(
-                      color: text.isEmpty ? Colors.white30 : Colors.white,
-                      fontSize: 13,
-                      height: 1.4,
-                    ),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   // 선택된 캐릭터를 위(-1)/아래(+1)로 한 칸 이동.
   // 캐릭터 순서 = 생성 시 배치 순서라, 프롬프트를 안 바꾸고도 좌우 배치를 조정할 수 있다.
   void _moveCharacter(AppState state, int direction) {
@@ -930,15 +749,9 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     if (to < 0 || to >= state.characters.length) {
       return;
     }
-    setState(() {
-      final moved = state.characters.removeAt(from);
-      state.characters.insert(to, moved);
-      state.selectedCharIndex = to; // 선택이 옮긴 캐릭터를 계속 따라가게
-      // index로 캐시된 입력 컨트롤러가 어긋나므로 다시 맞추게 알린다
-      state.markCharactersReplaced();
-      state.saveAllSettings();
-      state.refreshUI();
-    });
+    // 선택 따라가기·캐시 맞추기·저장은 AppState.moveCharacter 가 한다.
+    //  (예전엔 setState 안에서 saveAndRefresh 까지 불러 화면을 두 번 그렸다)
+    state.moveCharacter(from, to);
   }
 
   @override
@@ -949,610 +762,569 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     return Column(
       children: [
         // 캐릭터 에디터 (먼저)
-        //  내용(칩바 + 이름줄 + 프롬프트 카드 2장)만큼만 차지한다.
-        //  고정 높이로 두면 화면이 클 때 아래가 빈 채로 남아 어색했다.
-        //  ⚠️ 상한을 둬서 아래 Position이 지나치게 밀리지 않게 한다.
-        ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: _editorHeight(context)),
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
-            ),
-            child: Column(
-              // 내용만큼만 차지한다 (남는 공간을 억지로 채우지 않게)
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // ── 캐릭터 칩 줄 (가로 스크롤) ──
-                //  좌측 세로 목록을 없애고 위로 올렸다.
-                //  편집 영역이 화면 전체 폭을 쓸 수 있어 프롬프트가 훨씬 잘 보인다.
-                _buildCharacterChipBar(state),
-                const Divider(height: 1, color: Colors.white12),
-                // Expanded가 아니라 Flexible — 내용이 짧으면 그만큼만,
-                //  넘치면 남은 공간에 맞춰 줄어든다(그때만 스크롤).
-                Flexible(
-                  // ⚠️ isEmpty 만 보면 부족하다. 프롬프트 불러오기로 캐릭터가
-                  //    3개에서 1개로 줄어도 selectedCharIndex 는 2로 남아 있을 수
-                  //    있고, 그 상태로 characters[2] 를 읽으면 범위를 벗어난다.
-                  //    selectedCharacter 는 번호를 스스로 바로잡아 주므로
-                  //    이 값이 null 인지만 보면 아래 전체가 안전해진다.
-                  child: state.selectedCharacter == null
-                      ? const Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(32),
-                            child: Text("캐릭터를 추가해주세요.", style: TextStyle(color: Colors.grey)),
-                          ),
-                        )
-                      // 높이를 고정했으므로 내용이 넘치면 스크롤되게 한다.
-                      //  ⚠️ 기본 physics는 내용이 짧아도 손가락을 따라 통통 튄다.
-                      //     화면에 딱 맞는데 움직이면 어색하므로, 넘칠 때만 움직이게
-                      //     ClampingScrollPhysics를 쓰고 오버스크롤 효과도 없앤다.
-                      : ScrollConfiguration(
-                          behavior: const _NoGlowBehavior(),
-                          child: SingleChildScrollView(
-                            physics: const ClampingScrollPhysics(),
-                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Expanded(
-                                      child: Row(
-                                        children: [
-                                          // Expanded로 폭을 확정해야 안쪽 Text가 안전하게 줄어든다.
-                                          // (Flexible은 자식이 스스로 폭을 정하길 기대해서 제약이 꼬인다)
-                                          Expanded(
-                                            child: GestureDetector(
-                                              onTap: () {
-                                                TextEditingController nameCtrl =
-                                                    TextEditingController(
-                                                      text:
-                                                          state
-                                                              .characters[state.selectedCharIndex]
-                                                              .name
-                                                              .isEmpty
-                                                          ? "캐릭터 #${state.selectedCharIndex + 1}"
-                                                          : state
-                                                                .characters[state.selectedCharIndex]
-                                                                .name,
-                                                    );
-                                                showDialog(
-                                                  context: context,
-                                                  builder: (ctx) => AlertDialog(
-                                                    backgroundColor: AppColors.surface,
-                                                    title: const Text(
-                                                      "캐릭터 이름 수정",
-                                                      style: TextStyle(
-                                                        color: Colors.white,
-                                                        fontWeight: FontWeight.bold,
-                                                        fontSize: 16,
-                                                      ),
-                                                    ),
-                                                    content: TextField(
-                                                      controller: nameCtrl,
-                                                      maxLength: 12,
-                                                      style: const TextStyle(color: Colors.white),
-                                                      decoration: InputDecoration(
-                                                        counterText: "",
-                                                        hintText: "새 이름 입력",
-                                                        hintStyle: TextStyle(color: Colors.white30),
-                                                        enabledBorder: UnderlineInputBorder(
-                                                          borderSide: BorderSide(
-                                                            color: AppColors.accent,
-                                                          ),
-                                                        ),
-                                                        focusedBorder: UnderlineInputBorder(
-                                                          borderSide: BorderSide(
-                                                            color: AppColors.accent,
-                                                            width: 2,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    actions: [
-                                                      TextButton(
-                                                        onPressed: () => Navigator.pop(ctx),
-                                                        child: const Text(
-                                                          "취소",
-                                                          style: TextStyle(color: Colors.grey),
-                                                        ),
-                                                      ),
-                                                      ElevatedButton(
-                                                        style: ElevatedButton.styleFrom(
-                                                          backgroundColor: AppColors.accent,
-                                                        ),
-                                                        onPressed: () {
-                                                          final idx = state.selectedCharIndex;
-                                                          if (idx < 0 ||
-                                                              idx >= state.characters.length) {
-                                                            Navigator.pop(ctx);
-                                                            return;
-                                                          }
-                                                          state.characters[idx].name = nameCtrl.text
-                                                              .trim();
-                                                          state.saveAllSettings();
-                                                          state.refreshUI();
-                                                          Navigator.pop(ctx);
-                                                        },
-                                                        child: const Text(
-                                                          "저장",
-                                                          style: TextStyle(color: Colors.white),
-                                                        ),
-                                                      ),
-                                                    ],
-                                                  ),
-                                                ).then((_) {
-                                                  disposeAfterDialog(nameCtrl.dispose);
-                                                });
-                                              },
-                                              child: Container(
-                                                padding: const EdgeInsets.symmetric(
-                                                  horizontal: 16,
-                                                  vertical: 8,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: Colors.deepPurple.withValues(alpha: 0.2),
-                                                  borderRadius: BorderRadius.circular(20),
-                                                ),
-                                                // 아이콘을 없앤 뒤로는 자식이 하나뿐이라
-                                                // Row/Flexible을 두면 폭 제약이 꼬여 오류가 난다.
-                                                // Text 하나만 두고 말줄임으로 처리한다.
-                                                child: Text(
-                                                  state
-                                                          .characters[state.selectedCharIndex]
-                                                          .name
-                                                          .isEmpty
-                                                      ? "캐릭터 #${state.selectedCharIndex + 1}"
-                                                      : state
-                                                            .characters[state.selectedCharIndex]
-                                                            .name,
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    color: AppColors.accent,
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Builder(
-                                            builder: (context) {
-                                              bool isCurrentActive = state
-                                                  .characters[state.selectedCharIndex]
-                                                  .isActive;
-                                              return IconButton(
-                                                icon: Icon(
-                                                  isCurrentActive
-                                                      ? Icons.visibility
-                                                      : Icons.visibility_off,
-                                                  color: isCurrentActive
-                                                      ? AppColors.accent
-                                                      : Colors.grey,
-                                                  size: 20,
-                                                ),
-                                                padding: EdgeInsets.zero,
-                                                constraints: const BoxConstraints(
-                                                  minWidth: 26,
-                                                  minHeight: 34,
-                                                ),
-                                                visualDensity: VisualDensity.compact,
-                                                tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
-                                                onPressed: () {
-                                                  state
-                                                          .characters[state.selectedCharIndex]
-                                                          .isActive =
-                                                      !isCurrentActive;
-                                                  state.saveAllSettings();
-                                                  state.refreshUI();
-                                                },
-                                              );
-                                            },
-                                          ),
-                                          // 순서 위로 (왼쪽으로 배치) — 첫 번째면 비활성
-                                          IconButton(
-                                            icon: const Icon(Icons.keyboard_arrow_up, size: 22),
-                                            color: state.selectedCharIndex > 0
-                                                ? Colors.white70
-                                                : Colors.white24,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(
-                                              minWidth: 26,
-                                              minHeight: 34,
-                                            ),
-                                            visualDensity: VisualDensity.compact,
-                                            tooltip: "순서 위로",
-                                            onPressed: state.selectedCharIndex > 0
-                                                ? () => _moveCharacter(state, -1)
-                                                : null,
-                                          ),
-                                          // 순서 아래로 (오른쪽으로 배치) — 마지막이면 비활성
-                                          IconButton(
-                                            icon: const Icon(Icons.keyboard_arrow_down, size: 22),
-                                            color:
-                                                state.selectedCharIndex <
-                                                    state.characters.length - 1
-                                                ? Colors.white70
-                                                : Colors.white24,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(
-                                              minWidth: 26,
-                                              minHeight: 34,
-                                            ),
-                                            visualDensity: VisualDensity.compact,
-                                            tooltip: "순서 아래로",
-                                            onPressed:
-                                                state.selectedCharIndex <
-                                                    state.characters.length - 1
-                                                ? () => _moveCharacter(state, 1)
-                                                : null,
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.redAccent,
-                                        size: 20,
-                                      ),
-                                      // 다른 버튼과 같은 폭으로 맞춰 이름 칸을 넓힌다
-                                      padding: EdgeInsets.zero,
-                                      constraints: const BoxConstraints(
-                                        minWidth: 26,
-                                        minHeight: 34,
-                                      ),
-                                      visualDensity: VisualDensity.compact,
-                                      onPressed: () async {
-                                        final ok = await showConfirmDialog(
-                                          context,
-                                          title: "캐릭터 삭제",
-                                          message: "이 캐릭터를 정말 삭제하시겠습니까?",
-                                          confirmLabel: "삭제",
-                                          icon: Icons.delete_outline,
-                                        );
-                                        if (!ok) {
-                                          return;
-                                        }
-                                        state.characters.removeAt(state.selectedCharIndex);
-                                        if (state.selectedCharIndex > 0) {
-                                          state.selectedCharIndex--;
-                                        }
-                                        if (state.characters.isEmpty) {
-                                          state.characters.add(NaiCharacter());
-                                        }
-                                        // 삭제하면 뒤 캐릭터들의 index가 한 칸씩
-                                        // 당겨져 캐시된 컨트롤러와 어긋난다
-                                        state.markCharactersReplaced();
-                                        state.saveAllSettings();
-                                        state.refreshUI();
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-                                _buildPromptCard(
-                                  title: "캐릭터 긍정 프롬프트",
-                                  icon: Icons.add_circle_outline,
-                                  color: AppColors.teal,
-                                  text: state.characters[state.selectedCharIndex].positive,
-                                  onTap: () => _showPromptEditDialog(
-                                    context,
-                                    state,
-                                    "긍정적 프롬프트",
-                                    Icons.add_circle_outline,
-                                    AppColors.teal,
-                                    state.characters[state.selectedCharIndex].positive,
-                                    (val) {
-                                      state.characters[state.selectedCharIndex].positive = val;
-                                    },
-                                  ),
-                                ),
-                                const SizedBox(height: 10),
-                                _buildPromptCard(
-                                  title: "캐릭터 부정 프롬프트",
-                                  icon: Icons.remove_circle_outline,
-                                  color: const Color(0xFFE57373),
-                                  text: state.characters[state.selectedCharIndex].negative,
-                                  onTap: () => _showPromptEditDialog(
-                                    context,
-                                    state,
-                                    "부정적 프롬프트",
-                                    Icons.remove_circle_outline,
-                                    const Color(0xFFE57373),
-                                    state.characters[state.selectedCharIndex].negative,
-                                    (val) {
-                                      state.characters[state.selectedCharIndex].negative = val;
-                                    },
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                ),
-              ],
+        _buildEditor(context, state),
+
+        // 캐릭터 위치 미리보기 그리드 (맨 아래)
+        //  ⚠️ _buildPositionPanel 은 Expanded 를 돌려준다 — Column 의 직접 자식이어야 한다.
+        if (state.characters.isNotEmpty) _buildPositionPanel(context, state),
+      ],
+    ); // Column closing
+  }
+
+  // 캐릭터 이름 바꾸기 창 (이름 줄을 누르면 열린다)
+  //  예전엔 이 110줄이 이름 줄 버튼의 onTap 안에 통째로 들어 있었다.
+  void _showRenameDialog(AppState state) {
+    TextEditingController nameCtrl = TextEditingController(
+      text: state.characters[state.selectedCharIndex].name.isEmpty
+          ? "캐릭터 #${state.selectedCharIndex + 1}"
+          : state.characters[state.selectedCharIndex].name,
+    );
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text(
+          "캐릭터 이름 수정",
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: TextField(
+          controller: nameCtrl,
+          maxLength: 12,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            counterText: "",
+            hintText: "새 이름 입력",
+            hintStyle: TextStyle(color: Colors.white30),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.accent)),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: AppColors.accent, width: 2),
             ),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("취소", style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
+            onPressed: () {
+              final idx = state.selectedCharIndex;
+              if (idx < 0 || idx >= state.characters.length) {
+                Navigator.pop(ctx);
+                return;
+              }
+              state.characters[idx].name = nameCtrl.text.trim();
+              state.saveAndRefresh();
+              Navigator.pop(ctx);
+            },
+            child: const Text("저장", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      disposeAfterDialog(nameCtrl.dispose);
+    });
+  }
 
-        // 캐릭터 위치 미리보기 그리드 (맨 아래)
-        if (state.characters.isNotEmpty)
-          // 남은 공간을 정확히 채워 스크롤이 생기지 않게 한다
-          //  ⚠️ 아래 여백에 viewPadding.bottom을 더해야 한다.
-          //     이게 0이면 제스처 바(또는 3버튼 내비게이션)와 겹쳐
-          //     캔버스 아래쪽 마커가 시스템 바에 묻힌다.
-          Expanded(
-            child: Container(
-              margin: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).viewPadding.bottom + 8),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.grid_on, color: AppColors.accent, size: 16),
-                      const SizedBox(width: 6),
-                      const Text(
-                        "Position",
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      // 배치 모드 — 셋 중 하나만 (기본 / 랜덤 / 배치 적용)
-                      //  예전에는 토글 두 개라 "이거 켜고 저거 끄고"가 번거로웠다.
-                      _positionModeChip(state),
-                      const SizedBox(width: 6),
-                      // 캔버스 옵션 (V5에서만)
-                      if (modelCapsFor(state.selectedModel).usesFreePositioning) ...[
-                        _canvasToggle(
-                          state,
-                          label: "격자",
-                          active: state.charCanvasShowGrid,
-                          onTap: () {
-                            state.charCanvasShowGrid = !state.charCanvasShowGrid;
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                          // 꾹 누르면 칸 수를 고른다
-                          onLongPress: () => _showGridSettings(state),
-                        ),
-                        const SizedBox(width: 6),
-                        _canvasToggle(
-                          state,
-                          label: "스냅",
-                          active: state.charCanvasSnap,
-                          onTap: () {
-                            state.charCanvasSnap = !state.charCanvasSnap;
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                        ),
-                        const SizedBox(width: 6),
-                        // 배경에 그림 깔기 — 실제 그림을 보며 위치를 잡는다
-                        // 배경 이미지 — 툭 누르면 켜고 끄기, 꾹 누르면 직접 고르기.
-                        //  직접 고른 상태는 '선택중'으로 표시해 구분한다.
-                        _canvasToggle(
-                          state,
-                          label: state.charCanvasPickedImage != null && state.charCanvasShowImage
-                              ? "선택중"
-                              : "이미지",
-                          active: state.charCanvasShowImage,
-                          onTap: () {
-                            if (state.charCanvasShowImage) {
-                              // 켜져 있으면 끄고, 직접 고른 것도 함께 푼다
-                              state.charCanvasShowImage = false;
-                              state.charCanvasPickedImage = null;
-                            } else {
-                              // 꺼져 있으면 자동(히스토리 최신)으로 켠다
-                              state.charCanvasShowImage = true;
-                              state.charCanvasPickedImage = null;
-                            }
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                          // 꾹 누르면 어떤 이미지를 깔지 고른다
-                          onLongPress: () => _showBackgroundPicker(state),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      // 위치 초기화
-                      GestureDetector(
-                        onTap: () {
-                          for (final char in state.characters) {
-                            char.gridX = 2;
-                            char.gridY = 2;
-                            // 자유 좌표도 함께 초기화 (V5)
-                            char.posX = null;
-                            char.posY = null;
-                          }
-                          state.saveAllSettings();
-                          state.refreshUI();
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(color: Colors.white24),
-                          ),
-                          child: const Text(
-                            "초기화",
-                            style: TextStyle(
-                              color: Colors.white54,
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  // V5는 캔버스에서 자유 좌표로, 그 외 모델은 기존 5x5 그리드로 배치한다.
-                  if (modelCapsFor(state.selectedModel).usesFreePositioning)
-                    // Expanded로 남은 높이에 맞춘다 (세로 비율이라 그냥 두면 넘침)
-                    Expanded(
-                      child: Center(
-                        child: CharacterCanvas(
-                          characters: state.characters,
-                          selectedIndex: state.selectedCharIndex,
-                          aspectRatio: _canvasAspectRatio(state),
-                          showGrid: state.charCanvasShowGrid,
-                          snapToGrid: state.charCanvasSnap,
-                          gridCols: state.charGridCols,
-                          gridRows: state.charGridRows,
-                          backgroundImage: state.charCanvasBackground,
-                          onSelect: (i) {
-                            setState(() {
-                              state.selectedCharIndex = i;
-                              _isGridActive = true;
-                            });
-                            state.refreshUI();
-                          },
-                          onMove: (i, x, y) {
-                            setState(() => state.characters[i].setPosition(x, y));
-                            state.saveAllSettings();
-                            state.refreshUI();
-                          },
-                        ),
+  // 캐릭터 에디터 — 칩 줄 + 이름 줄 + 프롬프트 카드 2장
+  //  내용(칩바 + 이름줄 + 프롬프트 카드 2장)만큼만 차지한다.
+  //  고정 높이로 두면 화면이 클 때 아래가 빈 채로 남아 어색했다.
+  //  ⚠️ 상한을 둬서 아래 Position이 지나치게 밀리지 않게 한다.
+  Widget _buildEditor(BuildContext context, AppState state) {
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: _editorHeight(context)),
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          // 내용만큼만 차지한다 (남는 공간을 억지로 채우지 않게)
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ── 캐릭터 칩 줄 (가로 스크롤) ──
+            //  좌측 세로 목록을 없애고 위로 올렸다.
+            //  편집 영역이 화면 전체 폭을 쓸 수 있어 프롬프트가 훨씬 잘 보인다.
+            _buildCharacterChipBar(state),
+            const Divider(height: 1, color: Colors.white12),
+            // Expanded가 아니라 Flexible — 내용이 짧으면 그만큼만,
+            //  넘치면 남은 공간에 맞춰 줄어든다(그때만 스크롤).
+            Flexible(
+              // ⚠️ isEmpty 만 보면 부족하다. 프롬프트 불러오기로 캐릭터가
+              //    3개에서 1개로 줄어도 selectedCharIndex 는 2로 남아 있을 수
+              //    있고, 그 상태로 characters[2] 를 읽으면 범위를 벗어난다.
+              //    selectedCharacter 는 번호를 스스로 바로잡아 주므로
+              //    이 값이 null 인지만 보면 아래 전체가 안전해진다.
+              child: state.selectedCharacter == null
+                  ? const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(32),
+                        child: Text("캐릭터를 추가해주세요.", style: TextStyle(color: Colors.grey)),
                       ),
                     )
-                  else
-                    AspectRatio(
-                      aspectRatio: 5 / 5,
-                      child: GridView.builder(
-                        physics: const NeverScrollableScrollPhysics(),
-                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: 5,
-                          crossAxisSpacing: 3,
-                          mainAxisSpacing: 3,
-                        ),
-                        itemCount: 25,
-                        itemBuilder: (context, index) {
-                          int gx = index % 5;
-                          int gy = index ~/ 5;
-
-                          // 활성 캐릭터만 그리드에 표시
-                          List<int> charsHere = [];
-                          for (int ci = 0; ci < state.characters.length; ci++) {
-                            if (state.characters[ci].isActive &&
-                                state.characters[ci].gridX == gx &&
-                                state.characters[ci].gridY == gy) {
-                              charsHere.add(ci);
-                            }
-                          }
-
-                          bool isSelected =
-                              _isGridActive && charsHere.contains(state.selectedCharIndex);
-
-                          return GestureDetector(
-                            onTap: () {
-                              setState(() {
-                                if (charsHere.isNotEmpty) {
-                                  if (isSelected && charsHere.length > 1) {
-                                    // 같은 칸에 여러 캐릭터 → 순환 선택
-                                    int curIdx = charsHere.indexOf(state.selectedCharIndex);
-                                    state.selectedCharIndex =
-                                        charsHere[(curIdx + 1) % charsHere.length];
-                                  } else if (isSelected) {
-                                    // 이미 선택된 캐릭터 다시 탭 → 선택 해제
-                                    _isGridActive = false;
-                                  } else if (_isGridActive) {
-                                    // 다른 캐릭터 탭 → 자리 교환 + 선택 해제
-                                    final myChar = state.characters[state.selectedCharIndex];
-                                    final otherChar = state.characters[charsHere.first];
-                                    final tempX = myChar.gridX;
-                                    final tempY = myChar.gridY;
-                                    myChar.gridX = otherChar.gridX;
-                                    myChar.gridY = otherChar.gridY;
-                                    otherChar.gridX = tempX;
-                                    otherChar.gridY = tempY;
-                                    _isGridActive = false;
-                                    state.saveAllSettings();
-                                  } else {
-                                    // 선택 안 된 상태 → 선택
-                                    state.selectedCharIndex = charsHere.first;
-                                    _isGridActive = true;
-                                  }
-                                } else {
-                                  // 빈 칸 탭: 선택된 캐릭터가 있으면 이동
-                                  if (_isGridActive &&
-                                      state.selectedCharIndex < state.characters.length) {
-                                    state.characters[state.selectedCharIndex].gridX = gx;
-                                    state.characters[state.selectedCharIndex].gridY = gy;
-                                    _isGridActive = false;
-                                    state.saveAllSettings();
-                                  }
-                                }
-                                state.refreshUI();
-                              });
-                            },
-                            child: Container(
-                              decoration: BoxDecoration(
-                                color: charsHere.isNotEmpty
-                                    ? (isSelected
-                                          ? AppColors.accent.withValues(alpha: 0.4)
-                                          : AppColors.accent.withValues(alpha: 0.15))
-                                    : Colors.white.withValues(alpha: 0.03),
-                                border: Border.all(
-                                  color: isSelected
-                                      ? AppColors.accent
-                                      : Colors.white.withValues(alpha: 0.1),
-                                  width: isSelected ? 1.5 : 0.5,
-                                ),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Center(
-                                child: charsHere.isNotEmpty
-                                    ? Column(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: charsHere
-                                            .map(
-                                              (i) => Text(
-                                                "C${i + 1}",
-                                                style: TextStyle(
-                                                  color:
-                                                      (_isGridActive &&
-                                                          state.selectedCharIndex == i)
-                                                      ? Colors.white
-                                                      : Colors.white38,
-                                                  fontSize: charsHere.length > 2
-                                                      ? 8
-                                                      : (charsHere.length > 1 ? 9 : 11),
-                                                  fontWeight: FontWeight.bold,
-                                                ),
+                  // 높이를 고정했으므로 내용이 넘치면 스크롤되게 한다.
+                  //  ⚠️ 기본 physics는 내용이 짧아도 손가락을 따라 통통 튄다.
+                  //     화면에 딱 맞는데 움직이면 어색하므로, 넘칠 때만 움직이게
+                  //     ClampingScrollPhysics를 쓰고 오버스크롤 효과도 없앤다.
+                  : ScrollConfiguration(
+                      behavior: const _NoGlowBehavior(),
+                      child: SingleChildScrollView(
+                        physics: const ClampingScrollPhysics(),
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Expanded(
+                                  child: Row(
+                                    children: [
+                                      // Expanded로 폭을 확정해야 안쪽 Text가 안전하게 줄어든다.
+                                      // (Flexible은 자식이 스스로 폭을 정하길 기대해서 제약이 꼬인다)
+                                      Expanded(
+                                        child: GestureDetector(
+                                          onTap: () {
+                                            _showRenameDialog(state);
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 16,
+                                              vertical: 8,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: Colors.deepPurple.withValues(alpha: 0.2),
+                                              borderRadius: BorderRadius.circular(20),
+                                            ),
+                                            // 아이콘을 없앤 뒤로는 자식이 하나뿐이라
+                                            // Row/Flexible을 두면 폭 제약이 꼬여 오류가 난다.
+                                            // Text 하나만 두고 말줄임으로 처리한다.
+                                            child: Text(
+                                              state.characters[state.selectedCharIndex].name.isEmpty
+                                                  ? "캐릭터 #${state.selectedCharIndex + 1}"
+                                                  : state.characters[state.selectedCharIndex].name,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                color: AppColors.accent,
+                                                fontWeight: FontWeight.bold,
                                               ),
-                                            )
-                                            .toList(),
-                                      )
-                                    : null,
-                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Builder(
+                                        builder: (context) {
+                                          bool isCurrentActive =
+                                              state.characters[state.selectedCharIndex].isActive;
+                                          return IconButton(
+                                            icon: Icon(
+                                              isCurrentActive
+                                                  ? Icons.visibility
+                                                  : Icons.visibility_off,
+                                              color: isCurrentActive
+                                                  ? AppColors.accent
+                                                  : Colors.grey,
+                                              size: 20,
+                                            ),
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(
+                                              minWidth: 26,
+                                              minHeight: 34,
+                                            ),
+                                            visualDensity: VisualDensity.compact,
+                                            tooltip: isCurrentActive ? "캐릭터 끄기" : "캐릭터 켜기",
+                                            onPressed: () {
+                                              state.characters[state.selectedCharIndex].isActive =
+                                                  !isCurrentActive;
+                                              state.saveAndRefresh();
+                                            },
+                                          );
+                                        },
+                                      ),
+                                      // 순서 위로 (왼쪽으로 배치) — 첫 번째면 비활성
+                                      IconButton(
+                                        icon: const Icon(Icons.keyboard_arrow_up, size: 22),
+                                        color: state.selectedCharIndex > 0
+                                            ? Colors.white70
+                                            : Colors.white24,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 26,
+                                          minHeight: 34,
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        tooltip: "순서 위로",
+                                        onPressed: state.selectedCharIndex > 0
+                                            ? () => _moveCharacter(state, -1)
+                                            : null,
+                                      ),
+                                      // 순서 아래로 (오른쪽으로 배치) — 마지막이면 비활성
+                                      IconButton(
+                                        icon: const Icon(Icons.keyboard_arrow_down, size: 22),
+                                        color: state.selectedCharIndex < state.characters.length - 1
+                                            ? Colors.white70
+                                            : Colors.white24,
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 26,
+                                          minHeight: 34,
+                                        ),
+                                        visualDensity: VisualDensity.compact,
+                                        tooltip: "순서 아래로",
+                                        onPressed:
+                                            state.selectedCharIndex < state.characters.length - 1
+                                            ? () => _moveCharacter(state, 1)
+                                            : null,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.redAccent, size: 20),
+                                  // 다른 버튼과 같은 폭으로 맞춰 이름 칸을 넓힌다
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(minWidth: 26, minHeight: 34),
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: () async {
+                                    final ok = await showConfirmDialog(
+                                      context,
+                                      title: "캐릭터 삭제",
+                                      message: "이 캐릭터를 정말 삭제하시겠습니까?",
+                                      confirmLabel: "삭제",
+                                      icon: Icons.delete_outline,
+                                    );
+                                    if (!ok) {
+                                      return;
+                                    }
+                                    // 선택 옮기기·빈 목록 막기·캐시 맞추기·저장까지
+                                    state.removeCharacterAt(state.selectedCharIndex);
+                                  },
+                                ),
+                              ],
                             ),
-                          );
-                        },
+                            const SizedBox(height: 10),
+                            PromptPreviewCard(
+                              title: "캐릭터 긍정 프롬프트",
+                              icon: Icons.add_circle_outline,
+                              color: AppColors.teal,
+                              text: state.characters[state.selectedCharIndex].positive,
+                              onTap: () => _showPromptEditDialog(
+                                context,
+                                state,
+                                "긍정적 프롬프트",
+                                Icons.add_circle_outline,
+                                AppColors.teal,
+                                state.characters[state.selectedCharIndex].positive,
+                                (val) {
+                                  state.characters[state.selectedCharIndex].positive = val;
+                                },
+                                undoKey: 'char/${state.characters[state.selectedCharIndex].uid}/긍정',
+                              ),
+                              hint: "프롬프트를 입력하세요.",
+                              maxLines: 2,
+                              bodyHeight: 56, // 2줄 고정 — 아래 위치 패널이 밀리지 않게
+                              dense: true,
+                            ),
+                            const SizedBox(height: 10),
+                            PromptPreviewCard(
+                              title: "캐릭터 부정 프롬프트",
+                              icon: Icons.remove_circle_outline,
+                              color: const Color(0xFFE57373),
+                              text: state.characters[state.selectedCharIndex].negative,
+                              onTap: () => _showPromptEditDialog(
+                                context,
+                                state,
+                                "부정적 프롬프트",
+                                Icons.remove_circle_outline,
+                                const Color(0xFFE57373),
+                                state.characters[state.selectedCharIndex].negative,
+                                (val) {
+                                  state.characters[state.selectedCharIndex].negative = val;
+                                },
+                                undoKey: 'char/${state.characters[state.selectedCharIndex].uid}/부정',
+                              ),
+                              hint: "프롬프트를 입력하세요.",
+                              maxLines: 2,
+                              bodyHeight: 56, // 2줄 고정 — 아래 위치 패널이 밀리지 않게
+                              dense: true,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                ],
-              ),
             ),
-          ),
-      ],
-    ); // Column closing
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 캐릭터 위치 미리보기 그리드 (배치 모드·캔버스 옵션 포함)
+  // 남은 공간을 정확히 채워 스크롤이 생기지 않게 한다
+  //  ⚠️ 아래 여백에 viewPadding.bottom을 더해야 한다.
+  //     이게 0이면 제스처 바(또는 3버튼 내비게이션)와 겹쳐
+  //     캔버스 아래쪽 마커가 시스템 바에 묻힌다.
+  Widget _buildPositionPanel(BuildContext context, AppState state) {
+    return Expanded(
+      child: Container(
+        margin: EdgeInsets.fromLTRB(16, 8, 16, MediaQuery.of(context).viewPadding.bottom + 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.grid_on, color: AppColors.accent, size: 16),
+                const SizedBox(width: 6),
+                const Text(
+                  "Position",
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const Spacer(),
+                // 배치 모드 — 셋 중 하나만 (기본 / 랜덤 / 배치 적용)
+                //  예전에는 토글 두 개라 "이거 켜고 저거 끄고"가 번거로웠다.
+                _positionModeChip(state),
+                const SizedBox(width: 6),
+                // 캔버스 옵션 (V5에서만)
+                if (modelCapsFor(state.selectedModel).usesFreePositioning) ...[
+                  _canvasToggle(
+                    state,
+                    label: "격자",
+                    active: state.charCanvasShowGrid,
+                    onTap: () {
+                      state.charCanvasShowGrid = !state.charCanvasShowGrid;
+                      state.saveAndRefresh();
+                    },
+                    // 꾹 누르면 칸 수를 고른다
+                    onLongPress: () => _showGridSettings(state),
+                  ),
+                  const SizedBox(width: 6),
+                  _canvasToggle(
+                    state,
+                    label: "스냅",
+                    active: state.charCanvasSnap,
+                    onTap: () {
+                      state.charCanvasSnap = !state.charCanvasSnap;
+                      state.saveAndRefresh();
+                    },
+                  ),
+                  const SizedBox(width: 6),
+                  // 배경에 그림 깔기 — 실제 그림을 보며 위치를 잡는다
+                  // 배경 이미지 — 툭 누르면 켜고 끄기, 꾹 누르면 직접 고르기.
+                  //  직접 고른 상태는 '선택중'으로 표시해 구분한다.
+                  _canvasToggle(
+                    state,
+                    label: state.charCanvasPickedImage != null && state.charCanvasShowImage
+                        ? "선택중"
+                        : "이미지",
+                    active: state.charCanvasShowImage,
+                    onTap: () {
+                      if (state.charCanvasShowImage) {
+                        // 켜져 있으면 끄고, 직접 고른 것도 함께 푼다
+                        state.charCanvasShowImage = false;
+                        state.charCanvasPickedImage = null;
+                      } else {
+                        // 꺼져 있으면 자동(히스토리 최신)으로 켠다
+                        state.charCanvasShowImage = true;
+                        state.charCanvasPickedImage = null;
+                      }
+                      state.saveAndRefresh();
+                    },
+                    // 꾹 누르면 어떤 이미지를 깔지 고른다
+                    onLongPress: () => _showBackgroundPicker(state),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+                // 위치 초기화
+                GestureDetector(
+                  onTap: () {
+                    for (final char in state.characters) {
+                      char.gridX = 2;
+                      char.gridY = 2;
+                      // 자유 좌표도 함께 초기화 (V5)
+                      char.posX = null;
+                      char.posY = null;
+                    }
+                    state.saveAndRefresh();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: const Text(
+                      "초기화",
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // V5는 캔버스에서 자유 좌표로, 그 외 모델은 기존 5x5 그리드로 배치한다.
+            if (modelCapsFor(state.selectedModel).usesFreePositioning)
+              // Expanded로 남은 높이에 맞춘다 (세로 비율이라 그냥 두면 넘침)
+              Expanded(
+                child: Center(
+                  child: CharacterCanvas(
+                    characters: state.characters,
+                    selectedIndex: state.selectedCharIndex,
+                    aspectRatio: _canvasAspectRatio(state),
+                    showGrid: state.charCanvasShowGrid,
+                    snapToGrid: state.charCanvasSnap,
+                    gridCols: state.charGridCols,
+                    gridRows: state.charGridRows,
+                    backgroundImage: state.charCanvasBackground,
+                    onSelect: (i) {
+                      setState(() {
+                        state.selectedCharIndex = i;
+                        _isGridActive = true;
+                      });
+                      state.refreshUI();
+                    },
+                    onMove: (i, x, y) {
+                      setState(() => state.characters[i].setPosition(x, y));
+                      state.saveAndRefresh();
+                    },
+                  ),
+                ),
+              )
+            else
+              AspectRatio(
+                aspectRatio: 5 / 5,
+                child: GridView.builder(
+                  physics: const NeverScrollableScrollPhysics(),
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 5,
+                    crossAxisSpacing: 3,
+                    mainAxisSpacing: 3,
+                  ),
+                  itemCount: 25,
+                  itemBuilder: (context, index) {
+                    int gx = index % 5;
+                    int gy = index ~/ 5;
+
+                    // 활성 캐릭터만 그리드에 표시
+                    List<int> charsHere = [];
+                    for (int ci = 0; ci < state.characters.length; ci++) {
+                      if (state.characters[ci].isActive &&
+                          state.characters[ci].gridX == gx &&
+                          state.characters[ci].gridY == gy) {
+                        charsHere.add(ci);
+                      }
+                    }
+
+                    bool isSelected = _isGridActive && charsHere.contains(state.selectedCharIndex);
+
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          if (charsHere.isNotEmpty) {
+                            if (isSelected && charsHere.length > 1) {
+                              // 같은 칸에 여러 캐릭터 → 순환 선택
+                              int curIdx = charsHere.indexOf(state.selectedCharIndex);
+                              state.selectedCharIndex = charsHere[(curIdx + 1) % charsHere.length];
+                            } else if (isSelected) {
+                              // 이미 선택된 캐릭터 다시 탭 → 선택 해제
+                              _isGridActive = false;
+                            } else if (_isGridActive) {
+                              // 다른 캐릭터 탭 → 자리 교환 + 선택 해제
+                              final myChar = state.characters[state.selectedCharIndex];
+                              final otherChar = state.characters[charsHere.first];
+                              final tempX = myChar.gridX;
+                              final tempY = myChar.gridY;
+                              myChar.gridX = otherChar.gridX;
+                              myChar.gridY = otherChar.gridY;
+                              otherChar.gridX = tempX;
+                              otherChar.gridY = tempY;
+                              _isGridActive = false;
+                              state.saveAllSettings();
+                            } else {
+                              // 선택 안 된 상태 → 선택
+                              state.selectedCharIndex = charsHere.first;
+                              _isGridActive = true;
+                            }
+                          } else {
+                            // 빈 칸 탭: 선택된 캐릭터가 있으면 이동
+                            if (_isGridActive &&
+                                state.selectedCharIndex < state.characters.length) {
+                              state.characters[state.selectedCharIndex].gridX = gx;
+                              state.characters[state.selectedCharIndex].gridY = gy;
+                              _isGridActive = false;
+                              state.saveAllSettings();
+                            }
+                          }
+                          state.refreshUI();
+                        });
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: charsHere.isNotEmpty
+                              ? (isSelected
+                                    ? AppColors.accent.withValues(alpha: 0.4)
+                                    : AppColors.accent.withValues(alpha: 0.15))
+                              : Colors.white.withValues(alpha: 0.03),
+                          border: Border.all(
+                            color: isSelected
+                                ? AppColors.accent
+                                : Colors.white.withValues(alpha: 0.1),
+                            width: isSelected ? 1.5 : 0.5,
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Center(
+                          child: charsHere.isNotEmpty
+                              ? Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: charsHere
+                                      .map(
+                                        (i) => Text(
+                                          "C${i + 1}",
+                                          style: TextStyle(
+                                            color: (_isGridActive && state.selectedCharIndex == i)
+                                                ? Colors.white
+                                                : Colors.white38,
+                                            fontSize: charsHere.length > 2
+                                                ? 8
+                                                : (charsHere.length > 1 ? 9 : 11),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      )
+                                      .toList(),
+                                )
+                              : null,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

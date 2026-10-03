@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui; // 이미지 헤더만 읽어 해상도를 얻는다
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
+import '../models/app_tabs.dart';
 import '../models/image_metadata.dart';
 import 'preset_save_dialog.dart';
 import '../models/nai_character.dart';
@@ -32,6 +33,9 @@ import '../utils/image_codec.dart'; // 그림 확장자 목록 (앱 전체 공�
 //  그 부분만 이 클래스로 감싸면 꾹 메뉴와 핸들러를 하나로 쓸 수 있다.
 //  (예전에는 _safXxx / _xxx 로 짝이 나뉘어 한쪽만 고쳐지는 일이 있었다.)
 // ══════════════════════════════════════════════════════════════════════
+/// 새로고침 원·빈 폴더 바탕에 쓰는 어두운 회색
+const Color _kGalleryDim = Color(0xFF2A2A2A);
+
 class GalleryItem {
   /// 다이얼로그 제목 등에 쓰는 표시 이름 (파일명)
   final String name;
@@ -45,6 +49,9 @@ class GalleryItem {
   /// 다른 폴더로 이동 (SAF 경로에만 있음). null이면 메뉴에서 숨긴다.
   final VoidCallback? onMove;
 
+  /// 휴지통에서 되돌리기 (휴지통 보기에서만). 있으면 꾹 메뉴가 휴지통 메뉴(되돌리기·영구 삭제)로 바뀐다.
+  final Future<void> Function()? onRestore;
+
   /// 실제 파일 경로 (파일 경로에만 있음).
   /// 히스토리에 추가할 때 원본 위치를 기록하는 용도이며, SAF는 경로가 없어 null.
   final String? filePath;
@@ -54,6 +61,7 @@ class GalleryItem {
     required this.readBytes,
     this.onDelete,
     this.onMove,
+    this.onRestore,
     this.filePath,
   });
 }
@@ -73,7 +81,11 @@ class _FolderInfo {
 
 class GalleryView extends StatefulWidget {
   final AppState state;
-  const GalleryView({super.key, required this.state});
+
+  /// 이미지 하나를 '히스토리 목록에 추가' 한 뒤 불린다 — 히스토리탭이 목록 모드로 바꿔 보여 준다.
+  final VoidCallback? onAddedToHistory;
+
+  const GalleryView({super.key, required this.state, this.onAddedToHistory});
 
   @override
   State<GalleryView> createState() => GalleryViewState();
@@ -85,8 +97,11 @@ class GalleryViewState extends State<GalleryView> {
   bool _loading = true;
   List<_FolderInfo> _folders = [];
   List<File> _images = [];
-  bool _selectMode = false; // 다중 선택 모드
-  final Set<String> _selectedPaths = {}; // 선택된 이미지 경로
+  // 다중 선택 (SAF·파일 공용). 선택한 이미지의 id — 파일은 경로, SAF 는 uri.
+  //  모드나 폴더를 바꾸면 폴더를 새로 읽으며 비우므로 두 종류가 섞이지 않는다.
+  //  ⚠️ 예전엔 _selectMode/_selected 와 _selectMode/_selected 두 벌이었다.
+  bool _selectMode = false;
+  final Set<String> _selected = {};
 
   // SAF 모드 (저장 폴더가 SAF일 때 폴더 탐색)
   bool _safMode = false;
@@ -106,8 +121,19 @@ class GalleryViewState extends State<GalleryView> {
       {}; // 폴더 uri -> 미리보기 refs(최대4)
   // build마다 새 Future를 만들면 FutureBuilder가 매번 placeholder부터 시작해 깜빡이므로 메모이즈
   final Map<String, Future<List<Uint8List>>> _safPreviewFutures = {};
-  bool _safSelectMode = false; // SAF 다중 선택 모드
-  final Set<String> _safSelected = {}; // 선택된 SAF 이미지 uri
+
+  // 둘러보는 저장 폴더 칸 — null 이면 저장 중인 칸.
+  //  '변경'에서 다른 칸을 고르면 저장 칸은 그대로 두고 그 칸을 둘러본다
+  //  (이동하기 중에 다른 저장 폴더로 옮기러 가도 저장 위치가 바뀌지 않게).
+  int? _browseSlot;
+  int get _viewSlot => _browseSlot ?? widget.state.activeSafSlot;
+  String? get _rootUri => widget.state.safSlotUris[_viewSlot];
+  String? get _rootName => widget.state.safSlotNames[_viewSlot];
+
+  // 휴지통 보기 — '변경'에서 휴지통을 고르면 켜진다 (_openTrash).
+  //  켜져 있으면 위쪽 줄·선택 툴바·꾹 메뉴가 휴지통용([되돌리기]·[영구 삭제]·[비우기])으로 바뀐다.
+  bool _trashMode = false;
+  Map<String, int> _trashDeletedAt = {}; // 휴지통 그림 이름 → 버린 시각(ms) — 남은 날 표시용
 
   // 이동 대기 상태: 값이 있으면 "이동 모드" — 갤러리를 돌아다니다 원하는 폴더에서 확정
   List<({String uri, String name})>? _pendingMoveRefs; // 이동할 파일들 (null이면 이동 모드 아님)
@@ -121,6 +147,7 @@ class GalleryViewState extends State<GalleryView> {
     super.initState();
     widget.state.galleryBackHandler = handleBackButton; // 뒤로가기 위임 등록
     _lastSafRevision = widget.state.gallerySafRevision;
+    _lastSafRootRevision = widget.state.safRootRevision;
     widget.state.addListener(_onAppStateChanged); // SAF 저장 감지 → 자동 갱신
     _init();
   }
@@ -139,16 +166,34 @@ class GalleryViewState extends State<GalleryView> {
   // 저장은 대개 다른 탭에서 일어나므로, 리스너로 받아 백그라운드로 갱신해둔다.
   int _lastSafRevision = 0;
   bool _safAutoRefreshScheduled = false;
+  // 저장 폴더가 바뀐 횟수 (AppState.safRootRevision) — 바뀌면 새 폴더로 다시 연다
+  int _lastSafRootRevision = 0;
 
   void _onAppStateChanged() {
     if (!mounted) {
       return;
     }
+    if (widget.state.safRootRevision != _lastSafRootRevision) {
+      _lastSafRootRevision = widget.state.safRootRevision;
+      _lastSafRevision = widget.state.gallerySafRevision;
+      _reopenForNewSafRoot();
+      return;
+    }
     if (widget.state.gallerySafRevision == _lastSafRevision) {
       return; // SAF 저장과 무관한 알림은 무시
     }
-    if (widget.state.safRootUri == null || _safSelectMode) {
-      return; // SAF 뷰가 아니거나 선택 중이면 갱신 보류
+    if (widget.state.safRootUri == null) {
+      return;
+    }
+    if (!_safMode) {
+      // 앱 폴더(일반 모드)를 보는 중 — SAF 를 다시 읽지 않는다.
+      //  ⚠️ 예전엔 여기서 SAF 폴더를 다시 읽다가 화면이 제멋대로 SAF 로 바뀌었다
+      //     (폴더를 읽는 _loadSafDir 이 SAF 모드를 켠다). SAF 로 돌아오면 새로 읽는다.
+      _lastSafRevision = widget.state.gallerySafRevision;
+      return;
+    }
+    if (_selectMode) {
+      return; // 선택 중이면 갱신 보류 (선택이 끝난 뒤 다음 알림에서 갱신)
     }
     // 이미지가 저장된 폴더가 "지금 보는 폴더" 또는 "그 하위"일 때만 갱신.
     // - 같은 폴더: 새 이미지가 목록에 바로 보여야 함
@@ -162,6 +207,32 @@ class GalleryViewState extends State<GalleryView> {
       return;
     }
     _scheduleSafAutoRefresh();
+  }
+
+  /// 저장 폴더가 바뀌었을 때(설정에서 전환·지정·해제) 저장 중인 폴더의 맨 위부터 다시 연다.
+  ///  ⚠️ 이게 없으면 갤러리를 켜 둔 채 설정에서 폴더를 바꿨을 때 옛 폴더가 계속 보인다
+  ///     (히스토리 탭은 살아 있는 채로 남아 갤러리를 새로 만들지 않는다).
+  void _reopenForNewSafRoot() {
+    // 선택·이동 대기는 옛 폴더의 파일이라 버린다
+    _selectMode = false;
+    _selected.clear();
+    _pendingMoveRefs = null;
+    _pendingMoveFromParent = null;
+    _safStack.clear();
+    _safDirUri = null;
+    _safFolderPreview.clear();
+    _safPreviewFutures.clear();
+    _safThumbFutures.clear();
+    _browseSlot = null; // 저장 중인 칸부터 다시
+    _trashMode = false;
+    _trashDeletedAt = {};
+    if (widget.state.safRootUri != null) {
+      _loadSafRootDir();
+    } else {
+      // 저장 폴더를 모두 해제 — 앱 전용 폴더로 돌아간다
+      setState(() => _safMode = false);
+      _init();
+    }
   }
 
   // saved가 parent와 같거나 그 하위 폴더인지 (SAF document uri prefix 기준)
@@ -206,7 +277,8 @@ class GalleryViewState extends State<GalleryView> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       _safAutoRefreshScheduled = false;
       _lastAutoRefreshAt = DateTime.now();
-      if (!mounted || _safSelectMode || _loading) {
+      // 기다리는 사이 앱 폴더로 옮겨 갔으면 하지 않는다 (위와 같은 이유)
+      if (!mounted || !_safMode || _selectMode || _loading) {
         return;
       }
       _lastSafRevision = widget.state.gallerySafRevision;
@@ -248,7 +320,10 @@ class GalleryViewState extends State<GalleryView> {
         });
       }
       // 갱신 도중 저장이 더 있었으면 한 번 더 (배치 생성 누락 방지)
-      if (mounted && !_safSelectMode && widget.state.gallerySafRevision != _lastSafRevision) {
+      if (mounted &&
+          _safMode &&
+          !_selectMode &&
+          widget.state.gallerySafRevision != _lastSafRevision) {
         _scheduleSafAutoRefresh();
       }
     });
@@ -258,12 +333,13 @@ class GalleryViewState extends State<GalleryView> {
   // 선택 모드 해제 / 상위 폴더 이동을 처리했으면 true.
   bool handleBackButton() {
     // 1. 선택 모드면 해제 우선
-    if (_safSelectMode) {
-      _safExitSelect();
-      return true;
-    }
     if (_selectMode) {
       _exitSelect();
+      return true;
+    }
+    // 휴지통을 보는 중이면 나간다 (지금 저장 중인 폴더로)
+    if (_trashMode) {
+      _exitTrash();
       return true;
     }
     // 이동 모드 중 최상위(더 올라갈 폴더 없음)에서 뒤로가기 → 이동 취소
@@ -276,13 +352,10 @@ class GalleryViewState extends State<GalleryView> {
       _safGoUp();
       return true;
     }
-    // 3. IO 상위 폴더
-    if (!_safMode) {
-      final cur = _currentPath;
-      if (cur != null && cur != _basePath && cur.startsWith(_basePath)) {
-        _goUp();
-        return true;
-      }
+    // 3. IO 상위 폴더 (조건은 위로 가기 버튼과 같은 _canGoUp)
+    if (!_safMode && _canGoUp) {
+      _goUp();
+      return true;
     }
     return false;
   }
@@ -290,8 +363,13 @@ class GalleryViewState extends State<GalleryView> {
   Future<void> _init() async {
     // SAF 저장 폴더가 지정돼 있으면 SAF 모드로 시작 (MANAGE 권한 불필요)
     if (widget.state.safRootUri != null) {
-      // 마지막으로 보던 폴더가 있으면 복원, 없으면 루트부터
-      final lastUri = widget.state.safBrowseDirUri;
+      // 늘 지금 저장 중인 폴더부터 연다.
+      //  마지막으로 보던 곳이 저장 중인 폴더 안이면 그 자리를 되살리고,
+      //  '변경'으로 다른 저장 폴더를 보다가 닫았으면(safBrowseSlot 있음) 저장 중인 폴더의 맨 위부터.
+      //  ⚠️ 예전엔 다른 저장 폴더를 보던 자리까지 되살려, 다시 열면 그 폴더가 먼저 보였다.
+      _browseSlot = null;
+      final lastUri =
+          widget.state.safBrowseSlot == null ? widget.state.safBrowseDirUri : null;
       if (lastUri != null) {
         _safStack
           ..clear()
@@ -359,7 +437,7 @@ class GalleryViewState extends State<GalleryView> {
         _images = images;
         _loading = false;
         _selectMode = false;
-        _selectedPaths.clear();
+        _selected.clear();
       });
     }
   }
@@ -391,19 +469,20 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // 현재 정렬 모드(gallerySortMode)에 따라 폴더/이미지 리스트를 정렬한다.
-  void _sortLists(List<_FolderInfo> folders, List<File> images) {
+  /// 이름순 정렬 — 대소문자 무시, 정렬 모드(gallerySortMode)가 name_desc 면 거꾸로. SAF·파일 공용.
+  ///  ⚠️ 예전엔 이 비교를 폴더·이미지 × SAF·파일로 네 번 복사해 두었다.
+  void _sortByName<T>(List<T> list, String Function(T) nameOf) {
     final bool desc = widget.state.gallerySortMode == 'name_desc';
-    folders.sort((a, b) {
-      final c = _folderName(
-        a.dir.path,
-      ).toLowerCase().compareTo(_folderName(b.dir.path).toLowerCase());
+    list.sort((a, b) {
+      final c = nameOf(a).toLowerCase().compareTo(nameOf(b).toLowerCase());
       return desc ? -c : c;
     });
-    images.sort((a, b) {
-      final c = _folderName(a.path).toLowerCase().compareTo(_folderName(b.path).toLowerCase());
-      return desc ? -c : c;
-    });
+  }
+
+  // 파일 폴더·이미지 정렬
+  void _sortLists(List<_FolderInfo> folders, List<File> images) {
+    _sortByName(folders, (f) => _baseName(f.dir.path));
+    _sortByName(images, (f) => _baseName(f.path));
   }
 
   // 외부(history_tab 정렬 버튼)에서 호출: 디스크 재로드 없이 메모리상에서만 재정렬
@@ -422,13 +501,15 @@ class GalleryViewState extends State<GalleryView> {
 
   // SAF 루트부터 탐색 시작
   Future<void> _loadSafRootDir() async {
-    final uri = widget.state.safRootUri;
+    final uri = _rootUri;
     if (uri == null) {
       return;
     }
+    _trashMode = false; // 맨 위로 가면 휴지통 보기는 끝난다
+    _trashDeletedAt = {};
     _safStack.clear();
     _safDirUri = null;
-    await _loadSafDir(uri, widget.state.safRootName ?? 'SAF');
+    await _loadSafDir(uri, _rootName ?? 'SAF');
   }
 
   // 특정 SAF 디렉토리 로드. push=true면 현재 위치를 스택에 쌓고 들어감.
@@ -484,10 +565,13 @@ class GalleryViewState extends State<GalleryView> {
       _safImages = res.images;
       _sortSafLists();
       _loading = false;
-      _safSelectMode = false;
-      _safSelected.clear();
+      _selectMode = false;
+      _selected.clear();
     });
-    _persistSafBrowse();
+    // 휴지통은 기억하지 않는다 — 다시 열었을 때 휴지통이 '보통 폴더'처럼 열리면 안 된다
+    if (!_trashMode) {
+      _persistSafBrowse();
+    }
   }
 
   // 현재 탐색 위치를 앱 상태에 기억 (탭/모드 전환 후 복원용)
@@ -497,6 +581,7 @@ class GalleryViewState extends State<GalleryView> {
       _safDirName,
       _safStack.map((e) => e.uri).toList(),
       _safStack.map((e) => e.name).toList(),
+      slot: _browseSlot,
     );
   }
 
@@ -622,17 +707,10 @@ class GalleryViewState extends State<GalleryView> {
     }
   }
 
-  // SAF 폴더/이미지 정렬 (gallerySortMode 기준)
+  // SAF 폴더·이미지 정렬
   void _sortSafLists() {
-    final bool desc = widget.state.gallerySortMode == 'name_desc';
-    _safFolders.sort((a, b) {
-      final c = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      return desc ? -c : c;
-    });
-    _safImages.sort((a, b) {
-      final c = a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      return desc ? -c : c;
-    });
+    _sortByName(_safFolders, (f) => f.name);
+    _sortByName(_safImages, (f) => f.name);
   }
 
   // 두 미리보기 목록이 같은 파일들인지 (순서까지 같아야 같은 것으로 본다)
@@ -678,7 +756,9 @@ class GalleryViewState extends State<GalleryView> {
     return out;
   }
 
-  String _folderName(String path) {
+  /// 경로의 마지막 조각 (폴더 이름이든 파일 이름이든).
+  ///  (예전 이름은 _folderName 이었는데 파일 이름에도 쓰였고, 같은 일을 하는 _ioFileName 이 따로 있었다)
+  String _baseName(String path) {
     final parts = path.split(Platform.pathSeparator);
     return parts.isNotEmpty ? parts.last : path;
   }
@@ -705,7 +785,7 @@ class GalleryViewState extends State<GalleryView> {
       return crumbs;
     }
     // base를 첫 칩으로
-    crumbs.add((name: _folderName(_basePath), path: _basePath));
+    crumbs.add((name: _baseName(_basePath), path: _basePath));
     if (_currentPath == _basePath) {
       return crumbs;
     }
@@ -724,12 +804,30 @@ class GalleryViewState extends State<GalleryView> {
     return crumbs;
   }
 
-  // 위치 선택 시트 (앱 폴더 / 커스텀 경로)
+  // 위치 선택 시트 ('변경') — 저장 폴더 한 칸이 한 줄, 그 줄 오른쪽 끝이 그 폴더의 휴지통 버튼.
+  //  ⚠️ 예전엔 휴지통도 한 줄씩 따로 있어(폴더1 · 폴더2 · 휴지통1 · 휴지통2) 줄 수가 두 배였고,
+  //     어느 휴지통이 어느 폴더 것인지 한눈에 이어지지 않았다.
+  //  지금 보고 있는 폴더 이름 옆에는 ✓, 휴지통을 보고 있으면 그 휴지통 버튼이 강조된다.
+  //  아래 '기타'(앱 저장 폴더)는 그림이 있을 때만 보인다.
   Future<void> _showLocationPicker() async {
     final locations = await widget.state.getGalleryLocations();
     if (!mounted) {
       return;
     }
+    // 휴지통 장수는 시트를 먼저 띄운 뒤 채운다 (저장 폴더를 읽어야 해서 조금 걸릴 수 있다).
+    //  여기서 한 번만 만든다 — 시트 안에서 만들면 다시 그릴 때마다 새로 센다.
+    final trashCounts = <int, Future<int>>{
+      for (int i = 0; i < AppState.kSafSlotCount; i++)
+        if (widget.state.safSlotUris[i] != null)
+          i: widget.state.countSafTrash(widget.state.safSlotUris[i]!),
+    };
+    final filledSlots = trashCounts.keys.toList()..sort();
+    // 앱 저장 폴더는 그림이 있을 때만 — 비어 있으면 볼 게 없다.
+    //  단 저장 폴더를 안 정해 지금 이 폴더를 보고 있으면 비어 있어도 보인다 (✓ 가 붙을 자리).
+    final others = [
+      for (final loc in locations)
+        if (loc.images > 0 || !_safMode) loc,
+    ];
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
@@ -739,51 +837,239 @@ class GalleryViewState extends State<GalleryView> {
       builder: (ctx) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Padding(
               padding: EdgeInsets.all(16),
               child: Text(
                 "폴더 위치 선택",
+                textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
             const Divider(height: 1, color: Colors.white12),
-            // SAF 저장 폴더 (지정돼 있으면 최상단)
-            if (widget.state.safRootUri != null)
-              ListTile(
-                leading: const Icon(Icons.folder_special, color: AppColors.teal),
-                title: Text(
-                  widget.state.safRootName ?? "SAF 폴더",
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                ),
-                subtitle: const Text(
-                  "SAF 저장 폴더",
-                  style: TextStyle(color: Colors.white38, fontSize: 11),
-                ),
-                onTap: () {
+            // 저장 폴더 (지정된 칸만). 줄을 누르면 그 칸을 둘러본다.
+            //  저장 칸은 바꾸지 않는다 (전환은 설정에서) — 이동하기 중이면 이동도 그대로 이어진다.
+            //  ⚠️ 예전엔 여기서 저장 칸까지 전환해, 갤러리 상태를 새로 열며 이동하기가 풀렸다.
+            if (filledSlots.isNotEmpty) _pickerSectionLabel("저장 폴더"),
+            for (int k = 0; k < filledSlots.length; k++) ...[
+              if (k > 0) const Divider(height: 1, indent: 60, endIndent: 16, color: Colors.white10),
+              _pickerSlotRow(
+                slot: filledSlots[k],
+                trashCount: trashCounts[filledSlots[k]]!,
+                onOpen: () {
                   Navigator.pop(ctx);
+                  final int i = filledSlots[k];
+                  _browseSlot = i == widget.state.activeSafSlot ? null : i;
                   _loadSafRootDir();
                 },
-              ),
-            ...locations.map(
-              (loc) => ListTile(
-                leading: const Icon(Icons.folder_special, color: Color(0xFFFFC107)),
-                title: Text(loc.$1, style: const TextStyle(color: Colors.white, fontSize: 14)),
-                subtitle: Text(
-                  loc.$2,
-                  style: const TextStyle(color: Colors.white38, fontSize: 11),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                onTap: () {
+                // 휴지통 — 지운 그림을 보고, 되돌리거나 완전히 지운다
+                onTrash: () {
                   Navigator.pop(ctx);
-                  setState(() => _safMode = false); // IO 위치 선택 시 SAF 모드 해제
-                  _basePath = loc.$2; // 위치 바꾸면 base도 갱신
-                  _loadFolder(loc.$2);
+                  _openTrash(filledSlots[k]);
                 },
               ),
-            ),
+            ],
+            if (others.isNotEmpty) ...[
+              if (filledSlots.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                const Divider(height: 1, color: Colors.white12),
+              ],
+              _pickerSectionLabel("기타"),
+              for (final loc in others)
+                _pickerOtherRow(
+                  loc,
+                  onOpen: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _safMode = false; // IO 위치 선택 시 SAF 모드 해제
+                      _trashMode = false;
+                    });
+                    _basePath = loc.path; // 위치 바꾸면 base도 갱신
+                    _loadFolder(loc.path);
+                  },
+                ),
+            ],
+            // 볼 곳이 하나도 없을 때 (저장 폴더 미지정 + 앱 저장 폴더에 그림 없음)
+            if (filledSlots.isEmpty && others.isEmpty)
+              const Padding(
+                padding: EdgeInsets.fromLTRB(24, 28, 24, 16),
+                child: Text(
+                  "볼 수 있는 폴더가 없어요.\n설정의 '저장 폴더'에서 폴더를 골라 주세요.",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.white54, fontSize: 13, height: 1.5),
+                ),
+              ),
             const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// '변경' 목록의 작은 제목 ('저장 폴더' · '기타')
+  Widget _pickerSectionLabel(String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+    child: Text(text, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+  );
+
+  /// '변경' 목록의 저장 폴더 한 줄 — 줄을 누르면 그 폴더, 오른쪽 버튼은 그 폴더의 휴지통.
+  Widget _pickerSlotRow({
+    required int slot,
+    required Future<int> trashCount,
+    required VoidCallback onOpen,
+    required VoidCallback onTrash,
+  }) {
+    final bool saving = slot == widget.state.activeSafSlot; // 새 그림이 저장되는 칸
+    final bool viewing = _safMode && _viewSlot == slot; // 지금 이 칸(또는 그 휴지통)을 보는 중
+    final bool viewingFolder = viewing && !_trashMode;
+    return InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 12, 10),
+        child: Row(
+          children: [
+            Icon(
+              Icons.folder_special,
+              size: 26,
+              color: saving ? AppColors.teal : Colors.white38,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          widget.state.safSlotNames[slot] ?? "저장 폴더 ${slot + 1}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (viewingFolder) ...[
+                        const SizedBox(width: 6),
+                        Icon(Icons.check, size: 16, color: AppColors.accent),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    saving ? "저장 폴더 ${slot + 1} · 지금 여기에 저장" : "저장 폴더 ${slot + 1}",
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            _pickerTrashButton(trashCount, highlighted: viewing && _trashMode, onTap: onTrash),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 저장 폴더 줄 오른쪽의 휴지통 버튼 — 아이콘 + 든 장수 (비어 있으면 아이콘만).
+  ///  [highlighted] 면 지금 이 휴지통을 보고 있다는 뜻으로 강조색 테두리.
+  Widget _pickerTrashButton(
+    Future<int> count, {
+    required bool highlighted,
+    required VoidCallback onTap,
+  }) {
+    final Color color = highlighted ? AppColors.accent : Colors.white60;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          // 손가락으로 누르기 넉넉한 크기 (장수가 없어도 너무 작아지지 않게)
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 36),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: highlighted ? AppColors.accent : Colors.white24),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.delete_outline, size: 18, color: color),
+              FutureBuilder<int>(
+                future: count,
+                builder: (_, snap) {
+                  final int n = snap.data ?? 0;
+                  if (n <= 0) {
+                    return const SizedBox.shrink();
+                  }
+                  return Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Text(
+                      "$n",
+                      style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// '변경' 목록의 '기타' 한 줄 (앱 저장 폴더 — 저장 폴더를 정하기 전 등에 앱 안에 저장된 그림)
+  Widget _pickerOtherRow(
+    ({String label, String path, int images}) loc, {
+    required VoidCallback onOpen,
+  }) {
+    final bool viewing = !_safMode; // 저장 폴더가 아닌 곳을 보는 중 = 이 폴더
+    return InkWell(
+      onTap: onOpen,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 10),
+        child: Row(
+          children: [
+            const Icon(Icons.folder_special, size: 26, color: AppColors.amber),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          loc.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (viewing) ...[
+                        const SizedBox(width: 6),
+                        Icon(Icons.check, size: 16, color: AppColors.accent),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    loc.images > 0 ? "앱 안에 저장된 그림 ${loc.images}장" : "비어 있음",
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -793,191 +1079,36 @@ class GalleryViewState extends State<GalleryView> {
   @override
   Widget build(BuildContext context) {
     final columns = widget.state.galleryColumns.clamp(1, 8);
-
-    // SAF 모드: 저장 폴더(SAF)의 이미지를 플랫하게 표시 (권한 불필요)
-    if (_safMode) {
-      return _buildSafView(columns);
-    }
-
+    // 화면 뼈대는 SAF·파일 공용. 다른 건 위쪽 줄·새로고침·칸 종류·(SAF 만) 이동 바.
+    //  ⚠️ 예전엔 _buildSafView 가 이 뼈대를 통째로 따로 갖고 있어, 아래 시스템 바 여백 같은
+    //     수정이 SAF 쪽에만 들어가 있었다.
+    final bool saf = _safMode;
+    final int folderCount = saf ? _safFolders.length : _folders.length;
+    final int imageCount = saf ? _safImages.length : _images.length;
+    final int total = folderCount + imageCount;
+    // 제스처 네비게이션 바 등 하단 시스템 UI 높이만큼 여백 확보 (마지막 줄이 가리지 않게)
+    final double bottomInset = MediaQuery.of(context).viewPadding.bottom;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 선택 모드면 선택 툴바, 아니면 breadcrumb 경로 바
-        if (_selectMode)
-          _buildSelectionToolbar()
-        else
-          // breadcrumb 경로 바
-          SizedBox(
-            height: 40,
-            child: Row(
-              children: [
-                if (_canGoUp)
-                  IconButton(
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(minWidth: 36),
-                    icon: const Icon(Icons.arrow_upward, size: 18, color: Colors.white70),
-                    onPressed: _goUp,
-                  ),
-                Expanded(
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    itemCount: _breadcrumbs().length,
-                    separatorBuilder: (_, _) => const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 2),
-                      child: Icon(Icons.chevron_right, size: 16, color: Colors.white24),
-                    ),
-                    itemBuilder: (ctx, i) {
-                      final crumbs = _breadcrumbs();
-                      final c = crumbs[i];
-                      final isLast = i == crumbs.length - 1;
-                      return Center(
-                        child: GestureDetector(
-                          onTap: isLast ? null : () => _loadFolder(c.path),
-                          child: Text(
-                            c.name,
-                            style: TextStyle(
-                              color: isLast ? Colors.white : AppColors.accent,
-                              fontSize: 13,
-                              fontWeight: isLast ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                Text(
-                  "${_images.length}",
-                  style: const TextStyle(color: Colors.white38, fontSize: 12),
-                ),
-                const SizedBox(width: 8),
-              ],
-            ),
-          ),
+        // 선택 모드면 선택 툴바, 아니면 위쪽 줄 (파일: 경로 줄 / SAF: 폴더 이름 + 새로고침)
+        SizedBox(
+          height: 40,
+          child: _selectMode ? _buildSelectionToolbar() : (saf ? _safPathBar(total) : _ioPathBar()),
+        ),
         const Divider(height: 1, color: Colors.white12),
         Expanded(
           child: _loading
               ? Center(child: CircularProgressIndicator(color: AppColors.accent))
               : RefreshIndicator(
                   color: AppColors.accent,
-                  backgroundColor: const Color(0xFF2A2A2A),
+                  backgroundColor: _kGalleryDim,
                   // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
                   onRefresh: () async {
                     if (_selectMode || _loading) {
                       return;
                     }
-                    await _reloadIoDir();
-                  },
-                  child: (_folders.isEmpty && _images.isEmpty)
-                      // 빈 폴더여도 당겨서 새로고침 가능하도록 스크롤 가능한 뷰로 감쌈
-                      ? ListView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          children: const [
-                            SizedBox(height: 120),
-                            Center(
-                              child: Text(
-                                "이 폴더는 비어있어요",
-                                style: TextStyle(color: Colors.white38, fontSize: 14),
-                              ),
-                            ),
-                          ],
-                        )
-                      : GridView.builder(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.all(8),
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: columns,
-                            crossAxisSpacing: 6,
-                            mainAxisSpacing: 6,
-                            childAspectRatio: 1,
-                          ),
-                          itemCount: _folders.length + _images.length,
-                          itemBuilder: (ctx, index) {
-                            if (index < _folders.length) {
-                              return _buildFolderTile(_folders[index]);
-                            }
-                            final imgIndex = index - _folders.length;
-                            return _buildImageTile(_images[imgIndex], imgIndex);
-                          },
-                        ),
-                ),
-        ),
-      ],
-    );
-  }
-
-  // 외부(history_tab)에서 폴더 위치 선택을 호출할 수 있게 공개 메서드
-  void openLocationPicker() => _showLocationPicker();
-
-  // 현재 폴더명 (history_tab 버튼 라벨용)
-  String get currentFolderLabel => _safMode
-      ? (_safDirName.isNotEmpty ? _safDirName : (widget.state.safRootName ?? "SAF"))
-      : (_currentPath == null ? "폴더" : _folderName(_currentPath!));
-
-  // ===== SAF 모드 뷰 =====
-  Widget _buildSafView(int columns) {
-    final canGoUp = _safStack.isNotEmpty;
-    final total = _safFolders.length + _safImages.length;
-    // 제스처 네비게이션 바 등 하단 시스템 UI 높이만큼 여백 확보
-    final double bottomInset = MediaQuery.of(context).viewPadding.bottom;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          height: 40,
-          child: _safSelectMode
-              ? _buildSafSelectionToolbar()
-              : Row(
-                  children: [
-                    if (canGoUp)
-                      IconButton(
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(minWidth: 36),
-                        icon: const Icon(Icons.arrow_upward, size: 18, color: Colors.white70),
-                        onPressed: _safGoUp,
-                      )
-                    else
-                      const SizedBox(width: 12),
-                    const Icon(Icons.folder_special, size: 16, color: AppColors.teal),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        _safDirName.isNotEmpty
-                            ? _safDirName
-                            : (widget.state.safRootName ?? "SAF 폴더"),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    IconButton(
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36),
-                      icon: const Icon(Icons.refresh, size: 18, color: Colors.white70),
-                      onPressed: _reloadSafDir,
-                    ),
-                    Text("$total", style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                    const SizedBox(width: 8),
-                  ],
-                ),
-        ),
-        const Divider(height: 1, color: Colors.white12),
-        Expanded(
-          child: _loading
-              ? Center(child: CircularProgressIndicator(color: AppColors.accent))
-              : RefreshIndicator(
-                  color: AppColors.accent,
-                  backgroundColor: const Color(0xFF2A2A2A),
-                  // 선택 모드 중에는 새로고침 무시 (제스처 충돌 방지)
-                  onRefresh: () async {
-                    if (_safSelectMode || _loading) {
-                      return;
-                    }
-                    await _reloadSafDir();
+                    await (saf ? _reloadSafDir() : _reloadIoDir());
                   },
                   child: total == 0
                       // 빈 폴더여도 당겨서 새로고침 가능하도록 스크롤 가능한 뷰로 감쌈
@@ -994,7 +1125,8 @@ class GalleryViewState extends State<GalleryView> {
                           ],
                         )
                       : GridView.builder(
-                          controller: _safGridScroll,
+                          // SAF 는 자동 새로고침 뒤 스크롤 위치를 되돌리려고 컨트롤러를 쓴다
+                          controller: saf ? _safGridScroll : null,
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: EdgeInsets.fromLTRB(8, 8, 8, 8 + bottomInset),
                           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
@@ -1006,20 +1138,170 @@ class GalleryViewState extends State<GalleryView> {
                           itemCount: total,
                           itemBuilder: (ctx, index) {
                             // 폴더 먼저, 그 다음 이미지
-                            if (index < _safFolders.length) {
-                              return _buildSafFolderTile(_safFolders[index], columns);
+                            if (index < folderCount) {
+                              return saf
+                                  ? _buildSafFolderTile(_safFolders[index], columns)
+                                  : _buildFolderTile(_folders[index], columns);
                             }
-                            final imgIndex = index - _safFolders.length;
-                            return _buildSafImageTile(_safImages[imgIndex], imgIndex);
+                            final imgIndex = index - folderCount;
+                            return saf
+                                ? _buildSafImageTile(_safImages[imgIndex], imgIndex)
+                                : _buildImageTile(_images[imgIndex], imgIndex);
                           },
                         ),
                 ),
         ),
-        // 이동 대기 바 (이동 모드일 때만)
-        if (_pendingMoveRefs != null) _buildMoveBar(bottomInset),
+        // 이동 대기 바 (이동은 SAF 에만 있다)
+        // 휴지통 안으로는 옮기지 않는다 (이동 대기는 휴지통을 나가면 다시 보인다)
+        if (saf && _pendingMoveRefs != null && !_trashMode) _buildMoveBar(bottomInset),
       ],
     );
   }
+
+  // 파일 모드 위쪽 줄 — 위로 가기 + 경로 줄(누르면 그 폴더로) + 이미지 수
+  Widget _ioPathBar() {
+    return Row(
+      children: [
+        if (_canGoUp)
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36),
+            icon: const Icon(Icons.arrow_upward, size: 18, color: Colors.white70),
+            onPressed: _goUp,
+          ),
+        Expanded(
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            itemCount: _breadcrumbs().length,
+            separatorBuilder: (_, _) => const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 2),
+              child: Icon(Icons.chevron_right, size: 16, color: Colors.white24),
+            ),
+            itemBuilder: (ctx, i) {
+              final crumbs = _breadcrumbs();
+              final c = crumbs[i];
+              final isLast = i == crumbs.length - 1;
+              return Center(
+                child: GestureDetector(
+                  onTap: isLast ? null : () => _loadFolder(c.path),
+                  child: Text(
+                    c.name,
+                    style: TextStyle(
+                      color: isLast ? Colors.white : AppColors.accent,
+                      fontSize: 13,
+                      fontWeight: isLast ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        Text("${_images.length}", style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        const SizedBox(width: 8),
+      ],
+    );
+  }
+
+  // SAF 모드 위쪽 줄 — 위로 가기 + 현재 폴더 이름 + 새로고침 + 항목 수
+  Widget _safPathBar(int total) {
+    if (_trashMode) {
+      return _trashPathBar(total);
+    }
+    return Row(
+      children: [
+        if (_safStack.isNotEmpty)
+          IconButton(
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 36),
+            icon: const Icon(Icons.arrow_upward, size: 18, color: Colors.white70),
+            onPressed: _safGoUp,
+          )
+        else
+          const SizedBox(width: 12),
+        const Icon(Icons.folder_special, size: 16, color: AppColors.teal),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            _safDirName.isNotEmpty ? _safDirName : (_rootName ?? "SAF 폴더"),
+            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 36),
+          icon: const Icon(Icons.refresh, size: 18, color: Colors.white70),
+          onPressed: _reloadSafDir,
+        ),
+        Text("$total", style: const TextStyle(color: Colors.white38, fontSize: 12)),
+        const SizedBox(width: 8),
+      ],
+    );
+  }
+
+  // 휴지통 보기의 위쪽 줄: [←] 휴지통 · 폴더 이름 … N일 보관 [비우기]
+  Widget _trashPathBar(int total) {
+    return Row(
+      children: [
+        IconButton(
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 36),
+          icon: const Icon(Icons.arrow_back, size: 18, color: Colors.white70),
+          onPressed: _exitTrash,
+        ),
+        const Icon(Icons.delete_outline, size: 16, color: Colors.white54),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            "휴지통 · ${_rootName ?? '저장 폴더'}",
+            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        Text(
+          "${widget.state.trashKeepDays}일 보관",
+          style: const TextStyle(color: Colors.white38, fontSize: 11),
+        ),
+        TextButton(
+          onPressed: total > 0 ? _emptyTrash : null,
+          child: Text(
+            "비우기",
+            style: TextStyle(
+              color: total > 0 ? Colors.redAccent : Colors.white24,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+      ],
+    );
+  }
+
+  // 외부(history_tab)에서 폴더 위치 선택을 호출할 수 있게 공개 메서드
+  void openLocationPicker() => _showLocationPicker();
+
+  /// 다른 저장 폴더(또는 앱 폴더)를 보는 중이면 지금 저장 중인 폴더의 맨 위로 돌아간다.
+  ///  히스토리 탭을 떠날 때 부른다 ('마지막 보기 유지'로 갤러리가 닫히지 않을 때) —
+  ///  다시 들어오면 늘 지금 폴더가 먼저 보이게. 저장 중인 폴더 안을 보던 중이면 그대로 둔다.
+  ///  이동 대기는 그대로 이어진다 (_loadSafRootDir 는 이동 대기를 건드리지 않는다).
+  void showActiveFolder() {
+    if (!mounted || widget.state.safRootUri == null) {
+      return;
+    }
+    if (_safMode && _browseSlot == null && !_trashMode) {
+      return;
+    }
+    _browseSlot = null;
+    _loadSafRootDir(); // 휴지통 보기도 여기서 끝난다
+  }
+
+  // 현재 폴더명 (history_tab 버튼 라벨용)
+  String get currentFolderLabel => _safMode
+      ? (_safDirName.isNotEmpty ? _safDirName : (_rootName ?? "SAF"))
+      : (_currentPath == null ? "폴더" : _baseName(_currentPath!));
 
   // 이동 대기 하단 바: 현재 폴더로 이동 확정 / 취소
   Widget _buildMoveBar(double bottomInset) {
@@ -1028,13 +1310,13 @@ class GalleryViewState extends State<GalleryView> {
     if (refs == null) {
       return const SizedBox.shrink();
     }
-    final here = _safDirUri ?? widget.state.safRootUri;
+    final here = _safDirUri ?? _rootUri;
     final bool sameFolder = here != null && here == from;
     // 폴더 로딩 중엔 현재 위치 판정이 부정확 → 버튼 비활성화 (전환 중 오클릭 방지)
     final bool canMoveHere = !sameFolder && !_loading;
     final String hereName = _safDirName.isNotEmpty
         ? _safDirName
-        : (widget.state.safRootName ?? "루트");
+        : (_rootName ?? "루트");
     return Container(
       padding: EdgeInsets.fromLTRB(12, 8, 12, 8 + bottomInset),
       decoration: const BoxDecoration(
@@ -1078,47 +1360,54 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // SAF 폴더 타일 (미리보기 + 폴더명 + 이미지 개수 오버레이 + 테두리)
+  // SAF 폴더 칸 — 미리보기는 SAF 에서 읽고(메모이즈), 모양은 _folderTile
   Widget _buildSafFolderTile(
     ({String uri, String name, int imageCount, List<({String uri, String name})> previews}) folder,
     int columns,
   ) {
-    // 열이 많을수록(타일이 작을수록) 테두리를 얇게 → 묻히지 않게
+    return _folderTile(
+      name: folder.name,
+      count: folder.imageCount,
+      columns: columns,
+      onTap: () => _loadSafDir(folder.uri, folder.name, push: true),
+      preview: FutureBuilder<List<Uint8List>>(
+        future: _safPreviewFutures.putIfAbsent(folder.uri, () => _loadFolderPreviews(folder.uri)),
+        builder: (ctx, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return Container(color: Colors.white10);
+          }
+          final imgs = snap.data ?? const [];
+          return imgs.isEmpty ? _emptyFolderPreview : _mosaicLayout(imgs, _safThumb);
+        },
+      ),
+    );
+  }
+
+  /// 그리드의 폴더 칸 (SAF·파일 공용) — 미리보기 + 아래 이름 줄(폴더 아이콘·이름·장수) + 호박색 테두리.
+  ///  ⚠️ 예전엔 SAF 칸과 파일 칸이 모양까지 따로라, 같은 폴더도 모드에 따라 달라 보였다.
+  ///     SAF 쪽 모양으로 맞췄다.
+  Widget _folderTile({
+    required String name,
+    required int count,
+    required int columns,
+    required Widget preview,
+    required VoidCallback onTap,
+  }) {
+    // 열이 많을수록(칸이 작을수록) 테두리를 얇게 → 묻히지 않게
     final double borderW = (3.0 - (columns - 2) * 0.5).clamp(0.8, 3.0);
     return GestureDetector(
-      onTap: () => _loadSafDir(folder.uri, folder.name, push: true),
+      onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: const Color(0xFFFFC107).withValues(alpha: 0.85),
-            width: borderW,
-          ),
+          border: Border.all(color: AppColors.amber.withValues(alpha: 0.85), width: borderW),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(7),
           child: Stack(
             fit: StackFit.expand,
             children: [
-              FutureBuilder<List<Uint8List>>(
-                future: _safPreviewFutures.putIfAbsent(
-                  folder.uri,
-                  () => _loadFolderPreviews(folder.uri),
-                ),
-                builder: (ctx, snap) {
-                  if (snap.connectionState != ConnectionState.done) {
-                    return Container(color: Colors.white10);
-                  }
-                  final imgs = snap.data ?? const [];
-                  if (imgs.isEmpty) {
-                    return Container(
-                      color: const Color(0xFF2A2A2A),
-                      child: const Icon(Icons.folder, color: Colors.white24, size: 40),
-                    );
-                  }
-                  return _buildSafMosaic(imgs);
-                },
-              ),
+              preview,
               Positioned(
                 left: 0,
                 right: 0,
@@ -1128,19 +1417,20 @@ class GalleryViewState extends State<GalleryView> {
                   color: Colors.black.withValues(alpha: 0.55),
                   child: Row(
                     children: [
-                      const Icon(Icons.folder, size: 13, color: Color(0xFFFFC107)),
+                      const Icon(Icons.folder, size: 13, color: AppColors.amber),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          folder.name,
+                          name,
                           style: const TextStyle(color: Colors.white, fontSize: 11),
+                          maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      if (folder.imageCount > 0) ...[
+                      if (count > 0) ...[
                         const SizedBox(width: 4),
                         Text(
-                          "${folder.imageCount}",
+                          "$count",
                           style: const TextStyle(
                             color: Colors.white60,
                             fontSize: 11,
@@ -1159,89 +1449,41 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
+  /// 미리보기할 그림이 없는 폴더
+  static const Widget _emptyFolderPreview = ColoredBox(
+    color: _kGalleryDim,
+    child: Icon(Icons.folder, color: Colors.white24, size: 40),
+  );
+
+  // SAF 이미지 칸 — 그림만 SAF 썸네일에서 읽고(캐시·메모이즈), 나머지는 _imageTile
   Widget _buildSafImageTile(({String uri, String name}) item, int index) {
     final cached = _safThumbCache[item.uri];
-    final bool selected = _safSelected.contains(item.uri);
-    return GestureDetector(
-      onTap: () {
-        if (_safSelectMode) {
-          _safToggleSelect(item.uri);
-        } else {
-          _openSafViewer(index);
-        }
-      },
-      onLongPress: () {
-        if (_safSelectMode) {
-          _safToggleSelect(item.uri);
-        } else {
-          _safEnterSelect(item.uri);
-        }
-      },
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: cached != null
-                ? Image.memory(cached, fit: BoxFit.cover, cacheWidth: 300, gaplessPlayback: true)
-                : FutureBuilder<Uint8List?>(
-                    future: _safThumbFutures.putIfAbsent(
-                      item.uri,
-                      () => widget.state.readSafThumb(item.uri),
-                    ),
-                    builder: (ctx, snap) {
-                      if (snap.connectionState != ConnectionState.done) {
-                        return Container(color: Colors.white10);
-                      }
-                      final bytes = snap.data;
-                      if (bytes == null) {
-                        return Container(
-                          color: Colors.white10,
-                          child: const Icon(Icons.broken_image, color: Colors.white24),
-                        );
-                      }
-                      _safThumbCache[item.uri] = bytes;
-                      _trimSafBytesCache(_safThumbCache, max: 400);
-                      return Image.memory(
-                        bytes,
-                        fit: BoxFit.cover,
-                        cacheWidth: 300,
-                        gaplessPlayback: true,
-                      );
-                    },
-                  ),
-          ),
-          if (_safSelectMode)
-            Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: selected ? Colors.redAccent : Colors.transparent,
-                  width: selected ? 2.5 : 1,
-                ),
-                color: selected ? Colors.redAccent.withValues(alpha: 0.18) : Colors.transparent,
+    Widget memory(Uint8List bytes) =>
+        Image.memory(bytes, fit: BoxFit.cover, cacheWidth: 300, gaplessPlayback: true);
+    return _imageTile(
+      id: item.uri,
+      onOpen: () => _openSafViewer(index),
+      badge: _trashMode ? _trashBadge(item.name) : null,
+      image: cached != null
+          ? memory(cached)
+          : FutureBuilder<Uint8List?>(
+              future: _safThumbFutures.putIfAbsent(
+                item.uri,
+                () => widget.state.readSafThumb(item.uri),
               ),
+              builder: (ctx, snap) {
+                if (snap.connectionState != ConnectionState.done) {
+                  return Container(color: Colors.white10);
+                }
+                final bytes = snap.data;
+                if (bytes == null) {
+                  return _brokenImage;
+                }
+                _safThumbCache[item.uri] = bytes;
+                _trimSafBytesCache(_safThumbCache, max: 400);
+                return memory(bytes);
+              },
             ),
-          if (_safSelectMode)
-            Positioned(
-              top: 4,
-              left: 4,
-              child: Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: selected ? Colors.redAccent : Colors.black.withValues(alpha: 0.4),
-                  border: Border.all(
-                    color: selected ? Colors.redAccent : Colors.white38,
-                    width: 1.5,
-                  ),
-                ),
-                child: selected ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
-              ),
-            ),
-        ],
-      ),
     );
   }
 
@@ -1291,10 +1533,6 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  Widget _buildSafMosaic(List<Uint8List> imgs) {
-    return _mosaicLayout(imgs, _safThumb);
-  }
-
   // ── IO/SAF 공용 뷰어용 페이지 본문 ──
   Widget _ioViewerPage(int i) {
     return InteractiveViewer(
@@ -1302,11 +1540,6 @@ class GalleryViewState extends State<GalleryView> {
       maxScale: 4,
       child: Center(child: Image.file(_images[i], fit: BoxFit.contain)),
     );
-  }
-
-  String _ioFileName(File f) {
-    final parts = f.path.split(Platform.pathSeparator);
-    return parts.isNotEmpty ? parts.last : f.path;
   }
 
   Future<Uint8List?> _loadFullSafBytes(String uri) async {
@@ -1343,74 +1576,56 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
+  // SAF 이미지 뷰어
   void _openSafViewer(int index) {
     if (_safViewerFutures.length > 12) {
       _safViewerFutures.clear(); // 완료된 Future가 원본 바이트를 계속 붙들지 않게 주기 정리
     }
-    showDialog(
-      context: context,
-      builder: (ctx) => _GalleryImageViewer(
-        itemCount: _safImages.length,
-        startIndex: index,
-        nameOf: (i) => _safImages[i].name,
-        pageOf: _safViewerPage,
-        // 화면에 띄우려고 읽는 바이트를 그대로 쓴다 (같은 Future 라 두 번 읽지 않는다)
-        infoOf: (i) async {
-          if (i >= _safImages.length) {
-            return null;
-          }
-          final uri = _safImages[i].uri;
-          final bytes = await _safViewerFutures.putIfAbsent(uri, () => _loadFullSafBytes(uri));
-          return bytes == null ? null : _readImageInfo(bytes);
-        },
-        onLongPress: (i, close) => _showGalleryImageMenu(_safItem(_safImages[i], close), close),
-      ),
+    _openViewer(
+      countNow: () => _safImages.length,
+      start: index,
+      nameOf: (i) => _safImages[i].name,
+      pageOf: _safViewerPage,
+      // 화면에 띄우려고 읽는 바이트를 그대로 쓴다 (같은 Future 라 두 번 읽지 않는다)
+      bytesOf: (i) {
+        final uri = _safImages[i].uri;
+        return _safViewerFutures.putIfAbsent(uri, () => _loadFullSafBytes(uri));
+      },
+      itemOf: (i, close) => _safItem(_safImages[i], close),
     );
   }
 
-  void _safEnterSelect(String uri) {
-    setState(() {
-      _safSelectMode = true;
-      _safSelected
-        ..clear()
-        ..add(uri);
-    });
-  }
-
-  void _safToggleSelect(String uri) {
-    setState(() {
-      if (_safSelected.contains(uri)) {
-        _safSelected.remove(uri);
-        if (_safSelected.isEmpty) {
-          _safSelectMode = false;
-        }
-      } else {
-        _safSelected.add(uri);
-      }
-    });
-  }
-
-  void _safExitSelect() {
-    setState(() {
-      _safSelectMode = false;
-      _safSelected.clear();
-    });
+  /// SAF 이미지 하나를 목록과 캐시에서 뺀다 (삭제·이동 뒤).
+  ///  ⚠️ 예전엔 이 다섯 줄이 삭제·선택 삭제·이동 세 곳에 복사돼 있었다.
+  void _forgetSafImage(String uri) {
+    _safImages.removeWhere((e) => e.uri == uri);
+    _safBytesCache.remove(uri);
+    _safThumbCache.remove(uri);
+    _safThumbFutures.remove(uri);
+    _safViewerFutures.remove(uri);
   }
 
   List<({String uri, String name})> _safSelectedRefs() {
-    return _safImages.where((e) => _safSelected.contains(e.uri)).toList();
+    return _safImages.where((e) => _selected.contains(e.uri)).toList();
   }
 
-  // 선택 모드 상단 툴바 공통 (IO/SAF): [취소] [n장 선택됨] … [ⓘ] [삭제]
+  // 선택 모드 상단 툴바 공통 (IO/SAF): [취소] [n장 선택됨] … [ⓘ] [이동] [삭제]
+  //  [이동] 은 그 기능이 있는 경로(SAF)에서만 — onMove 가 null 이면 숨긴다.
+  //  휴지통 보기에서는 [취소] [n장 선택됨] … [되돌리기] [영구 삭제] — onInfo 가 null 이면 ⓘ 를 숨긴다.
   Widget _selectionToolbarShared({
     required int count,
     required VoidCallback onCancel,
     required VoidCallback? onInfo,
+    VoidCallback? onMove,
+    VoidCallback? onRestore,
+    String deleteLabel = "삭제",
     // 삭제는 확인 다이얼로그를 띄우느라 비동기다.
     //  onTap 은 결과를 기다리지 않으므로 Future 를 그대로 넘겨도 된다.
     required Future<void> Function()? onDelete,
   }) {
     final bool hasSel = count > 0;
+    // 이동은 이동하기 대기 바·크게 보기 메뉴와 같은 파란색
+    const Color moveColor = Color(0xFF42A5F5);
     return Row(
       children: [
         GestureDetector(
@@ -1440,86 +1655,116 @@ class GalleryViewState extends State<GalleryView> {
           ),
         ),
         const SizedBox(width: 8),
-        Text(
-          "$count장 선택됨",
-          style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-        ),
-        const Spacer(),
-        GestureDetector(
-          onTap: hasSel ? onInfo : null,
-          child: Container(
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: hasSel ? Colors.white54 : Colors.white24),
-            ),
-            child: Icon(
-              Icons.info_outline,
-              size: 18,
-              color: hasSel ? Colors.white : Colors.white38,
-            ),
+        // 남는 폭을 모두 차지해 버튼들을 오른쪽으로 민다 (예전 Spacer 역할).
+        //  버튼이 하나 늘어 좁은 화면에서 넘치지 않게 — 넘치면 글자를 줄인다
+        Expanded(
+          child: Text(
+            "$count장 선택됨",
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
           ),
         ),
+        if (onInfo != null)
+          GestureDetector(
+            onTap: hasSel ? onInfo : null,
+            child: Container(
+              padding: const EdgeInsets.all(7),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: hasSel ? Colors.white54 : Colors.white24),
+              ),
+              child: Icon(
+                Icons.info_outline,
+                size: 18,
+                color: hasSel ? Colors.white : Colors.white38,
+              ),
+            ),
+          ),
+        if (onMove != null) ...[
+          const SizedBox(width: 8),
+          _toolbarPill(
+            icon: Icons.drive_file_move_outline,
+            label: "이동",
+            color: moveColor,
+            enabled: hasSel,
+            onTap: onMove,
+          ),
+        ],
+        if (onRestore != null) ...[
+          const SizedBox(width: 8),
+          _toolbarPill(
+            icon: Icons.restore_from_trash_outlined,
+            label: "되돌리기",
+            color: AppColors.teal,
+            enabled: hasSel,
+            onTap: onRestore,
+          ),
+        ],
         const SizedBox(width: 8),
-        GestureDetector(
-          onTap: hasSel && onDelete != null ? () => onDelete() : null,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-            decoration: BoxDecoration(
-              color: hasSel ? Colors.redAccent.withValues(alpha: 0.2) : AppColors.surface,
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: hasSel ? Colors.redAccent : Colors.white24),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.delete_outline,
-                  size: 18,
-                  color: hasSel ? Colors.redAccent : Colors.white38,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  "삭제",
-                  style: TextStyle(
-                    color: hasSel ? Colors.redAccent : Colors.white38,
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-          ),
+        _toolbarPill(
+          icon: Icons.delete_outline,
+          label: deleteLabel,
+          color: Colors.redAccent,
+          enabled: hasSel && onDelete != null,
+          onTap: onDelete == null ? null : () => onDelete(),
         ),
         const SizedBox(width: 4),
       ],
     );
   }
 
-  Widget _buildSafSelectionToolbar() {
-    return _selectionToolbarShared(
-      count: _safSelected.length,
-      onCancel: _safExitSelect,
-      onInfo: _safShowSelectionMenu,
-      onDelete: _safDeleteSelected,
+  // 선택 툴바의 둥근 버튼 — 고른 게 없으면 회색으로 잠긴다 ([이동]·[되돌리기]·[삭제] 공용)
+  //  ⚠️ 예전엔 [이동]·[삭제] 가 똑같은 모양을 각자 서른 줄씩 갖고 있었다.
+  Widget _toolbarPill({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required bool enabled,
+    required VoidCallback? onTap,
+  }) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        decoration: BoxDecoration(
+          color: enabled ? color.withValues(alpha: 0.2) : AppColors.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: enabled ? color : Colors.white24),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: enabled ? color : Colors.white38),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: enabled ? color : Colors.white38,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   // ⓘ 메뉴 (SAF/파일 공용)
   //  1장이면 전체 메뉴를 그대로 열고, 여러 장이면 일괄 작업만 보여준다.
-  //  이동하기는 그 기능이 있는 경로(SAF)에서만 노출된다.
+  //  ⚠️ 이동·삭제는 여기 없다 — 선택 툴바에 [이동]·[삭제] 버튼이 따로 있다.
   void _showBatchSelectionMenu({
     required int count,
     required GalleryItem Function() singleItem,
     required VoidCallback onAddAll,
-    VoidCallback? onMoveAll,
   }) {
     if (count == 0) {
       return;
     }
     if (count == 1) {
-      // 단일 선택은 일반 메뉴와 동일하게 (fromSelection=true → 삭제 숨김/이동 노출)
+      // 단일 선택은 일반 메뉴와 동일하게 (fromSelection=true → 이동·삭제 숨김)
       _showGalleryImageMenu(singleItem(), null, true);
       return;
     }
@@ -1549,15 +1794,6 @@ class GalleryViewState extends State<GalleryView> {
                 onAddAll();
               },
             ),
-            if (onMoveAll != null)
-              ListTile(
-                leading: const Icon(Icons.drive_file_move_outline, color: Color(0xFF42A5F5)),
-                title: Text("이동하기 ($count장)", style: const TextStyle(color: Colors.white)),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  onMoveAll();
-                },
-              ),
             const SizedBox(height: 8),
           ],
         ),
@@ -1565,85 +1801,25 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // ⓘ (SAF): 선택한 항목들로 공용 메뉴를 연다
-  void _safShowSelectionMenu() {
-    final refs = _safSelectedRefs();
-    _showBatchSelectionMenu(
-      count: refs.length,
-      singleItem: () => _safItem(refs.first),
-      onAddAll: () => _safBatchAddToHistory(refs),
-      onMoveAll: () => _safMoveRefs(refs),
-    );
-  }
+  /// 선택된 항목들 (지금 모드의 폴더 목록 기준)
+  List<GalleryItem> _selectedItems() => _safMode
+      ? _safSelectedRefs().map(_safItem).toList()
+      : _selectedFiles().map(_fileItem).toList();
 
-  // ⓘ (파일): 파일 경로엔 이동 기능이 없어 onMoveAll을 넘기지 않는다
+  // ⓘ 선택 메뉴 (SAF·파일 공용). 이동은 툴바의 [이동] 버튼으로.
   void _showSelectionMenu() {
-    final files = _selectedFiles();
+    final items = _selectedItems();
     _showBatchSelectionMenu(
-      count: files.length,
-      singleItem: () => _fileItem(files.first),
-      onAddAll: () => _batchAddToHistory(files),
+      count: items.length,
+      singleItem: () => items.first,
+      onAddAll: () => _batchAddToHistory(items),
     );
-  }
-
-  Future<void> _safBatchAddToHistory(List<({String uri, String name})> refs) async {
-    int added = 0;
-    for (final ref in refs) {
-      final bytes = await widget.state.readSafImage(ref.uri);
-      if (bytes == null) {
-        continue;
-      }
-      if (!mounted) {
-        return;
-      }
-      await widget.state.addBytesToHistory(bytes, context, showSuccess: false);
-      added++;
-    }
-    if (!mounted) {
-      return;
-    }
-    _safExitSelect();
-    showToast(context, "$added장을 히스토리에 추가했습니다.");
-  }
-
-  Future<void> _safDeleteSelected() async {
-    final refs = _safSelectedRefs();
-    if (refs.isEmpty) {
-      return;
-    }
-    final confirmed = await showConfirmDialog(
-      context,
-      title: "이미지 삭제",
-      message: "${refs.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
-      confirmLabel: "삭제",
-      icon: Icons.delete_outline,
-    );
-    if (!confirmed) {
-      return;
-    }
-    int deleted = 0;
-    for (final ref in refs) {
-      final ok = await widget.state.deleteSafImage(ref.uri);
-      if (ok) {
-        deleted++;
-        _safImages.removeWhere((e) => e.uri == ref.uri);
-        _safBytesCache.remove(ref.uri);
-        _safThumbCache.remove(ref.uri);
-        _safThumbFutures.remove(ref.uri);
-        _safViewerFutures.remove(ref.uri);
-      }
-    }
-    if (!mounted) {
-      return;
-    }
-    _safExitSelect();
-    _showBriefSnack("$deleted장 삭제");
   }
 
   // 이미지 꾹 메뉴 (SAF/파일 공용)
   //  항목 구성은 같고, 이동/삭제는 그 기능이 있는 경로(SAF)에서만 보인다.
   //  fromSelection: 선택모드 툴바(ⓘ)에서 호출된 경우 true.
-  //    → 선택모드엔 이미 삭제 버튼이 있으므로 "삭제"는 숨기고 "이동하기"를 노출.
+  //    → 선택모드엔 이미 [이동]·[삭제] 버튼이 있으므로 둘 다 숨긴다.
   void _showGalleryImageMenu(
     GalleryItem item, [
     VoidCallback? closeViewer,
@@ -1669,63 +1845,88 @@ class GalleryViewState extends State<GalleryView> {
               ),
             ),
             const Divider(height: 1, color: Colors.white12),
+            // 휴지통의 그림: [되돌리기] · EXIF 확인 · [영구 삭제] 만
+            if (item.onRestore != null)
+              ListTile(
+                leading: const Icon(Icons.restore_from_trash_outlined, color: AppColors.teal),
+                title: const Text("되돌리기", style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  item.onRestore!();
+                },
+              ),
+            if (item.onRestore == null) ...[
+              ListTile(
+                leading: const Icon(Icons.add_photo_alternate_outlined, color: AppColors.purple),
+                title: const Text("히스토리 목록에 추가", style: TextStyle(color: Colors.white)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  // 추가했으면 히스토리 목록으로 가서 방금 넣은 이미지를 보여 준다.
+                  //  크게 보기에서 열었으면 뷰어부터 닫는다 (뒤 화면만 바뀌면 어색하다).
+                  if (await _addToHistory(item)) {
+                    closeViewer?.call();
+                    widget.onAddedToHistory?.call();
+                  }
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.brush, color: AppColors.accent),
+                title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  closeViewer?.call(); // 뷰어에서 왔으면 닫고 탭 이동
+                  _sendToI2i(item);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.bookmark_add_outlined, color: AppColors.teal),
+                title: const Text("프리셋에 프롬프트 저장", style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _saveToPreset(item);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.download_outlined, color: AppColors.purple),
+                title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  closeViewer?.call(); // 뷰어에서 왔으면 닫고 프롬프트 탭으로
+                  _loadPromptFrom(item);
+                },
+              ),
+            ],
             ListTile(
-              leading: const Icon(Icons.add_photo_alternate_outlined, color: AppColors.purple),
-              title: const Text("히스토리 목록에 추가", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _addToHistory(item);
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.brush, color: AppColors.accent),
-              title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                closeViewer?.call(); // 뷰어에서 왔으면 닫고 탭 이동
-                _sendToI2i(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.bookmark_add_outlined, color: AppColors.teal),
-              title: const Text("프리셋에 프롬프트 저장", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                _saveToPreset(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined, color: AppColors.purple),
-              title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
-              onTap: () {
-                Navigator.pop(ctx);
-                closeViewer?.call(); // 뷰어에서 왔으면 닫고 프롬프트 탭으로
-                _loadPromptFrom(item);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.info_outline, color: Color(0xFFFFC107)),
+              leading: const Icon(Icons.info_outline, color: AppColors.amber),
               title: const Text("EXIF 확인", style: TextStyle(color: Colors.white)),
               onTap: () {
                 Navigator.pop(ctx);
                 _showExif(item);
               },
             ),
-            // 이동하기: 선택모드 메뉴에서만 (그 기능이 있는 경로에서만)
-            if (fromSelection && item.onMove != null)
+            // 이동하기: 크게 보기 메뉴에서만 (그 기능이 있는 경로 = SAF 에서만)
+            //  선택모드에선 툴바의 [이동] 버튼을 쓴다 (ⓘ 메뉴에서는 뺐다).
+            //  뷰어부터 닫는다 — 이동 대기는 갤러리 화면에서 폴더를 골라야 하고,
+            //  하위 폴더가 없으면 위 폴더로 올라가는 것도 [이동] 버튼과 같다 (_safMoveRefs).
+            if (closeViewer != null && item.onMove != null)
               ListTile(
                 leading: const Icon(Icons.drive_file_move_outline, color: Color(0xFF42A5F5)),
                 title: const Text("이동하기", style: TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(ctx);
+                  // 위 조건(closeViewer != null)으로 이미 null 이 아니다 — '?.' 는 필요 없다
+                  closeViewer();
                   item.onMove!();
                 },
               ),
-            // 삭제: 선택모드가 아닐 때만
+            // 삭제: 선택모드가 아닐 때만 (휴지통의 그림이면 '영구 삭제')
             if (!fromSelection && item.onDelete != null)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                title: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
+                title: Text(
+                  item.onRestore != null ? "영구 삭제" : "삭제",
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
                 onTap: () {
                   Navigator.pop(ctx);
                   item.onDelete!();
@@ -1740,19 +1941,21 @@ class GalleryViewState extends State<GalleryView> {
 
   // 히스토리에 추가 (SAF/파일 공용)
   //  filePath는 파일 경로일 때만 있다(원본 위치 기록용). SAF는 null.
-  Future<void> _addToHistory(GalleryItem item) async {
+  //  돌려주는 값: 추가했으면 true.
+  Future<bool> _addToHistory(GalleryItem item) async {
     try {
       final bytes = await item.readBytes();
       if (bytes == null || !mounted) {
-        return;
+        return false;
       }
       await widget.state.addBytesToHistory(bytes, context, filePath: item.filePath);
+      return true;
     } catch (e) {
       debugPrint("히스토리 추가 실패: $e");
-      if (!mounted) {
-        return;
+      if (mounted) {
+        showToast(context, "이미지를 불러오는 데 실패했습니다.");
       }
-      showToast(context, "이미지를 불러오는 데 실패했습니다.");
+      return false;
     }
   }
 
@@ -1765,7 +1968,7 @@ class GalleryViewState extends State<GalleryView> {
       }
       final meta = extractNovelAIMetadata(bytes);
       widget.state.sendToI2i(bytes, meta);
-      widget.state.navigateToTab(2);
+      widget.state.navigateToTab(AppTab.i2i);
       showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
     } catch (e) {
       debugPrint("i2i 전송 실패: $e");
@@ -1776,6 +1979,15 @@ class GalleryViewState extends State<GalleryView> {
   // SAF 항목 / 파일 항목을 공용 어댑터로 감싼다.
   // closeViewer: 뷰어에서 열었다면 삭제 후 뷰어도 닫아야 한다
   GalleryItem _safItem(({String uri, String name}) item, [VoidCallback? closeViewer]) {
+    if (_trashMode) {
+      // 휴지통의 그림: 되돌리기·영구 삭제만 (이동·다른 작업 없음)
+      return GalleryItem(
+        name: item.name,
+        readBytes: () => widget.state.readSafImage(item.uri),
+        onDelete: () => _purgeTrashRefs([item], closeViewer),
+        onRestore: () => _restoreTrashRefs([item], closeViewer),
+      );
+    }
     return GalleryItem(
       name: item.name,
       readBytes: () => widget.state.readSafImage(item.uri),
@@ -1786,7 +1998,7 @@ class GalleryViewState extends State<GalleryView> {
 
   GalleryItem _fileItem(File img) {
     return GalleryItem(
-      name: _folderName(img.path),
+      name: _baseName(img.path),
       readBytes: () async => img.readAsBytes(),
       filePath: img.path,
     );
@@ -1868,7 +2080,7 @@ class GalleryViewState extends State<GalleryView> {
           backgroundColor: AppColors.surface,
           title: Row(
             children: [
-              const Icon(Icons.info_outline, color: Color(0xFFFFC107), size: 20),
+              const Icon(Icons.info_outline, color: AppColors.amber, size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -1906,30 +2118,38 @@ class GalleryViewState extends State<GalleryView> {
     ({String uri, String name}) item, [
     VoidCallback? onDeleted,
   ]) async {
+    // 설정이 켜져 있으면 휴지통으로 (_deleteSelected 와 같은 규칙)
+    final String? root = _rootUri;
+    final bool toTrash = widget.state.trashEnabled && root != null;
     final confirmed = await showConfirmDialog(
       context,
-      title: "이미지 삭제",
-      message: "${item.name}\n이 이미지를 삭제할까요?",
-      confirmLabel: "삭제",
+      title: toTrash ? "휴지통으로 보내기" : "이미지 삭제",
+      message: toTrash
+          ? "${item.name}\n휴지통으로 보낼까요? (${widget.state.trashKeepDays}일 뒤 자동으로 지워져요)"
+          : "${item.name}\n이 이미지를 삭제할까요?",
+      confirmLabel: toTrash ? "보내기" : "삭제",
       icon: Icons.delete_outline,
     );
     if (!confirmed || !mounted) {
       return;
     }
-    final ok = await widget.state.deleteSafImage(item.uri);
+    // root 는 toTrash 안에서 이미 null 이 아님이 확인된다 (Dart 가 toTrash 를 통해 알아본다)
+    final bool ok = toTrash
+        ? (await widget.state.trashSafImages(
+            [item],
+            fromDirUri: _safDirUri ?? root,
+            rootUri: root,
+          )).isNotEmpty
+        : await widget.state.deleteSafImage(item.uri);
     if (!mounted) {
       return;
     }
     if (ok) {
       onDeleted?.call(); // 뷰어에서 삭제 시 뷰어 닫기 (지운 목록 계속 넘기다 깨짐 방지)
       setState(() {
-        _safImages.removeWhere((e) => e.uri == item.uri);
-        _safBytesCache.remove(item.uri);
-        _safThumbCache.remove(item.uri);
-        _safThumbFutures.remove(item.uri);
-        _safViewerFutures.remove(item.uri);
+        _forgetSafImage(item.uri);
       });
-      _showBriefSnack("삭제 완료");
+      _showBriefSnack(toTrash ? "휴지통으로 보냈어요" : "삭제 완료");
     } else {
       _showBriefSnack("삭제 실패");
     }
@@ -1942,7 +2162,7 @@ class GalleryViewState extends State<GalleryView> {
     if (refs.isEmpty) {
       return;
     }
-    final rootUri = widget.state.safRootUri;
+    final rootUri = _rootUri;
     if (rootUri == null) {
       return;
     }
@@ -1950,9 +2170,14 @@ class GalleryViewState extends State<GalleryView> {
       _pendingMoveRefs = List.of(refs);
       _pendingMoveFromParent = _safDirUri ?? rootUri;
       // 선택모드는 종료 (이동 모드로 전환)
-      _safSelectMode = false;
-      _safSelected.clear();
+      _selectMode = false;
+      _selected.clear();
     });
+    // 지금 폴더에 하위 폴더가 없으면 여기선 옮길 곳이 없다 (원래 폴더라 '여기로'도 꺼져 있다).
+    //  → 바로 위 폴더로 올라가 옆 폴더들을 보여 준다. 맨 위 폴더면 올라갈 곳이 없으니 그대로.
+    if (_safFolders.isEmpty && _safStack.isNotEmpty) {
+      _safGoUp();
+    }
   }
 
   // 이동 대기 취소
@@ -1961,6 +2186,161 @@ class GalleryViewState extends State<GalleryView> {
       _pendingMoveRefs = null;
       _pendingMoveFromParent = null;
     });
+  }
+
+  // ===== 휴지통 보기 =====
+
+  /// [slot] 저장 폴더의 휴지통을 연다 ('변경' 목록에서). 기한이 지난 그림은 열 때 먼저 지워진다.
+  Future<void> _openTrash(int slot) async {
+    // 둘러보는 칸은 휴지통을 연 뒤에 바꾼다 — 열지 못했을 때 화면(지금 폴더)과 칸이 어긋나지 않게
+    final String? root = widget.state.safSlotUris[slot];
+    if (root == null) {
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _selectMode = false;
+      _selected.clear();
+    });
+    final info = await widget.state.openSafTrash(root);
+    if (!mounted) {
+      return;
+    }
+    if (info == null) {
+      setState(() => _loading = false);
+      _showBriefSnack("휴지통을 열지 못했어요");
+      return;
+    }
+    _browseSlot = slot == widget.state.activeSafSlot ? null : slot;
+    _trashMode = true;
+    _trashDeletedAt = info.deletedAt;
+    _safStack.clear();
+    await _loadSafDir(info.dirUri, "휴지통");
+  }
+
+  /// 휴지통에서 나가 지금 저장 중인 폴더의 맨 위로
+  void _exitTrash() {
+    _browseSlot = null;
+    _loadSafRootDir(); // 휴지통 보기를 끈다
+  }
+
+  /// 휴지통 그림의 '남은 날' 표시 (자동으로 지워지기까지)
+  Widget? _trashBadge(String name) {
+    final int? t = _trashDeletedAt[name];
+    if (t == null) {
+      return null;
+    }
+    final int left = widget.state.trashDaysLeft(t);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        left <= 0 ? "곧 삭제" : "$left일",
+        style: TextStyle(
+          color: left <= 2 ? Colors.redAccent : Colors.white70,
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  /// 휴지통에서 되돌리기 (원래 폴더로). [onDone] 은 뷰어에서 불렀을 때 뷰어를 닫는다.
+  Future<void> _restoreTrashRefs(
+    List<({String uri, String name})> refs, [
+    VoidCallback? onDone,
+  ]) async {
+    final String? root = _rootUri;
+    if (root == null || refs.isEmpty) {
+      return;
+    }
+    final done = await widget.state.restoreSafTrash(refs, rootUri: root);
+    if (!mounted) {
+      return;
+    }
+    if (done.isNotEmpty) {
+      onDone?.call();
+    }
+    setState(() {
+      for (final uri in done) {
+        _forgetSafImage(uri);
+      }
+      _selectMode = false;
+      _selected.clear();
+    });
+    _showBriefSnack(done.isEmpty ? "되돌리지 못했어요" : "${done.length}장을 되돌렸어요");
+  }
+
+  /// 휴지통에서 완전히 지우기 (확인 후)
+  Future<void> _purgeTrashRefs(
+    List<({String uri, String name})> refs, [
+    VoidCallback? onDone,
+  ]) async {
+    final String? root = _rootUri;
+    if (root == null || refs.isEmpty) {
+      return;
+    }
+    final confirmed = await showConfirmDialog(
+      context,
+      title: "영구 삭제",
+      message: refs.length == 1
+          ? "${refs.first.name}\n완전히 지웁니다. 되돌릴 수 없어요."
+          : "${refs.length}장을 완전히 지웁니다. 되돌릴 수 없어요.",
+      confirmLabel: "영구 삭제",
+      icon: Icons.delete_forever_outlined,
+    );
+    if (!confirmed || !mounted) {
+      return;
+    }
+    final done = await widget.state.deleteSafTrash(refs, rootUri: root);
+    if (!mounted) {
+      return;
+    }
+    if (done.isNotEmpty) {
+      onDone?.call();
+    }
+    setState(() {
+      for (final uri in done) {
+        _forgetSafImage(uri);
+      }
+      _selectMode = false;
+      _selected.clear();
+    });
+    _showBriefSnack(done.isEmpty ? "지우지 못했어요" : "${done.length}장을 완전히 지웠어요");
+  }
+
+  /// 휴지통 비우기 — 지금 보이는 휴지통의 그림을 모두 완전히 지운다 (확인 후)
+  Future<void> _emptyTrash() async {
+    final String? root = _rootUri;
+    final refs = List.of(_safImages);
+    if (root == null || refs.isEmpty) {
+      return;
+    }
+    final confirmed = await showConfirmDialog(
+      context,
+      title: "휴지통 비우기",
+      message: "휴지통의 ${refs.length}장을 모두 완전히 지웁니다. 되돌릴 수 없어요.",
+      confirmLabel: "비우기",
+      icon: Icons.delete_forever_outlined,
+    );
+    if (!confirmed || !mounted) {
+      return;
+    }
+    final done = await widget.state.deleteSafTrash(refs, rootUri: root);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      for (final uri in done) {
+        _forgetSafImage(uri);
+      }
+      _selectMode = false;
+      _selected.clear();
+    });
+    _showBriefSnack("휴지통을 비웠어요 (${done.length}장)");
   }
 
   // 짧게 뜨는 스낵바 (삭제/이동 등 — 하단 버튼을 덜 가리도록 짧고 floating)
@@ -1980,7 +2360,7 @@ class GalleryViewState extends State<GalleryView> {
     if (refs == null || from == null) {
       return;
     }
-    final toParent = _safDirUri ?? widget.state.safRootUri;
+    final toParent = _safDirUri ?? _rootUri;
     if (toParent == null) {
       return;
     }
@@ -2003,15 +2383,12 @@ class GalleryViewState extends State<GalleryView> {
   ) async {
     int moved = 0;
     for (final ref in refs) {
-      final newUri = await widget.state.moveSafImage(ref.uri, fromParent, toParent);
+      // 이름도 넘긴다 — 다른 저장 폴더 칸으로 갈 땐 복사 후 삭제로 옮긴다 (moveSafImage)
+      final newUri = await widget.state.moveSafImage(ref.uri, fromParent, toParent, name: ref.name);
       if (newUri != null) {
         moved++;
         // 이동된 파일은 목록/캐시에서 제거 (더 이상 원본 폴더에 없음)
-        _safImages.removeWhere((e) => e.uri == ref.uri);
-        _safBytesCache.remove(ref.uri);
-        _safThumbCache.remove(ref.uri);
-        _safThumbFutures.remove(ref.uri);
-        _safViewerFutures.remove(ref.uri);
+        _forgetSafImage(ref.uri);
       }
     }
     if (!mounted) {
@@ -2059,73 +2436,17 @@ class GalleryViewState extends State<GalleryView> {
     }
   }
 
-  Widget _buildFolderTile(_FolderInfo info) {
-    final name = _folderName(info.dir.path);
-    final bool hasPreview = info.previews.isNotEmpty;
-    return GestureDetector(
+  // 파일 폴더 칸 — 미리보기는 이미 읽어 둔 파일들, 모양은 _folderTile
+  Widget _buildFolderTile(_FolderInfo info, int columns) {
+    return _folderTile(
+      name: _baseName(info.dir.path),
+      count: info.imageCount,
+      columns: columns,
       onTap: () => _loadFolder(info.dir.path),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Container(
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.05),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.white12),
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // 미리보기 모자이크 (없으면 폴더 아이콘)
-              if (hasPreview)
-                _buildMosaic(info.previews)
-              else
-                const Center(child: Icon(Icons.folder, size: 40, color: Color(0xFFFFC107))),
-              // 하단 라벨 바: 폴더 아이콘 + 폴더명 + 장수 배지
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                  color: Colors.black.withValues(alpha: 0.55),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.folder, size: 13, color: Color(0xFFFFC107)),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          name,
-                          style: const TextStyle(color: Colors.white, fontSize: 11),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          "${info.imageCount}",
-                          style: const TextStyle(color: Colors.white, fontSize: 10),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+      preview: info.previews.isNotEmpty
+          ? _mosaicLayout(info.previews, _thumb)
+          : _emptyFolderPreview,
     );
-  }
-
-  // 폴더 미리보기 모자이크: 1장=꽉, 2장=좌우, 3~4장=2x2
-  Widget _buildMosaic(List<File> imgs) {
-    return _mosaicLayout(imgs, _thumb);
   }
 
   Widget _thumb(File f) {
@@ -2137,38 +2458,38 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
+  // 파일 이미지 칸 — 그림만 파일에서 읽고, 나머지는 _imageTile
   Widget _buildImageTile(File img, int imgIndex) {
-    final bool selected = _selectedPaths.contains(img.path);
+    return _imageTile(
+      id: img.path,
+      onOpen: () => _openImageViewer(imgIndex),
+      image: Image.file(
+        img,
+        fit: BoxFit.cover,
+        cacheWidth: 300,
+        errorBuilder: (ctx, err, st) => _brokenImage,
+      ),
+    );
+  }
+
+  /// 그리드의 이미지 칸 (SAF·파일 공용). 그림은 [image] 로 받고,
+  ///  누르기(열기/선택)·길게 누르기(선택 시작)·선택 표시는 여기서 한다.
+  ///  ⚠️ 예전엔 SAF 칸과 파일 칸이 이 부분을 각자 복사해 갖고 있었다.
+  //  [badge] 가 있으면 오른쪽 아래에 붙인다 (휴지통의 '남은 날' — 선택 중엔 숨긴다).
+  Widget _imageTile({
+    required String id,
+    required Widget image,
+    required VoidCallback onOpen,
+    Widget? badge,
+  }) {
+    final bool selected = _selected.contains(id);
     return GestureDetector(
-      onTap: () {
-        if (_selectMode) {
-          _toggleSelect(img);
-        } else {
-          _openImageViewer(imgIndex);
-        }
-      },
-      onLongPress: () {
-        if (!_selectMode) {
-          _enterSelect(img);
-        } else {
-          _toggleSelect(img);
-        }
-      },
+      onTap: () => _selectMode ? _toggleSelect(id) : onOpen(),
+      onLongPress: () => _selectMode ? _toggleSelect(id) : _enterSelect(id),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Image.file(
-              img,
-              fit: BoxFit.cover,
-              cacheWidth: 300,
-              errorBuilder: (ctx, err, st) => Container(
-                color: Colors.white10,
-                child: const Icon(Icons.broken_image, color: Colors.white24),
-              ),
-            ),
-          ),
+          ClipRRect(borderRadius: BorderRadius.circular(8), child: image),
           // 선택 모드: 빨강 테두리 + 좌상단 원형 체크 (히스토리 그리드와 동일)
           if (_selectMode)
             Container(
@@ -2199,29 +2520,37 @@ class GalleryViewState extends State<GalleryView> {
                 child: selected ? const Icon(Icons.check, color: Colors.white, size: 16) : null,
               ),
             ),
+          if (badge != null && !_selectMode) Positioned(right: 4, bottom: 4, child: badge),
         ],
       ),
     );
   }
 
-  void _enterSelect(File img) {
+  /// 그림을 읽지 못했을 때 (SAF·파일 공용)
+  static final Widget _brokenImage = Container(
+    color: Colors.white10,
+    child: const Icon(Icons.broken_image, color: Colors.white24),
+  );
+
+  // ── 다중 선택 (SAF·파일 공용) ── id: 파일은 경로, SAF 는 uri
+  void _enterSelect(String id) {
     setState(() {
       _selectMode = true;
-      _selectedPaths
+      _selected
         ..clear()
-        ..add(img.path);
+        ..add(id);
     });
   }
 
-  void _toggleSelect(File img) {
+  void _toggleSelect(String id) {
     setState(() {
-      if (_selectedPaths.contains(img.path)) {
-        _selectedPaths.remove(img.path);
-        if (_selectedPaths.isEmpty) {
+      if (_selected.contains(id)) {
+        _selected.remove(id);
+        if (_selected.isEmpty) {
           _selectMode = false;
         }
       } else {
-        _selectedPaths.add(img.path);
+        _selected.add(id);
       }
     });
   }
@@ -2229,54 +2558,115 @@ class GalleryViewState extends State<GalleryView> {
   void _exitSelect() {
     setState(() {
       _selectMode = false;
-      _selectedPaths.clear();
+      _selected.clear();
     });
   }
 
-  // 선택 모드 상단 툴바: [취소] [n장 선택됨] ... [ⓘ 메뉴] [삭제]
+  // 선택 모드 상단 툴바: [취소] [n장 선택됨] ... [ⓘ 메뉴] [이동] [삭제]
   Widget _buildSelectionToolbar() {
     return SizedBox(
       height: 40,
-      child: _selectionToolbarShared(
-        count: _selectedPaths.length,
-        onCancel: _exitSelect,
-        onInfo: _showSelectionMenu,
-        onDelete: _deleteSelected,
-      ),
+      child: _trashMode
+          // 휴지통: [되돌리기] [영구 삭제] 만 (ⓘ·이동 없음)
+          ? _selectionToolbarShared(
+              count: _selected.length,
+              onCancel: _exitSelect,
+              onInfo: null,
+              onRestore: () => _restoreTrashRefs(_safSelectedRefs()),
+              deleteLabel: "영구 삭제",
+              onDelete: () => _purgeTrashRefs(_safSelectedRefs()),
+            )
+          : _selectionToolbarShared(
+              count: _selected.length,
+              onCancel: _exitSelect,
+              onInfo: _showSelectionMenu,
+              // 이동은 SAF 에서만 (앱 폴더는 이동 기능이 없다)
+              onMove: _safMode ? () => _safMoveRefs(_safSelectedRefs()) : null,
+              onDelete: _deleteSelected,
+            ),
     );
   }
 
   // 선택된 파일 목록 (현재 폴더 _images 기준)
   List<File> _selectedFiles() {
-    return _images.where((f) => _selectedPaths.contains(f.path)).toList();
+    return _images.where((f) => _selected.contains(f.path)).toList();
   }
 
-  // 다중 히스토리 추가
-  Future<void> _batchAddToHistory(List<File> files) async {
-    await widget.state.addFilesToHistory(files, context);
+  // 여러 장을 히스토리에 추가 (SAF·파일 공용)
+  //  ⚠️ 예전엔 두 벌이라, 파일 쪽은 끝나고 아무 안내도 없었다.
+  Future<void> _batchAddToHistory(List<GalleryItem> items) async {
+    int added = 0;
+    for (final item in items) {
+      try {
+        final bytes = await item.readBytes();
+        if (bytes == null) {
+          continue;
+        }
+        if (!mounted) {
+          return;
+        }
+        await widget.state.addBytesToHistory(
+          bytes,
+          context,
+          filePath: item.filePath,
+          showSuccess: false,
+        );
+        added++;
+      } catch (e) {
+        debugPrint("히스토리 일괄 추가 실패 (${item.name}): $e");
+      }
+    }
     if (!mounted) {
       return;
     }
     _exitSelect();
+    showToast(context, "$added장을 히스토리에 추가했습니다.");
   }
 
-  // 선택 이미지 삭제 (실제 파일 삭제 → 폴더 새로고침)
+  // 선택 이미지 삭제 (SAF·파일 공용) — 기기에서 영구 삭제
+  //  ⚠️ 예전엔 두 벌이라 끝난 뒤 안내가 달랐다 (토스트 / 짧은 알림).
   Future<void> _deleteSelected() async {
-    final files = _selectedFiles();
-    if (files.isEmpty) {
+    final files = _safMode ? const <File>[] : _selectedFiles();
+    final refs = _safMode ? _safSelectedRefs() : const <({String uri, String name})>[];
+    final int count = files.length + refs.length;
+    if (count == 0) {
       return;
     }
+    // 저장 폴더(SAF)의 그림은 설정에 따라 휴지통으로 — 앱 폴더의 그림은 늘 바로 지운다
+    final String? root = _rootUri;
+    final bool toTrash = refs.isNotEmpty && widget.state.trashEnabled && root != null;
     final confirmed = await showConfirmDialog(
       context,
-      title: "이미지 삭제",
-      message: "${files.length}장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
-      confirmLabel: "삭제",
+      title: toTrash ? "휴지통으로 보내기" : "이미지 삭제",
+      message: toTrash
+          ? "$count장을 휴지통으로 보냅니다.\n${widget.state.trashKeepDays}일 뒤 자동으로 지워져요."
+          : "$count장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
+      confirmLabel: toTrash ? "보내기" : "삭제",
       icon: Icons.delete_outline,
     );
     if (!confirmed) {
       return;
     }
     int deleted = 0;
+    // root 는 toTrash 안에서 이미 null 이 아님이 확인된다 (Dart 가 toTrash 를 통해 알아본다)
+    if (toTrash) {
+      final done = await widget.state.trashSafImages(
+        refs,
+        fromDirUri: _safDirUri ?? root,
+        rootUri: root,
+      );
+      for (final uri in done) {
+        _forgetSafImage(uri);
+      }
+      deleted = done.length;
+    } else {
+      for (final ref in refs) {
+        if (await widget.state.deleteSafImage(ref.uri)) {
+          deleted++;
+          _forgetSafImage(ref.uri);
+        }
+      }
+    }
     for (final f in files) {
       try {
         await f.delete();
@@ -2291,36 +2681,58 @@ class GalleryViewState extends State<GalleryView> {
       return;
     }
     _exitSelect();
-    if (_currentPath != null) {
+    if (files.isNotEmpty && _currentPath != null) {
       await _loadFolder(_currentPath!);
     }
     if (mounted) {
-      showToast(context, "$deleted장을 삭제했습니다.");
+      showToast(context, toTrash ? "$deleted장을 휴지통으로 보냈습니다." : "$deleted장을 삭제했습니다.");
     }
   }
 
-  // 이미지 뷰어: 좌우 스와이프로 이전/다음 이미지
+  // 파일 이미지 뷰어 (좌우 스와이프로 이전/다음)
   void _openImageViewer(int startIndex) {
+    _openViewer(
+      countNow: () => _images.length,
+      start: startIndex,
+      nameOf: (i) => _baseName(_images[i].path),
+      pageOf: _ioViewerPage,
+      bytesOf: (i) => _images[i].readAsBytes(),
+      itemOf: (i, close) => _fileItem(_images[i]),
+    );
+  }
+
+  /// 공용 뷰어(_GalleryImageViewer)를 연다 (SAF·파일 공용).
+  ///  [countNow] 는 '지금' 개수 — 뷰어에서 지우면 목록이 줄어들어, 여는 순간의 개수로는 부족하다.
+  ///  ⚠️ 예전엔 SAF·파일이 이 여는 코드를 각자 갖고 있었고, 정보 줄 오류 처리도 파일 쪽에만 있었다.
+  void _openViewer({
+    required int Function() countNow,
+    required int start,
+    required String Function(int) nameOf,
+    required Widget Function(int) pageOf,
+    required Future<Uint8List?> Function(int) bytesOf,
+    required GalleryItem Function(int, VoidCallback) itemOf,
+  }) {
     showDialog(
       context: context,
       builder: (ctx) => _GalleryImageViewer(
-        itemCount: _images.length,
-        startIndex: startIndex,
-        nameOf: (i) => _ioFileName(_images[i]),
-        pageOf: _ioViewerPage,
+        itemCount: countNow(),
+        startIndex: start,
+        nameOf: nameOf,
+        pageOf: pageOf,
         infoOf: (i) async {
-          if (i >= _images.length) {
+          if (i >= countNow()) {
             return null;
           }
           try {
             // ⚠️ await 를 붙여야 한다. 없으면 _readImageInfo 안에서 난 오류가
             //    try 를 빠져나간 뒤에 터져 catch 가 잡지 못한다.
-            return await _readImageInfo(await _images[i].readAsBytes());
+            final bytes = await bytesOf(i);
+            return bytes == null ? null : await _readImageInfo(bytes);
           } catch (_) {
             return null; // 파일이 사라졌으면 정보 줄만 비운다
           }
         },
-        onLongPress: (i, close) => _showGalleryImageMenu(_fileItem(_images[i]), close),
+        onLongPress: (i, close) => _showGalleryImageMenu(itemOf(i, close), close),
       ),
     );
   }

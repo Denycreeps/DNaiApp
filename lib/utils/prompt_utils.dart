@@ -76,13 +76,17 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 40}) {
   // 3글자+, 스페이스 없음: 단어경계 우선 + 중간매칭 후순위
   final wordBoundaryResults = <String>[];
   final midWordResults = <String>[];
+  // '태그 안의 어떤 단어가 쿼리로 시작' = (첫 단어면 위의 startsWith) 아니면 ' 쿼리' 가 들어 있음.
+  //  ⚠️ 예전엔 태그마다 split(' ') 로 단어 목록을 새로 만들었다 — 태그가 십만 개가 넘어
+  //     글자를 칠 때마다 목록 수만 개를 만들고 버렸다. 결과는 같다.
+  final spacedLower = ' $lower';
 
   for (final tag in tags) {
     final tagLower = tag.toLowerCase();
     if (tagLower.startsWith(lower)) {
       // 태그 자체가 쿼리로 시작 (최우선)
       wordBoundaryResults.add(tag);
-    } else if (tagLower.split(' ').any((w) => w.startsWith(lower))) {
+    } else if (tagLower.contains(spacedLower)) {
       // 태그 안의 단어가 쿼리로 시작 (단어 경계 매칭)
       wordBoundaryResults.add(tag);
     } else if (tagLower.contains(lower)) {
@@ -250,7 +254,38 @@ class PromptUtils {
     return i;
   }
 
-  static String buildCompletedText(String beforeCursor, String tag) {
+  /// 가중치를 방금 연 자리('N::' 바로 뒤)에서 자동완성할 때 태그 뒤에 붙일 꼬리.
+  ///  커서 뒤에서 처음 만나는 가중치 표시를 본다 (NovelAI 가중치는 평면 — 'N::' 로 열려
+  ///  닫는 '::' 나 다음 'N::' 까지가 한 구간이다).
+  ///  · 그 표시 앞에 다른 태그가 있으면 → 그 태그들은 이미 이 구간 안이다. ', ' 로 이어 함께 둔다.
+  ///  · 닫는 '::' 가 바로 오면 → 꼬리 없이 (태그에 붙어 닫힌다).
+  ///  · 표시가 없거나, 새 가중치(N::)가 바로 오면 → 예전처럼 ' ::, ' 로 닫는다.
+  ///   예) '1.2::|test ::,'            에서 test2 → '1.2::test2, test ::,'
+  ///       '1.2::| ::,'                에서 test2 → '1.2::test2 ::,'
+  ///       '1.2::|test, 1.3::abc ::'   에서 test2 → '1.2::test2, test, 1.3::abc ::'
+  ///       '1.2::|'                     에서 test2 → '1.2::test2 ::, '
+  ///  ⚠️ 예전엔 커서 뒤를 보지 않고 늘 닫아서 '1.2::test2 ::, test ::,' 처럼
+  ///     원래 구간을 둘로 쪼개고(test 는 가중치 밖으로) 닫는 표시가 두 번 생겼다.
+  static String _weightTail(String afterCursor) {
+    final m = _weightMarker.firstMatch(afterCursor);
+    if (m == null) {
+      return ' ::, ';
+    }
+    // 표시 앞이 공백·쉼표뿐인지 (= 커서와 표시 사이에 다른 태그가 없는지)
+    final bool nothingBefore = _leadingBlank.firstMatch(afterCursor)!.end >= m.start;
+    if (!nothingBefore) {
+      return ', ';
+    }
+    return m.group(1) == null ? '' : ' ::, ';
+  }
+
+  // 가중치 표시 — 'N::'(여는 표시) 또는 '::'(닫는 표시).
+  //  여는 표시의 숫자는 태그 이름에 붙은 숫자가 아니어야 한다 ('test2 ::' 의 2 는 여는 표시가 아니다).
+  static final RegExp _weightMarker = RegExp(r'(?<![\w.])(-?\d+(?:\.\d+)?)\s*::|::');
+  static final RegExp _leadingBlank = RegExp(r'^[\s,]*');
+
+  /// [afterCursor] 는 커서 뒤 글 — 가중치를 이미 닫아 뒀는지 볼 때만 쓴다 (_weightTail).
+  static String buildCompletedText(String beforeCursor, String tag, {String afterCursor = ''}) {
     // 특별 처리: 선택한 태그가 'artist:' 같은 접두사 자체면
     // 뒤에 작가명을 이어 입력해야 하므로 쉼표/공백/:: 없이 그대로 끝낸다.
     // (예: "2::" 뒤에서 artist: 선택 → "2::artist:" 로 끝)
@@ -341,8 +376,8 @@ class PromptUtils {
           lastDelimiter + 1,
         ); // "...artist:"
         if (weightOpen) {
-          // 2::artist:lk → 2::artist:lk149 ::,
-          return "$head$tag ::, ";
+          // 2::artist:lk → 2::artist:lk149 ::,  (뒤에서 이미 닫혀 있으면 닫지 않는다 — _weightTail)
+          return "$head$tag${_weightTail(afterCursor)}";
         } else {
           // artist:lk → artist:lk149,
           return "$head$tag, ";
@@ -355,7 +390,8 @@ class PromptUtils {
           beforeCursor[lastDelimiter - 1] == ':' &&
           (lastDelimiter < 2 || beforeCursor[lastDelimiter - 2] != ':');
       if (isDoubleColon) {
-        return "${beforeCursor.substring(0, lastDelimiter)}:$tag ::, ";
+        // 1.2::te → 1.2::test ::,  (뒤에서 이미 닫혀 있으면 닫지 않는다 — _weightTail)
+        return "${beforeCursor.substring(0, lastDelimiter)}:$tag${_weightTail(afterCursor)}";
       } else {
         return "${beforeCursor.substring(0, lastDelimiter)}:$tag, ";
       }
@@ -380,17 +416,18 @@ class PromptUtils {
   // 자동완성 삽입 시, 커서 뒤(afterCursor)가 쉼표/공백으로 시작하면
   // 중복 쉼표가 생기지 않도록 앞쪽 쉼표·공백을 제거한다.
   // 단, newBefore가 이미 ", "로 끝날 때만 정리 (쉼표 안 붙는 구문 ( { | 는 보존).
+  //  ⚠️ 줄바꿈은 지우지 않는다 — 사용자가 줄을 나눠 둔 구성(태그 줄 / 자연어 줄)이 사라진다.
+  //     예전엔 공백(\s)에 줄바꿈까지 넣어 지워서, 'test3,⏎⏎자연어…' 의 test3 을 자동완성하면
+  //     'test3, 자연어…' 로 한 줄에 붙어 버렸다.
   static String trimAfterCursor(String newBefore, String afterCursor) {
     if (!newBefore.endsWith(', ')) {
       return afterCursor;
     }
-    // afterCursor 앞쪽 정리:
+    // afterCursor 앞쪽 정리 (공백은 스페이스·탭만):
     // - 쉼표가 있으면: 공백+쉼표+공백 제거 (", red" → "red", 중복 쉼표 방지)
-    // - 쉼표가 없으면: 선행 공백만 제거 (" red" → "red", 공백 2개 방지)
-    if (RegExp(r'^\s*,').hasMatch(afterCursor)) {
-      return afterCursor.replaceFirst(RegExp(r'^\s*,\s*'), '');
-    }
-    return afterCursor.replaceFirst(RegExp(r'^\s+'), '');
+    // - 쉼표가 없으면: 앞 공백만 제거 (" red" → "red", 공백 2개 방지)
+    // - 그 뒤의 줄바꿈은 그대로 (",⏎⏎자연어" → "⏎⏎자연어")
+    return afterCursor.replaceFirst(RegExp(r'^[ \t]*(,[ \t]*)?'), '');
   }
 
   // 자동완성 제안의 표시용 텍스트 (contains 마커 '* ' 제거 + 언더스코어를 공백으로)
@@ -427,7 +464,7 @@ class PromptUtils {
 
     String beforeCursor = text.substring(0, cursor);
     String afterCursor = text.substring(cursor);
-    String newBefore = buildCompletedText(beforeCursor, tag);
+    String newBefore = buildCompletedText(beforeCursor, tag, afterCursor: afterCursor);
     afterCursor = trimAfterCursor(newBefore, afterCursor);
 
     controller.value = TextEditingValue(

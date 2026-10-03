@@ -40,6 +40,71 @@ Future<(int, int)?> readImageSize(Uint8List bytes) async {
   }
 }
 
+/// 그림의 가로·세로를 파일 머리만 보고 '바로' 읽는다 — 기다릴 필요가 없어 화면을 그리는 도중에도 쓴다.
+///  PNG · JPEG · WebP · GIF 를 알아본다. 모르는 형식이거나 깨졌으면 null.
+///  (확실하지만 기다려야 하는 방법은 [readImageSize])
+(int, int)? imageSizeFromHeader(Uint8List b) {
+  final int n = b.length;
+  int be16(int i) => (b[i] << 8) | b[i + 1];
+  int le16(int i) => b[i] | (b[i + 1] << 8);
+  int be32(int i) => (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
+  int le24(int i) => b[i] | (b[i + 1] << 8) | (b[i + 2] << 16);
+  (int, int)? ok(int w, int h) => (w > 0 && h > 0) ? (w, h) : null;
+
+  // PNG — 서명 8바이트 뒤 첫 청크(IHDR)에 가로·세로
+  if (isPng(b) && n >= 24) {
+    return ok(be32(16), be32(20));
+  }
+  // GIF — 'GIF' 뒤 논리 화면 크기
+  if (n >= 10 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) {
+    return ok(le16(6), le16(8));
+  }
+  // WebP — 'RIFF' .... 'WEBP' 뒤 첫 청크 종류에 따라 자리가 다르다
+  if (n >= 30 &&
+      b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
+      b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+    final String chunk = String.fromCharCodes(b.sublist(12, 16));
+    if (chunk == 'VP8 ') {
+      return ok(le16(26) & 0x3FFF, le16(28) & 0x3FFF); // 손실 압축
+    }
+    if (chunk == 'VP8L') {
+      final int bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24); // 무손실
+      return ok((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1);
+    }
+    if (chunk == 'VP8X') {
+      return ok(le24(24) + 1, le24(27) + 1); // 확장 (투명·애니메이션)
+    }
+    return null;
+  }
+  // JPEG — 표지(FF xx)를 따라가다 프레임 머리(SOFn)에서 읽는다
+  if (isJpeg(b)) {
+    int i = 2;
+    while (i + 9 < n) {
+      if (b[i] != 0xFF) {
+        return null; // 표지 자리가 아니다 — 깨진 파일
+      }
+      final int m = b[i + 1];
+      if (m == 0xFF) {
+        i++; // 채움 바이트
+        continue;
+      }
+      if (m == 0x01 || (m >= 0xD0 && m <= 0xD8)) {
+        i += 2; // 길이가 없는 표지
+        continue;
+      }
+      if (m == 0xD9 || m == 0xDA) {
+        return null; // 프레임 머리 전에 끝났다
+      }
+      if (m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8 && m != 0xCC) {
+        return ok(be16(i + 7), be16(i + 5)); // SOFn: 정밀도(1) 세로(2) 가로(2)
+      }
+      i += 2 + be16(i + 2);
+    }
+    return null;
+  }
+  return null;
+}
+
 /// WebP 로 굽는다 (안드로이드 네이티브 인코더). 실패하면 null — 부르는 쪽이 옛 방식으로 대신한다.
 ///
 /// [maxSide] 긴 변을 이 길이 이하로 줄인다. 키우지는 않는다. null 이면 원래 크기 그대로.

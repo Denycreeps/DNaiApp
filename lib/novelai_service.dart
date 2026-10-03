@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show File; // 태그 분류 캐시 파일
 import 'dart:math';
 import 'dart:typed_data'; // BytesBuilder (multipart 본문)
 import 'package:http/http.dart' as http;
@@ -7,6 +8,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart' show getApplicationDocumentsDirectory;
 import 'package:image/image.dart' as img;
 import 'tag_filters.dart';
 import 'models/model_caps.dart';
@@ -59,7 +61,14 @@ class NaiResponse {
 // ============================================================================
 // [최종 핵심 해결책] 원본 이미지와 마스크 모두 무조건 '순수 3채널(RGB)' 강제 변환
 // ============================================================================
-String _processImage3Channel(Uint8List bytes) {
+//  [job] = (그림, 그림을 둘 가로·세로, 보낼 가로·세로).
+//  서버는 그림 크기와 width·height 가 다르면 거부하거나 어긋나게 그린다. 그래서
+//   1) 그림을 '둘 크기'로 맞추고 (비율은 부르는 쪽이 지켜 준다 — AppState.i2iSendPlan)
+//   2) 보낼 크기(64 의 배수)까지 모자란 오른쪽·아래는 가장자리 픽셀을 늘여 채운다.
+//  채운 부분은 결과에서 다시 잘라낸다 (_cropResultToContent) — 그림을 늘이거나 누르지 않는다.
+//  (보낼 크기가 0 이하면 예전처럼 64 의 배수로만 내린다)
+String _processImage3Channel((Uint8List, int, int, int, int) job) {
+  final (bytes, fitW, fitH, sendW, sendH) = job;
   img.Image? decoded = img.decodeImage(bytes);
   if (decoded == null) {
     String b64 = base64Encode(bytes);
@@ -69,21 +78,31 @@ String _processImage3Channel(Uint8List bytes) {
     return b64.trim();
   }
 
-  // 🚨 알파 채널을 제거하고 무조건 3채널(RGB) 이미지로 덮어씌웁니다.
-  // V4.5 서버는 1채널이나 4채널 데이터가 들어오면 텐서 차원 오류로 크래시를 냅니다.
-  final rgbImage = img.Image(width: decoded.width, height: decoded.height, numChannels: 3);
-  for (var y = 0; y < decoded.height; y++) {
-    for (var x = 0; x < decoded.width; x++) {
-      final p = decoded.getPixel(x, y);
-      rgbImage.setPixelRgb(x, y, p.r, p.g, p.b);
-    }
+  final int tW = sendW > 0 ? sendW : (decoded.width ~/ 64) * 64;
+  final int tH = sendH > 0 ? sendH : (decoded.height ~/ 64) * 64;
+  // 그림을 둘 크기 — 없거나 보낼 크기보다 크면 보낼 크기 그대로 (채울 곳 없음)
+  final int cW = (fitW > 0 && fitW <= tW) ? fitW : tW;
+  final int cH = (fitH > 0 && fitH <= tH) ? fitH : tH;
+  // 16비트 PNG 등은 8비트로 — 아래에서 색을 8비트 판에 옮기므로 (안 하면 하얗게 날아간다)
+  if (decoded.format != img.Format.uint8) {
+    decoded = decoded.convert(format: img.Format.uint8);
+  }
+  // 먼저 줄인다 — 큰 사진을 원래 크기로 한 픽셀씩 도는 것보다 훨씬 빠르다
+  if (decoded.width != cW || decoded.height != cH) {
+    decoded = img.copyResize(decoded, width: cW, height: cH);
   }
 
-  int tW = (rgbImage.width ~/ 64) * 64;
-  int tH = (rgbImage.height ~/ 64) * 64;
-  img.Image finalImg = rgbImage;
-  if (rgbImage.width != tW || rgbImage.height != tH) {
-    finalImg = img.copyResize(rgbImage, width: tW, height: tH);
+  // 🚨 알파 채널을 제거하고 무조건 3채널(RGB) 이미지로 덮어씌웁니다.
+  // V4.5 서버는 1채널이나 4채널 데이터가 들어오면 텐서 차원 오류로 크래시를 냅니다.
+  //  동시에 보낼 크기로 채운다 — 그림 밖(오른쪽·아래)은 마지막 열·행을 늘여 이어 붙인다
+  //  (검정으로 채우면 경계가 생겨 가장자리에 테두리가 비칠 수 있다).
+  final finalImg = img.Image(width: tW, height: tH, numChannels: 3);
+  for (var y = 0; y < tH; y++) {
+    final int sy = y < cH ? y : cH - 1;
+    for (var x = 0; x < tW; x++) {
+      final p = decoded.getPixel(x < cW ? x : cW - 1, sy);
+      finalImg.setPixelRgb(x, y, p.r, p.g, p.b);
+    }
   }
 
   final pngBytes = Uint8List.fromList(img.encodePng(finalImg));
@@ -92,6 +111,72 @@ String _processImage3Channel(Uint8List bytes) {
     return base64String.split(',').last.trim();
   }
   return base64String.trim();
+}
+
+// ============================================================================
+// i2i 결과 자르기 — 채워 보낸 오른쪽·아래를 걷어내 원래 그림 크기로 되돌린다
+// ============================================================================
+//  [job] = (결과 PNG, 남길 가로, 남길 세로). 왼쪽 위 기준으로 자른다 (_processImage3Channel 이
+//  그림을 왼쪽 위에 두고 오른쪽·아래만 채우므로).
+//  NovelAI 가 넣어 둔 글자 청크(프롬프트·설정)는 그대로 옮겨 담는다 — 그래야 히스토리·i2i 가
+//  그림 정보를 계속 읽는다. 크기 정보는 IHDR 에서 읽으므로 자른 크기로 바르게 나온다.
+//  자를 게 없거나 PNG 가 아니거나 실패하면 받은 그대로 돌려준다.
+Uint8List _cropResultToContent((Uint8List, int, int) job) {
+  final (bytes, w, h) = job;
+  try {
+    if (!isPng(bytes)) {
+      return bytes;
+    }
+    final decoded = img.decodePng(bytes);
+    if (decoded == null ||
+        decoded.width < w ||
+        decoded.height < h ||
+        (decoded.width == w && decoded.height == h)) {
+      return bytes;
+    }
+    final cropped = img.copyCrop(decoded, x: 0, y: 0, width: w, height: h);
+    return _withPngTextChunks(img.encodePng(cropped), bytes);
+  } catch (e) {
+    debugPrint('i2i 결과 자르기 실패(받은 그대로 사용): $e');
+    return bytes;
+  }
+}
+
+/// [src] PNG 의 글자 청크(tEXt·zTXt·iTXt)를 [png] 의 IHDR 바로 뒤에 그대로 끼워 넣는다.
+///  청크는 CRC 까지 통째로 옮기므로 다시 계산할 필요가 없다.
+Uint8List _withPngTextChunks(Uint8List png, Uint8List src) {
+  int be32(Uint8List b, int i) => (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
+
+  final text = BytesBuilder(copy: false);
+  int o = 8; // PNG 서명 뒤
+  while (o + 12 <= src.length) {
+    final int end = o + 12 + be32(src, o); // 길이(4) 종류(4) 자료 CRC(4)
+    if (end > src.length) {
+      break;
+    }
+    final String type = String.fromCharCodes(src.sublist(o + 4, o + 8));
+    if (type == 'tEXt' || type == 'zTXt' || type == 'iTXt') {
+      text.add(src.sublist(o, end));
+    }
+    if (type == 'IEND') {
+      break;
+    }
+    o = end;
+  }
+
+  // 새 PNG 의 첫 청크는 늘 IHDR(자료 13바이트) — 아니면 건드리지 않는다
+  const int ihdrEnd = 8 + 12 + 13;
+  if (text.isEmpty ||
+      png.length < ihdrEnd ||
+      be32(png, 8) != 13 ||
+      String.fromCharCodes(png.sublist(12, 16)) != 'IHDR') {
+    return png;
+  }
+  final out = BytesBuilder(copy: false)
+    ..add(png.sublist(0, ihdrEnd))
+    ..add(text.takeBytes())
+    ..add(png.sublist(ihdrEnd));
+  return out.takeBytes();
 }
 
 // ============================================================================
@@ -149,6 +234,102 @@ String _processMaskForInfill(Uint8List bytes) {
   return base64Encode(Uint8List.fromList(img.encodePng(mask)));
 }
 
+// ============================================================================
+// 프롬프트 검색 — 화면 밖(compute isolate)에서 도는 부분
+// ============================================================================
+
+/// 검색 페이지에서 쓰는 값만 뽑은 포스트 한 개
+typedef _SlimPost = ({int id, int width, int height, String? rating, List<String> tags});
+
+/// 검색 페이지 하나를 푼 결과.
+///  [raw]   거르기 전 받은 포스트 수 (0 이면 결과가 끝났다는 뜻)
+///  [total] 서버가 알려 준 전체 검색 결과 수 (@attributes.count, 없으면 null)
+///  [posts] 쓸 만한 포스트 (512 미만·태그 없는 것은 이미 뺐다)
+typedef _PostsPage = ({int raw, int? total, List<_SlimPost> posts});
+
+/// 겔부루 검색 페이지 응답(바이트) → 쓸 값만 뽑는다.
+///  예전엔 화면 쪽에서 같은 응답을 두 번(개수 세기 + 내용) 풀었다. 페이지 하나가 100~200KB 라
+///  수십 페이지를 받는 동안 화면이 자꾸 끊겼다 → 여기서 한 번만, 화면 밖에서 푼다.
+///  돌려보내는 것도 필요한 값뿐이라 가볍다.
+_PostsPage _slimPostsPage(Uint8List body) {
+  String text;
+  try {
+    text = utf8.decode(body);
+  } catch (_) {
+    text = latin1.decode(body); // UTF-8 이 아니면 (예전 response.body 와 같은 방식)
+  }
+  final decoded = jsonDecode(text);
+  if (decoded is! Map) {
+    return (raw: 0, total: null, posts: const <_SlimPost>[]);
+  }
+  final attrs = decoded['@attributes'];
+  final int? total = attrs is Map ? int.tryParse('${attrs['count']}') : null;
+  final rawPosts = decoded['post'];
+  final List list = rawPosts is List ? rawPosts : (rawPosts is Map ? [rawPosts] : const []);
+  final posts = <_SlimPost>[];
+  for (final p in list) {
+    if (p is! Map) {
+      continue;
+    }
+    final idv = p['id'];
+    final int? id = idv is int ? idv : int.tryParse('$idv');
+    if (id == null) {
+      continue;
+    }
+    final int width = int.tryParse('${p['width']}') ?? 0;
+    final int height = int.tryParse('${p['height']}') ?? 0;
+    if (width < 512 || height < 512) {
+      continue; // 너무 작은 그림은 프롬프트 재료로 쓰지 않는다
+    }
+    final tagString = p['tags'];
+    if (tagString is! String || tagString.isEmpty) {
+      continue;
+    }
+    posts.add((
+      id: id,
+      width: width,
+      height: height,
+      rating: p['rating']?.toString(),
+      tags: tagString.split(' ').where((e) => e.isNotEmpty).toList(),
+    ));
+  }
+  return (raw: list.length, total: total, posts: posts);
+}
+
+/// 검색어 하나(묶음 + 섞기 순서)에서 받을 페이지 범위
+class _PageRun {
+  _PageRun(this.query, this.from, this.count);
+  final String query; // 주소에 넣을 수 있게 바꾼 검색어
+  final int from; // 첫 페이지 번호 (pid)
+  final int count; // 받을 페이지 수
+  bool ended = false; // 결과가 끝났거나(빈 페이지) 계속 실패한다 → 남은 차례는 건너뛴다
+  int fails = 0; // 연달아 실패한 페이지 수
+}
+
+/// 태그 분류 캐시 파일 → 지도 (화면 밖에서 읽고 푼다). 형식이 틀리면 예외.
+Future<Map<String, int>> _readTagCacheFile(String path) async =>
+    _toTagCategoryMap(jsonDecode(await File(path).readAsString()));
+
+/// 예전 버전이 설정에 둔 캐시(JSON 글자) → 지도
+Map<String, int> _decodeTagCacheString(String raw) => _toTagCategoryMap(jsonDecode(raw));
+
+Map<String, int> _toTagCategoryMap(Object? v) {
+  if (v is! Map) {
+    throw const FormatException('태그 분류 캐시 형식이 아님');
+  }
+  final out = <String, int>{}; // 파일에 적힌 순서(오래 안 쓴 것 → 최근 것)를 그대로 지킨다
+  v.forEach((k, val) {
+    final int? n = val is int ? val : int.tryParse('$val');
+    if (k is String && n != null) {
+      out[k] = n;
+    }
+  });
+  return out;
+}
+
+/// 지도 → JSON 바이트 (화면 밖에서)
+Uint8List _encodeTagCache(Map<String, int> m) => utf8.encode(jsonEncode(m));
+
 class NovelAiService {
   static const String apiUrl = "https://image.novelai.net/ai/generate-image";
   static const String encodeVibeUrl = "https://image.novelai.net/ai/encode-vibe";
@@ -167,6 +348,14 @@ class NovelAiService {
   // ── Cloudflare Workers 프록시 ──────────────────────────────────────────
   static const String _danbooruProxy = "https://danbooru-proxy.dnaiapp.workers.dev";
   static const String _gelbooruProxy = "https://gelbooru-proxy.dnaiapp.workers.dev";
+  // 겔부루는 브라우저가 아닌 요청을 막는 경우가 있어 브라우저처럼 보이게 한다
+  static const String _browserUserAgent =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36';
+
+  /// 프롬프트 검색에서 받을 페이지 수 기본값 (설정 화면도 이 값을 보여 준다).
+  ///  본인 API 키가 없으면 모두가 같이 쓰는 공용 키로 검색하므로 적게 받는다 (429 를 피하려고).
+  static const int searchPagesWithKey = 40;
+  static const int searchPagesWithoutKey = 15;
   // ───────────────────────────────────────────────────────────────────────
 
   // 응답 본문을 UTF-8로 안전하게 읽는다.
@@ -204,10 +393,36 @@ class NovelAiService {
 
   /// 선행/긍정/후행처럼 여러 구획을 하나의 프롬프트로 잇는다.
   ///  비어 있는 구획은 건너뛰어 앞뒤에 쉼표가 남지 않게 하고,
-  ///  구획 사이에만 ", "를 넣는다. 각 구획 '안'의 서식은 그대로 유지된다.
+  ///  구획 사이에만 쉼표를 넣는다. 각 구획 '안'의 서식은 그대로 유지된다.
+  ///  구획 끝(또는 다음 구획 앞)에 줄바꿈을 넣어 두었으면 그 줄바꿈도 살려 잇는다.
+  ///   예) 긍정 '자연어 문장,⏎' + 후행 'masterpiece' → '자연어 문장,⏎masterpiece'
+  ///  ⚠️ 예전엔 늘 ", " 로 이어서, 구획 끝 줄바꿈이 사라지고 한 줄로 붙었다
+  ///     (sanitizePrompt 가 맨 끝의 빈 조각을 버리면서 줄바꿈도 같이 버려지기 때문).
   String joinPromptSections(List<String> sections) {
-    return sections.map(sanitizePrompt).where((e) => e.isNotEmpty).join(', ');
+    final out = StringBuffer();
+    String? prevRaw; // 앞 구획(정리 전) — 끝에 줄바꿈을 뒀는지 본다
+    for (final raw in sections) {
+      final s = sanitizePrompt(raw);
+      if (s.isEmpty) {
+        continue;
+      }
+      if (prevRaw != null) {
+        final int breaks = max(
+          _newlinesIn(_trailingBlank.firstMatch(prevRaw)),
+          _newlinesIn(_leadingBlank.firstMatch(raw)),
+        );
+        out.write(breaks > 0 ? ',${'\n' * breaks}' : ', ');
+      }
+      out.write(s);
+      prevRaw = raw;
+    }
+    return out.toString();
   }
+
+  // 구획 끝·앞의 '빈 자리' (공백·줄바꿈·쉼표). 여기에 든 줄바꿈 수만큼 줄을 나눠 잇는다.
+  static final RegExp _trailingBlank = RegExp(r'[\s,]*$');
+  static final RegExp _leadingBlank = RegExp(r'^[\s,]*');
+  static int _newlinesIn(RegExpMatch? m) => m == null ? 0 : '\n'.allMatches(m[0]!).length;
 
   // Gelbooru rating 정규화: "explicit" → "e", "questionable" → "q" 등
   static String _normalizeRating(String? raw) {
@@ -215,6 +430,29 @@ class NovelAiService {
       return "g";
     }
     return raw.substring(0, 1).toLowerCase();
+  }
+
+  /// 작가·작품으로 '확실한' 이름 — 캐릭터일 리 없으니 카테고리를 물을 필요가 없다.
+  ///  (에셋 사전 filter_names 는 작가·작품·캐릭터가 섞여 있어 여기서 판단하지 않는다 → 물어본다)
+  static bool _isKnownNonCharacterName(String t) =>
+      TagFilters.artistNames.contains(t) ||
+      t.endsWith('_(artist)') ||
+      TagFilters.copyrightNames.contains(t);
+
+  /// 카테고리 조회에 실패했을 때 쓰는 캐릭터 판정 — 캐릭터 사전에 있거나,
+  ///  '이름_(작품명)' 모양이고 괄호 안이 알려진 작품이면 캐릭터로 본다.
+  ///  (예: kisaki_(blue_archive), hu_tao_(genshin_impact))
+  static bool _looksLikeCharacter(String t) {
+    if (TagFilters.characterNames.contains(t)) {
+      return true;
+    }
+    final m = RegExp(r'^.+_\(([^)]+)\)$').firstMatch(t);
+    if (m == null) {
+      return false;
+    }
+    final inner = m.group(1)!;
+    return TagFilters.copyrightNames.contains(inner) ||
+        TagFilters.copyrightTags.contains(inner.replaceAll('_', ' '));
   }
 
   // ============================================================================
@@ -283,9 +521,10 @@ class NovelAiService {
     'closed eyes',
   };
 
-  List<String> _reorderTagsByPriority(List<String> tags) {
+  List<String> _reorderTagsByPriority(List<String> tags, {Set<String> chars = const {}}) {
     List<String> countGroup = [];
     List<String> soloGroup = [];
+    List<String> charGroup = [];
     List<String> viewGroup = [];
     List<String> gazeGroup = [];
     List<String> bgGroup = [];
@@ -297,6 +536,8 @@ class NovelAiService {
         countGroup.add(tag);
       } else if (_soloTags.contains(lower)) {
         soloGroup.add(tag);
+      } else if (chars.contains(tag)) {
+        charGroup.add(tag);
       } else if (_viewpointTags.contains(lower)) {
         viewGroup.add(tag);
       } else if (_gazeTags.contains(lower)) {
@@ -310,8 +551,17 @@ class NovelAiService {
 
     rest.shuffle();
     bgGroup.shuffle();
-    // 인원수 → solo → 시점 → 시선 → 일반(셔플) → 배경(맨 뒤)
-    return [...countGroup, ...soloGroup, ...viewGroup, ...gazeGroup, ...rest, ...bgGroup];
+    // 인원수 → solo → 캐릭터 → 시점 → 시선 → 일반(셔플) → 배경(맨 뒤)
+    //  (단보루 관례대로 '1girl, hatsune miku, …' 처럼 캐릭터를 앞쪽에 둔다)
+    return [
+      ...countGroup,
+      ...soloGroup,
+      ...charGroup,
+      ...viewGroup,
+      ...gazeGroup,
+      ...rest,
+      ...bgGroup,
+    ];
   }
 
   bool _isBackgroundTag(String lower) {
@@ -328,35 +578,190 @@ class NovelAiService {
   // ============================================================================
   // 태그 카테고리 조회: 1차 Danbooru(정확) → 2차 Gelbooru(겔부루 전용 태그 커버).
   // Danbooru에 없는 겔부루 전용 작가가 '일반'으로 오인돼 프롬프트에 새는 것을 방지한다.
-  // 응답에 포스트가 몇 개 들어있는지 (조기 종료 판정용, 필터 전 원시 개수)
-  int _countPostsInResponse(http.Response? response) {
-    if (response == null || response.statusCode != 200) {
-      return 0;
+
+  // ── 태그 분류 캐시 (태그 이름 → 종류 번호: 0 일반·1 작가·3 작품·4 캐릭터·5 메타) ──
+  //  예전엔 SharedPreferences 에 JSON 글자 하나(최대 5만 개, ~1MB)로 두고 검색마다 통째로 풀고 다시 썼다.
+  //  설정 파일(XML)은 값 하나만 바뀌어도 전체를 다시 쓰고, 앱을 켤 때 통째로 읽힌다 → 파일로 뺐다.
+  //   · 처음 쓸 때 한 번만 파일에서 읽어(화면 밖) 메모리에 들고 있는다.
+  //   · 꽉 차면 '가장 오래 안 쓴' 태그부터 버린다 — 캐시에서 찾을 때마다 맨 뒤로 보낸다.
+  //     (예전엔 '먼저 들어온' 순서로 버려서 자주 나오는 태그도 밀려났다)
+  //   · 새 태그가 들어온 검색 끝에만 쓴다. 쓰기는 기다리지 않는다 (검색 결과와 상관없다).
+  static const int _tagCacheMax = 50000;
+  // 예전 버전이 설정에 쓰던 이름들 (v1·v2 는 오염 가능성 때문에 예전부터 버리던 것)
+  static const List<String> _legacyTagCacheKeys = [
+    'tag_category_cache_v3',
+    'tag_category_cache_v2',
+    'danbooru_tag_cache',
+  ];
+  static Map<String, int>? _tagCache; // null = 아직 안 읽음
+  static Future<Map<String, int>>? _tagCacheLoading;
+  static Future<bool> _tagCacheSaving = Future.value(true);
+
+  static Future<File> _tagCacheFile() async =>
+      File('${(await getApplicationDocumentsDirectory()).path}/tag_category_cache.json');
+
+  /// 캐시를 (처음 한 번만) 읽어 온다. 실패해도 빈 캐시 — 검색은 멈추지 않는다.
+  ///  잠깐 못 읽은 경우(메모리 부족 등)엔 이번 검색만 '임시' 빈 캐시를 주고 기억하지 않는다 →
+  ///  다음 검색에 다시 읽는다. 임시 캐시는 저장하지 않는다 (멀쩡한 5만 개 파일을 덮지 않게).
+  static Future<Map<String, int>> _loadTagCache() {
+    final ready = _tagCache;
+    if (ready != null) {
+      return Future.value(ready);
     }
-    try {
-      final decoded = jsonDecode(_utf8Body(response));
-      if (decoded['post'] == null) {
-        return 0;
+    return _tagCacheLoading ??= _readTagCacheOnce().then((m) {
+      _tagCacheLoading = null;
+      if (m == null) {
+        return <String, int>{};
       }
-      return (decoded['post'] as List).length;
-    } catch (_) {
-      return 0;
+      return _tagCache = m;
+    });
+  }
+
+  /// 예전 버전이 설정에 남긴 태그 분류 캐시가 있으면 지금 파일로 옮긴다 (앱을 켤 때, 기다리지 않는다).
+  ///  검색을 안 하면 옮길 기회가 없어 ~1MB 가 설정 파일에 남아, 설정이 바뀔 때마다 같이 다시 쓰였다.
+  static Future<void> migrateLegacyTagCache() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (_legacyTagCacheKeys.any(prefs.containsKey)) {
+        await _loadTagCache(); // 읽으면서 옮기고, 옮긴 뒤 설정 쪽을 지운다
+      }
+    } catch (e) {
+      debugPrint('태그 분류 캐시 옮기기 실패 (다음에 다시): $e');
     }
+  }
+
+  /// 반환 null = 잠깐 못 읽음 (위 _loadTagCache 설명)
+  static Future<Map<String, int>?> _readTagCacheOnce() async {
+    try {
+      final f = await _tagCacheFile();
+      Map<String, int> m = {};
+      bool fromFile = false;
+      if (await f.exists()) {
+        try {
+          m = await compute(_readTagCacheFile, f.path);
+          fromFile = true;
+        } on FormatException catch (e) {
+          // 내용이 깨졌다 — 캐시라 살릴 필요가 없다. 새로 쌓는다 (아래에서 덮어쓴다)
+          debugPrint('태그 분류 캐시 파일이 깨짐 (새로 쌓습니다): $e');
+        }
+      }
+      // 예전 버전이 설정에 둔 캐시 → 합친다.
+      //  처음 올라왔을 때뿐 아니라, 옛 버전으로 내렸다가 다시 올린 경우에도 그동안 쌓인 걸 살린다.
+      final prefs = await SharedPreferences.getInstance();
+      final legacy = prefs.getString('tag_category_cache_v3');
+      if (legacy != null) {
+        try {
+          final old = await compute(_decodeTagCacheString, legacy);
+          // 파일 쪽이 더 최근에 쓴 것 — 파일에 없는 태그만 앞(오래된 쪽)에 붙인다
+          final merged = <String, int>{};
+          old.forEach((k, v) {
+            if (!m.containsKey(k)) {
+              merged[k] = v;
+            }
+          });
+          merged.addAll(m);
+          m = merged;
+          debugPrint('예전 태그 분류 캐시 ${old.length}개를 파일로 옮깁니다');
+        } catch (e) {
+          debugPrint('예전 태그 분류 캐시 읽기 실패 (버립니다): $e');
+        }
+      }
+      // 파일이 없었거나(처음·깨짐) 설정에 예전 사본이 남아 있으면 지금 한 번 쓴다.
+      //  쓰기에 성공하면 설정 쪽 사본은 _writeTagCacheFile 이 지운다 (실패하면 남겨 두고 다음에).
+      if (!fromFile || _legacyTagCacheKeys.any(prefs.containsKey)) {
+        await _writeTagCacheFile(m);
+      }
+      return m;
+    } catch (e) {
+      debugPrint('태그 분류 캐시 읽기 실패 (이번 검색은 저장하지 않습니다): $e');
+      return null;
+    }
+  }
+
+  /// 캐시를 파일로 쓴다 (JSON 만들기는 화면 밖, 쓰기는 임시 파일 → 이름 바꾸기). 차례로 돈다.
+  ///  반환: 썼는지. 쓰고 나면 예전 버전이 설정에 남긴 캐시를 지운다.
+  static Future<bool> _writeTagCacheFile(Map<String, int> cache) {
+    final snapshot = Map<String, int>.of(cache); // 쓰는 사이 다음 검색이 바꿔도 이 모습으로
+    final next = _tagCacheSaving.then((_) async {
+      try {
+        final bytes = await compute(_encodeTagCache, snapshot);
+        final f = await _tagCacheFile();
+        final tmp = File('${f.path}.tmp');
+        await tmp.writeAsBytes(bytes, flush: true);
+        await tmp.rename(f.path);
+        final prefs = await SharedPreferences.getInstance();
+        for (final k in _legacyTagCacheKeys) {
+          if (prefs.containsKey(k)) {
+            await prefs.remove(k);
+          }
+        }
+        return true;
+      } catch (e) {
+        debugPrint('태그 분류 캐시 저장 실패: $e');
+        return false;
+      }
+    });
+    _tagCacheSaving = next;
+    return next;
+  }
+
+  /// 첫 페이지 결과로 '더 받아야 할 페이지 수' 를 센다. 모르면 [unknown].
+  static int _pagesStillNeeded(_PostsPage? first, int unknown) {
+    if (first == null) {
+      return unknown; // 첫 페이지를 못 받았다 — 결과 수를 모른다
+    }
+    final int? total = first.total;
+    if (total != null) {
+      return max(0, (total + 99) ~/ 100 - 1); // 100개씩 — 첫 페이지는 이미 받았다
+    }
+    return first.raw < 100 ? 0 : unknown; // 결과 수가 안 왔다 — 첫 페이지가 덜 찼으면 거기서 끝
+  }
+
+  /// [budget] 페이지를 [need] 대로 나눈다 — 적게 필요한 쪽은 필요한 만큼 다 주고, 남은 걸 나머지가 똑같이 나눈다.
+  ///  예) 필요 [2, 50, 50], 예산 30 → [2, 14, 14]
+  static List<int> _sharePages(List<int> need, int budget) {
+    final List<int> give = List<int>.filled(need.length, 0);
+    int left = budget;
+    List<int> open = [
+      for (int i = 0; i < need.length; i++)
+        if (need[i] > 0) i,
+    ];
+    // 예산이 묶음 수보다 적으면 앞쪽 묶음만 받게 된다 — 시작점을 매번 섞어 특정 OR 옵션만 유리하지 않게
+    if (open.length > 1) {
+      final int r = Random().nextInt(open.length);
+      open = [...open.sublist(r), ...open.sublist(0, r)];
+    }
+    while (left > 0 && open.isNotEmpty) {
+      final int each = max(1, left ~/ open.length);
+      final List<int> still = [];
+      for (final i in open) {
+        final int g = min(each, min(need[i] - give[i], left));
+        give[i] += g;
+        left -= g;
+        if (give[i] < need[i]) {
+          still.add(i);
+        }
+      }
+      open = still;
+    }
+    return give;
+  }
+
+  /// 429 응답의 Retry-After(초). 없거나 이상하면 2초, 길면 5초로 자른다 (검색이 너무 오래 멈추지 않게).
+  static Duration _retryAfter(http.Response r) {
+    final int sec = int.tryParse(r.headers['retry-after'] ?? '') ?? 2;
+    return Duration(seconds: sec.clamp(1, 5));
   }
 
   Future<Map<String, int>> _getDanbooruTagCategories(
     List<String> uniqueTags,
     String gelbooruUserId,
     String gelbooruApiKey, {
+    required http.Client client, // 검색이 쓰는 연결을 같이 쓴다
     void Function(String stage)? onStage,
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    // v1/v2: 구버전 캐시는 (v1) 겔부루 전용 작가 0 오인, (v2) 실패 청크 미분류·겔부루
-    // 응답 누락으로 실존 작가가 0(일반)으로 오염됐을 수 있어 폐기하고 v3부터 새로 쌓는다.
-    await prefs.remove('danbooru_tag_cache');
-    await prefs.remove('tag_category_cache_v2');
-    String? cachedData = prefs.getString('tag_category_cache_v3');
-    Map<String, dynamic> persistentCache = cachedData != null ? jsonDecode(cachedData) : {};
+    // 캐시 (첫 검색 때 한 번만 파일에서 읽는다 — 위 '태그 분류 캐시' 설명)
+    final Map<String, int> cache = await _loadTagCache();
 
     Map<String, int> finalCategoryMap = {};
     List<String> tagsToFetch = [];
@@ -365,8 +770,10 @@ class NovelAiService {
       if (tag.isEmpty) {
         continue;
       }
-      if (persistentCache.containsKey(tag)) {
-        finalCategoryMap[tag] = int.tryParse(persistentCache[tag].toString()) ?? 0;
+      final int? known = cache.remove(tag);
+      if (known != null) {
+        cache[tag] = known; // 맨 뒤로 보낸다 = '최근에 쓴' 태그 (꽉 차면 앞쪽부터 버린다)
+        finalCategoryMap[tag] = known;
       } else {
         tagsToFetch.add(tag);
       }
@@ -402,7 +809,7 @@ class NovelAiService {
           chunks.sublist(start, end).map((chunk) async {
             String names = Uri.encodeComponent(chunk.join(','));
             try {
-              return await http
+              return await client
                   .get(
                     Uri.parse(
                       "$_danbooruProxy/tags.json?search[name_comma]=$names&limit=100&only=name,category",
@@ -424,20 +831,37 @@ class NovelAiService {
       final List<String> danbooruNotFound = [];
       for (int i = 0; i < results.length; i++) {
         final response = results[i];
+        // 응답 하나가 이상해도(형식 오류) 그 청크만 2차로 넘긴다.
+        //  ⚠️ 예전엔 여기서 예외가 나면 밖의 catch 로 빠져 나머지 청크 분류와 캐시 저장을 통째로 건너뛰었다.
+        Map<String, int>? got;
         if (response != null && response.statusCode == 200) {
-          List<dynamic> data = jsonDecode(_utf8Body(response));
-          final Set<String> found = {};
-          for (var tagInfo in data) {
-            String name = tagInfo['name'];
-            int category = tagInfo['category'];
-            found.add(name);
+          try {
+            final data = jsonDecode(_utf8Body(response));
+            if (data is List) {
+              got = {};
+              for (final tagInfo in data) {
+                final name = tagInfo is Map ? tagInfo['name'] : null;
+                final category = tagInfo is Map ? tagInfo['category'] : null;
+                if (name is String && category is int) {
+                  got[name] = category;
+                }
+              }
+            }
+          } catch (e) {
+            debugPrint("단보루 태그 응답 해석 실패 (2차로 넘김): $e");
+          }
+        }
+        if (got != null) {
+          got.forEach((name, category) {
             finalCategoryMap[name] = category;
-            persistentCache[name] = category;
+            cache[name] = category;
+          });
+          if (got.isNotEmpty) {
             isCacheUpdated = true;
           }
           // 응답에 없는 태그 = Danbooru에 없는 태그 → 겔부루 2차 분류로 넘김
           for (final tag in chunks[i]) {
-            if (!found.contains(tag)) {
+            if (!got.containsKey(tag)) {
               danbooruNotFound.add(tag);
             }
           }
@@ -461,19 +885,18 @@ class NovelAiService {
           final chunk = danbooruNotFound.sublist(start, end);
           try {
             final names = Uri.encodeComponent(chunk.join(' '));
-            final resp = await http
+            final resp = await client
                 .get(
                   Uri.parse(
                     "$_gelbooruProxy/index.php?page=dapi&s=tag&q=index&json=1&limit=100&names=$names&user_id=$gelbooruUserId&api_key=$gelbooruApiKey",
                   ),
-                  headers: {
-                    'User-Agent':
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-                  },
+                  headers: {'User-Agent': _browserUserAgent},
                 )
                 .timeout(const Duration(seconds: 10));
             if (resp.statusCode == 200) {
-              final decoded = jsonDecode(resp.body);
+              // 바이트에서 UTF-8 로 — resp.body 는 charset 이 없으면 latin-1 로 풀어 일본어 태그 이름이 깨졌고,
+              //  깨진 이름은 아래 '응답에 없는 태그' 로 잘못 분류돼 일반(0)으로 굳었다.
+              final decoded = jsonDecode(_utf8Body(resp));
               final List<dynamic> gTags = (decoded is Map ? decoded['tag'] : null) ?? [];
               final Set<String> gFound = {};
               for (final tagInfo in gTags) {
@@ -481,14 +904,14 @@ class NovelAiService {
                 final int type = int.tryParse(tagInfo['type'].toString()) ?? 0;
                 gFound.add(name);
                 finalCategoryMap[name] = type;
-                persistentCache[name] = type;
+                cache[name] = type;
                 isCacheUpdated = true;
               }
               // 양쪽 DB 모두에 없는 태그만 일반(0)으로 캐시 → 무한 재조회 차단
               for (final tag in chunk) {
                 if (!gFound.contains(tag)) {
                   finalCategoryMap[tag] = 0;
-                  persistentCache[tag] = 0;
+                  cache[tag] = 0;
                   isCacheUpdated = true;
                 }
               }
@@ -503,18 +926,16 @@ class NovelAiService {
         debugPrint("🏷️ 태그 분류 2차(겔부루): ${danbooruNotFound.length}개 처리");
       }
 
-      if (isCacheUpdated) {
-        // 캐시 크기 제한: 최대 50000개 (~1MB, SharedPreferences 안전 범위)
-        const int maxCacheSize = 50000;
-        if (persistentCache.length > maxCacheSize) {
-          final keys = persistentCache.keys.toList();
-          final removeCount = persistentCache.length - maxCacheSize;
-          for (int i = 0; i < removeCount; i++) {
-            persistentCache.remove(keys[i]);
+      // 임시 캐시(파일을 잠깐 못 읽음)는 저장하지 않는다 — 멀쩡한 파일을 덮지 않게
+      if (isCacheUpdated && identical(cache, _tagCache)) {
+        // 꽉 찼으면 앞쪽(가장 오래 안 쓴 것)부터 버린다
+        final int over = cache.length - _tagCacheMax;
+        if (over > 0) {
+          for (final k in cache.keys.take(over).toList()) {
+            cache.remove(k);
           }
         }
-        onStage?.call("저장하는 중");
-        await prefs.setString('tag_category_cache_v3', jsonEncode(persistentCache));
+        unawaited(_writeTagCacheFile(cache)); // 기다리지 않는다 — 검색 결과와 상관없다
       }
     } catch (e) {
       debugPrint("단보루 카테고리 페칭 실패: $e");
@@ -524,30 +945,60 @@ class NovelAiService {
 
   Future<List<String>> fetchDanbooruTags({
     required String includeTags,
-    required String excludeTags,
     required bool rG,
     required bool rS,
     required bool rQ,
     required bool rE,
-    required bool removeCharacteristics,
-    required bool removeClothes,
     required String gelbooruUserId,
     required String gelbooruApiKey,
     List<String> localExcludeTags = const [],
-    int maxPagesToFetch = 20,
+    // 받을 페이지 수 (첫 페이지들 포함 전체). null 이면 기본값 — searchPagesWithKey / WithoutKey
+    int? maxPagesToFetch,
+    void Function(int done, int total, int found)? onProgress,
+    void Function(String stage)? onStage,
+  }) async {
+    // 검색 하나 동안 같은 연결을 계속 쓴다 (페이지 수십 개 + 태그 분류 요청).
+    //  ⚠️ 예전엔 http.get 을 그냥 불러 요청마다 새로 연결(TLS 악수)했다 — 모바일에선 한 번에 0.1~0.3초.
+    //     http 패키지 안내대로 Client 하나를 쓰면 연결이 유지돼 그 시간이 빠진다. 다 쓰면 꼭 닫는다.
+    final client = http.Client();
+    try {
+      return await _searchPrompts(
+        client,
+        includeTags: includeTags,
+        rG: rG,
+        rS: rS,
+        rQ: rQ,
+        rE: rE,
+        gelbooruUserId: gelbooruUserId,
+        gelbooruApiKey: gelbooruApiKey,
+        localExcludeTags: localExcludeTags,
+        maxPagesToFetch: maxPagesToFetch,
+        onProgress: onProgress,
+        onStage: onStage,
+      );
+    } finally {
+      client.close();
+    }
+  }
+
+  Future<List<String>> _searchPrompts(
+    http.Client client, {
+    required String includeTags,
+    required bool rG,
+    required bool rS,
+    required bool rQ,
+    required bool rE,
+    required String gelbooruUserId,
+    required String gelbooruApiKey,
+    List<String> localExcludeTags = const [],
+    int? maxPagesToFetch,
     // 검색 진행 상황 콜백 (완료 페이지 수, 전체 페이지 수, 지금까지 모인 유효 포스트 수)
     void Function(int done, int total, int found)? onProgress,
     // 검색 후 단계 메시지 콜백 (분류/필터/캐시 등 "지금 뭐 하는 중")
     void Function(String stage)? onStage,
-    // [실험] 정렬 축 다양화: sort:random 외에 score/id 축도 섞어 중복을 줄이고 표본을 넓힘
-    bool diversifySort = false,
+    // (예전 '[실험] 정렬 다양화' — score/id 축 섞기 — 는 섞기 번호를 쓰면서 뺐다. 아래 ② 설명)
   }) async {
     List<String> incTags = includeTags
-        .split(',')
-        .map((e) => e.trim().replaceAll(' ', '_'))
-        .where((e) => e.isNotEmpty)
-        .toList();
-    List<String> excTags = excludeTags
         .split(',')
         .map((e) => e.trim().replaceAll(' ', '_'))
         .where((e) => e.isNotEmpty)
@@ -567,11 +1018,10 @@ class NovelAiService {
       }
     }
 
-    // 공통 태그: 고정 태그 + 제외 태그 + 레이팅 필터
+    // 공통 태그: 고정 태그 + 레이팅 필터
+    //  (제외 태그는 검색어로 보내지 않고 받은 뒤 localExcludeTags 로 거른다 — 검색어가
+    //   길어지면 겔부루가 결과를 덜 주기 때문)
     List<String> baseTags = [...fixedTags];
-    for (var t in excTags) {
-      baseTags.add('-$t');
-    }
 
     if (!rG) {
       baseTags.add("-rating:general");
@@ -594,49 +1044,36 @@ class NovelAiService {
     String effectiveUserId = hasCredentials ? gelbooruUserId : fallbackUserId;
     String effectiveApiKey = hasCredentials ? gelbooruApiKey : fallbackApiKey;
 
-    // 검색 범위(가져올 페이지 수)를 API 키 유무에 따라 조정:
-    // - 본인 API 키 있음 → 적극적 (레이트 리밋 넉넉)
-    // - 키 없음(공용 fallback 키) → 소극적 (공용 키 부담 줄이고 429 회피)
-    // maxPagesToFetch가 명시적으로 전달되면(기본 20과 다르면) 그 값 우선.
-    final int effectiveMaxPages = (maxPagesToFetch != 20)
-        ? maxPagesToFetch
-        : (hasCredentials ? 40 : 15);
+    // 받을 페이지 수 (첫 페이지들 포함 전체 예산):
+    //  - 본인 키(아이디 + 키)가 있으면 부른 쪽이 정한 값, 안 정했으면 40
+    //  - 없으면 공용 fallback 키라 15 고정 — 공용 키 부담을 줄이고 429 를 피한다
+    //    (키만 있고 아이디가 없으면 공용 키로 검색하므로 이쪽이다 — 설정 화면도 같은 기준으로 보여 준다)
+    //  ⚠️ 예전엔 '20 이 오면 기본값' 이라는 약속 숫자를 썼다 — 이제 null 이 기본값이다.
+    final int effectiveMaxPages = hasCredentials
+        ? (maxPagesToFetch ?? searchPagesWithKey)
+        : searchPagesWithoutKey;
 
-    // OR 태그가 있으면 각 옵션별로 검색 → 합치기
-    // 없으면 단일 검색
-    // [실험] diversifySort ON: 각 태그 조합을 여러 정렬 축(random/score/id)으로 나눠
-    //   서로 다른 표본을 긁는다. sort:random만 쓰면 겹치는 포스트가 많은데,
-    //   score(고득점)·id(최신) 축을 섞으면 중복이 줄어 같은 페이지 수로 더 많은 고유 결과 확보.
-    final List<String> sortAxes = diversifySort
-        ? ["sort:random", "sort:score", "sort:id"]
-        : ["sort:random"];
+    // ── 검색어 묶음 ──
+    //  OR 태그(~A ~B)는 옵션마다 따로 검색해 합친다. 옵션 하나 = 묶음 하나 (OR 이 없으면 묶음 하나).
+    final List<List<String>> groups = orTags.isEmpty
+        ? [baseTags]
+        : [
+            for (final orTag in orTags) [...baseTags, orTag],
+          ];
+    String encodeQuery(List<String> tags) => Uri.encodeQueryComponent(tags.join(' '));
 
-    List<List<String>> queryVariants = [];
-    if (orTags.isEmpty) {
-      for (final axis in sortAxes) {
-        queryVariants.add([...baseTags, axis]);
-      }
-    } else {
-      // 각 OR 옵션 + 고정 태그 + 각 정렬 축으로 별도 쿼리 생성
-      for (var orTag in orTags) {
-        for (final axis in sortAxes) {
-          queryVariants.add([...baseTags, orTag, axis]);
-        }
-      }
-    }
+    // 이번 검색의 섞기 번호 — 'sort:random:번호' 는 번호가 같으면 페이지를 넘겨도 같은 순서를 지킨다.
+    //  (겔부루 안내: 번호는 0~10000. 사이트에 그림이 추가·삭제·수정되면 다시 섞일 수 있다 — 큰 사이트라
+    //   검색 도중에도 생길 수 있다. 그래도 겹친 그림은 아래에서 id 로 걸러지고, 최악이라도 예전과 같다)
+    //  ⚠️ 예전엔 그냥 'sort:random' 이라 페이지마다 새로 섞였다 → 페이지끼리 겹쳐 같은 그림을 또 받았다
+    //     (결과 1,500개짜리 검색이면 15페이지를 받아도 고유한 건 1,000개 남짓).
+    //  번호는 검색마다 새로 뽑는다 — 같은 검색을 다시 해도 다른 표본이 나온다.
+    final String randomSort = "sort:random:${Random().nextInt(10001)}";
 
-    // 각 변형별 페이지 수 분배
-    int pagesPerVariant = (effectiveMaxPages / queryVariants.length).ceil();
-    // 진행 표시용: 전체 페이지 수와 완료 수
-    final int totalPagesAll = pagesPerVariant * queryVariants.length;
-    int donePages = 0;
-    onProgress?.call(0, totalPagesAll, 0);
+    final List<_SlimPost> allValidPosts = [];
+    final Set<int> seenIds = {};
 
-    List<dynamic> allValidPosts = [];
-    Set<String> allUniqueTags = {};
-    Set<int> seenIds = {};
-
-    // 각 쿼리 변형별로 병렬 페이지 요청
+    // 결과가 하나도 없을 때 원인을 알려 주려고 오류를 종류별로 센다
     int totalRequests = 0;
     int failedRequests = 0;
     int timeoutRequests = 0;
@@ -644,121 +1081,232 @@ class NovelAiService {
     int rateLimitErrors = 0; // 429 별도 카운트
     int clientErrors = 0; // 4xx (429 제외)
 
-    for (var apiTags in queryVariants) {
-      String tagQuery = Uri.encodeQueryComponent(apiTags.join(' '));
+    // ── 요청 보내기 ──
+    //  일꾼 여러 명이 할 일 줄에서 하나씩 가져간다 — 끝난 일꾼이 바로 다음 페이지를 가져간다.
+    //  ⚠️ 예전엔 10개씩 묶어 보내고, 묶음에서 가장 느린 요청(최악 10초)까지 다 기다린 뒤 0.2초를 쉬었다.
+    //  대신 요청 '시작' 사이에 간격을 둬서 서버에 한꺼번에 몰아치지 않는다 (키가 없으면 공용 키라 더 천천히).
+    final int workers = hasCredentials ? 10 : 5;
+    final int startGapMs = hasCredentials ? 100 : 200;
+    // 시각은 스톱워치로 잰다 (기기 시계가 도중에 바뀌어도 줄이 멈추지 않게)
+    final Stopwatch clock = Stopwatch()..start();
+    int nextStartMs = 0; // 다음 요청을 보낼 수 있는 때
+    int pauseUntilMs = 0; // 429 를 받으면 모두 이때까지 쉰다
+    bool stopAll = false; // 키가 틀렸다 등 — 다른 페이지도 똑같이 실패하니 남은 건 보내지 않는다
 
-      // 페이지 요청을 배치로 나눠 실행 (한 번에 너무 많이 쏘면 429 위험).
-      // 배치 크기: 키 있으면 10, 없으면 5 (공용 키 보호).
-      final int batchSize = hasCredentials ? 10 : 5;
+    // 다음 요청을 보내도 되는 때까지 기다린다.
+    //  자리는 기다리기 '전에' 잡는다 — 그래야 일꾼끼리 같은 시각에 몰려 나가지 않는다.
+    //  기다리는 사이 다른 요청이 429 를 받아 '쉬기' 가 걸렸으면 다시 줄을 선다.
+    Future<void> waitTurn() async {
+      while (true) {
+        final int now = clock.elapsedMilliseconds;
+        final int at = max(max(nextStartMs, now), pauseUntilMs);
+        nextStartMs = at + startGapMs;
+        if (at > now) {
+          await Future<void>.delayed(Duration(milliseconds: at - now));
+        }
+        if (pauseUntilMs <= at) {
+          return; // 자리를 잡은 뒤로 새 '쉬기' 가 걸리지 않았다
+        }
+      }
+    }
 
-      Future<http.Response?> fetchPage(int page) async {
-        totalRequests++;
-        String gelbooruUrl =
-            "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$tagQuery";
-        gelbooruUrl += "&user_id=$effectiveUserId&api_key=$effectiveApiKey";
+    // 429 — 모두 잠깐 쉰다 (이미 더 길게 쉬기로 했으면 그대로)
+    void pauseFor(Duration d) {
+      pauseUntilMs = max(pauseUntilMs, clock.elapsedMilliseconds + d.inMilliseconds);
+    }
+
+    // 페이지 하나 받기. 실패면 null (종류별로 센다).
+    //  429(너무 빠름)·연결 끊김은 한 번만 더 시도한다 — 예전엔 그 페이지를 그냥 버렸다.
+    //  시간 초과(10초)는 다시 하지 않는다 — 기다림만 두 배가 된다.
+    //  [skip] 이 참이면 (차례를 기다리는 사이 결과가 끝났다 등) 보내지 않고 null.
+    Future<http.Response?> fetchPage(String query, int page, bool Function() skip) async {
+      final uri = Uri.parse(
+        "$_gelbooruProxy/index.php?page=dapi&s=post&q=index&json=1&limit=100&pid=$page&tags=$query"
+        "&user_id=$effectiveUserId&api_key=$effectiveApiKey",
+      );
+      bool retried = false;
+      while (true) {
+        if (skip()) {
+          return null; // 줄 서기 전에도 본다 — 그만둘 거면 자리를 잡지 않는다
+        }
+        await waitTurn();
+        if (skip()) {
+          return null;
+        }
+        if (!retried) {
+          totalRequests++; // 다시 시도해도 한 페이지는 한 건으로 센다 (오류 안내의 '총 N건' 과 맞게)
+        }
         try {
-          return await http
-              .get(
-                Uri.parse(gelbooruUrl),
-                headers: {
-                  'User-Agent':
-                      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-                },
-              )
+          final r = await client
+              .get(uri, headers: {'User-Agent': _browserUserAgent})
               .timeout(const Duration(seconds: 10));
+          if (r.statusCode == 429) {
+            pauseFor(_retryAfter(r)); // 모두 잠깐 쉰다
+            if (!retried) {
+              retried = true;
+              continue; // 이 페이지만 한 번 더
+            }
+          }
+          return r;
         } on TimeoutException {
           timeoutRequests++;
           return null;
         } catch (e) {
+          if (!retried) {
+            retried = true; // 끊긴 연결(서버가 오래된 연결을 닫음 등) — 새 연결로 한 번 더
+            continue;
+          }
           failedRequests++;
           debugPrint("겔보루 요청 에러: $e");
           return null;
         }
       }
+    }
 
-      // 응답 1건을 즉시 파싱해 유효 포스트를 누적.
-      // (예전엔 전부 받은 뒤 일괄 파싱 → 배치마다 바로 처리해
-      //  '검색 : N' 카운트가 실시간으로 차오르게 한다)
-      void processResponse(http.Response? response) {
-        if (response == null) {
-          return;
-        }
-        if (response.statusCode != 200) {
-          final code = response.statusCode;
-          if (code == 429) {
-            rateLimitErrors++;
-          } else if (code >= 500) {
-            serverErrors++;
-          } else if (code >= 400) {
-            clientErrors++;
-          } else {
-            serverErrors++;
+    // 응답 1건 → (화면 밖에서) 풀기 → 처음 보는 포스트만 모은다. 못 받았거나 못 풀었으면 null.
+    Future<_PostsPage?> processResponse(http.Response? response) async {
+      if (response == null) {
+        return null;
+      }
+      if (response.statusCode != 200) {
+        final code = response.statusCode;
+        if (code == 429) {
+          rateLimitErrors++;
+        } else if (code >= 500) {
+          serverErrors++;
+        } else if (code >= 400) {
+          clientErrors++;
+          if (code == 401 || code == 403) {
+            stopAll = true; // 키가 틀렸다 — 다른 페이지도 똑같이 실패한다
           }
-          return;
+          // 그 밖의 4xx (한 OR 옵션의 검색어가 너무 긴 경우 등)는 그 검색어만 실패로 센다 (연달아 3번이면 멈춤)
+        } else {
+          serverErrors++;
         }
-        try {
-          final decoded = jsonDecode(_utf8Body(response));
-          if (decoded['post'] == null) {
-            return;
-          }
-
-          List<dynamic> posts = decoded['post'];
-          for (var post in posts) {
-            if (post['id'] == null) {
-              continue;
-            }
-            int postId = post['id'];
-
-            if (seenIds.contains(postId)) {
-              continue;
-            }
-            seenIds.add(postId);
-
-            int width = int.tryParse(post['width'].toString()) ?? 0;
-            int height = int.tryParse(post['height'].toString()) ?? 0;
-            if (width < 512 || height < 512) {
-              continue;
-            }
-
-            String tagString = post['tags'] ?? "";
-            if (tagString.isEmpty) {
-              continue;
-            }
-
+        return null;
+      }
+      try {
+        final page = await compute(_slimPostsPage, response.bodyBytes);
+        for (final post in page.posts) {
+          if (seenIds.add(post.id)) {
             allValidPosts.add(post);
-            allUniqueTags.addAll(tagString.split(' ').where((e) => e.isNotEmpty));
           }
-        } catch (e) {
-          debugPrint("겔보루 파싱 에러: $e");
+        }
+        return page;
+      } catch (e) {
+        // 200 인데 못 푼다 = 서버가 이상한 내용을 줬다 (점검 페이지 등) — 오류로 센다.
+        //  (안 세면 전부 이렇게 실패했을 때 '오류' 대신 '검색 결과 없음' 으로 안내된다)
+        serverErrors++;
+        debugPrint("겔보루 파싱 에러: $e");
+        return null;
+      }
+    }
+
+    // 진행 표시: 받은 페이지 / 받을 페이지 (첫 페이지들을 받은 뒤 '받을 페이지' 가 정해진다)
+    int donePages = 0;
+    int plannedPages = groups.length;
+    void report() => onProgress?.call(donePages, plannedPages, allValidPosts.length);
+
+    Future<_PostsPage?> loadPage(String query, int page, bool Function() skip) async {
+      final r = await fetchPage(query, page, skip);
+      if (r == null && skip()) {
+        plannedPages--; // 보내지 않았다 — 받을 페이지에서 뺀다
+        report();
+        return null;
+      }
+      final res = await processResponse(r);
+      donePages++;
+      report(); // 검색 버튼의 찾은 개수가 실시간으로 차오른다
+      return res;
+    }
+
+    // 할 일들을 일꾼들이 나눠 처리한다
+    Future<void> runPool(List<Future<void> Function()> jobs) async {
+      int next = 0;
+      Future<void> worker() async {
+        while (next < jobs.length) {
+          await jobs[next++]();
         }
       }
 
-      for (int start = 0; start < pagesPerVariant; start += batchSize) {
-        final end = (start + batchSize).clamp(0, pagesPerVariant);
-        final batch = await Future.wait(List.generate(end - start, (i) => fetchPage(start + i)));
-        int batchNewPosts = 0;
-        for (final r in batch) {
-          batchNewPosts += _countPostsInResponse(r);
-          processResponse(r);
-        }
-        // 진행 상황 알림 (완료 페이지 + 지금까지 모인 유효 포스트 수)
-        donePages += (end - start);
-        onProgress?.call(donePages, totalPagesAll, allValidPosts.length);
+      await Future.wait([
+        for (int w = 0; w < min(workers, jobs.length); w++) worker(),
+      ]);
+    }
 
-        // 이 배치에서 포스트가 하나도 안 왔으면 = 결과 소진.
-        // 남은 빈 페이지를 계속 때리는 헛요청을 막고 조기 종료한다.
-        // (결과가 100개 미만이면 첫 페이지에 다 담기고 이후는 전부 빈 응답)
-        if (batchNewPosts == 0 && start > 0) {
-          // 진행 표시는 100%로 맞춰 마무리 (빈 페이지는 건너뛴 것)
-          onProgress?.call(totalPagesAll, totalPagesAll, allValidPosts.length);
-          break;
-        }
-        // 다음 배치 전 짧은 간격 (서버 부담 완화)
-        if (end < pagesPerVariant) {
-          await Future.delayed(const Duration(milliseconds: 200));
+    // ① 묶음마다 첫 페이지 (섞기 순서로). 응답에 '전체 결과 수' 가 같이 온다.
+    report();
+    final List<_PostsPage?> first = List<_PostsPage?>.filled(groups.length, null);
+    await runPool([
+      for (int g = 0; g < groups.length; g++)
+        () async {
+          first[g] = await loadPage(encodeQuery([...groups[g], randomSort]), 0, () => stopAll);
+        },
+    ]);
+
+    // 첫 페이지를 하나도 못 받았으면(네트워크 끊김·키 오류·서버 점검) 더 보내지 않는다 —
+    //  아래에서 오류 종류별로 안내한다.
+    if (!stopAll && first.any((p) => p != null)) {
+      // ② 남은 페이지를 묶음마다 '필요한 만큼만' 나눈다.
+      //  필요 = 전체 결과 수 ÷ 100 (올림) − 이미 받은 첫 페이지. 결과 300개짜리 묶음은 2페이지 더면 끝.
+      //  ⚠️ 예전엔 묶음마다 페이지를 똑같이 나눠, 작은 묶음은 빈 페이지를 때리고 큰 묶음은 모자랐다.
+      //  예산이 모자라면 적게 필요한 묶음부터 다 채우고, 남은 걸 큰 묶음들이 똑같이 나눈다 (_sharePages).
+      //  첫 페이지를 못 받은 묶음은 결과 수를 모른다 → 첫 페이지부터 몫만큼 받다가 빈 페이지가 나오면 멈춘다.
+      const int unknownNeed = 1 << 30;
+      final List<int> need = [
+        for (final p in first) _pagesStillNeeded(p, unknownNeed),
+      ];
+      final List<int> share = _sharePages(need, max(0, effectiveMaxPages - groups.length));
+
+      // 묶음별로 받을 범위 — 섞기 순서 하나로 받는다.
+      //  (예전엔 '정렬 다양화' 로 점수순·최신순도 섞었다. 섞기 번호를 쓰면 섞기 순서만으로도 페이지가
+      //   안 겹치고, 점수순·최신순은 늘 같은 순서라 검색을 거듭할수록 같은 그림이 반복돼서 뺐다)
+      final List<_PageRun> runs = [
+        for (int g = 0; g < groups.length; g++)
+          if (share[g] > 0)
+            _PageRun(
+              encodeQuery([...groups[g], randomSort]),
+              first[g] == null ? 0 : 1, // 첫 페이지를 받았으면 그다음부터
+              share[g],
+            ),
+      ];
+
+      // ③ 페이지 번호 순으로 묶음들을 번갈아 줄 세워 받는다 — 모든 묶음이 고르게 진행되고,
+      //  결과가 일찍 끝난 묶음(빈 페이지)은 남은 차례를 바로 건너뛴다.
+      final List<Future<void> Function()> jobs = [];
+      final int longest = runs.fold(0, (m, r) => max(m, r.count));
+      for (int k = 0; k < longest; k++) {
+        for (final run in runs) {
+          if (k >= run.count) {
+            continue;
+          }
+          final int page = run.from + k;
+          jobs.add(() async {
+            if (run.ended || stopAll) {
+              plannedPages--; // 결과가 끝났다 — 이 페이지는 받지 않는다
+              report();
+              return;
+            }
+            final res = await loadPage(run.query, page, () => run.ended || stopAll);
+            if (res == null) {
+              // 연달아 3번 실패 — 이 검색어는 그만둔다 (네트워크·서버 문제면 남은 페이지도 똑같다)
+              //  ⚠️ 이게 없으면 네트워크가 끊겼을 때 예산을 다 쓸 때까지 실패 요청을 계속 보냈다.
+              if (++run.fails >= 3) {
+                run.ended = true;
+              }
+            } else {
+              run.fails = 0;
+              if (res.raw == 0) {
+                run.ended = true; // 빈 페이지 = 결과 끝
+              }
+            }
+          });
         }
       }
-    } // queryVariants 루프 끝
+      plannedPages += jobs.length;
+      report();
+      await runPool(jobs);
+    }
 
     // 결과 종합 판정
     final int totalErrors =
@@ -798,11 +1346,9 @@ class NovelAiService {
     // (이 단계에서 유효 포스트 수가 줄어들 수 있음 — 실시간 카운트는 필터 전 값이므로)
     if (localExcludeSet.isNotEmpty) {
       onStage?.call("정보 받는 중");
-      allValidPosts.removeWhere((post) {
-        String tagString = (post['tags'] ?? "").toString().toLowerCase();
-        List<String> postTags = tagString.split(' ');
-        return postTags.any((t) => localExcludeSet.contains(t));
-      });
+      allValidPosts.removeWhere(
+        (post) => post.tags.any((t) => localExcludeSet.contains(t.toLowerCase())),
+      );
       debugPrint("🔍 로컬 제외 후: ${allValidPosts.length}개 포스트");
     }
 
@@ -810,17 +1356,25 @@ class NovelAiService {
       return [];
     }
 
+    // 분류를 물어볼 태그 — 제외로 빠진 포스트의 태그는 물어볼 필요가 없다
+    //  (예전엔 받자마자 모아서, 제외된 포스트의 태그까지 서버에 물어봤다)
+    final Set<String> allUniqueTags = {for (final post in allValidPosts) ...post.tags};
+
     // 이름 사전(에셋) 로드 — 최초 1회만 실제 로드되고 이후엔 즉시 반환
     await TagFilters.ensureNamesLoaded();
 
-    // 로컬 사전 필터링: metadata/copyright 태그를 Danbooru API에 보내기 전에 제거
+    // 로컬 사전 필터링: 카테고리를 물을 필요가 없는 태그는 API에 보내기 전에 뺀다
     // → API 청크 수 감소 → 네트워크 호출 절감
-    // (이름 판정은 isNameTag 하나로 통일: 정적 사전 + 에셋 사전 + 패턴 안전장치)
+    //  ⚠️ 이름 사전(isNameTag)에 든 태그를 통째로 빼면 안 된다. 캐릭터 이름도 거의 다 사전에
+    //     들어 있어서(hatsune_miku, kisaki_(blue_archive) …) 카테고리 4 를 받을 기회가 없고,
+    //     아래 '캐릭터 통과증'이 한 번도 열리지 않았다 → 캐릭터 제거 스위치를 꺼도 이름이 사라졌다.
+    //     그래서 작가·작품으로 '확실한' 이름만 빼고, 캐릭터일 수 있는 이름은 물어본다.
+    //     (한 번 물어본 태그는 기기에 저장돼 다음부터는 묻지 않는다)
     final filteredUniqueTags = allUniqueTags.where((t) {
       final spaced = t.replaceAll('_', ' ');
       return !TagFilters.metadataTags.contains(spaced) &&
           !TagFilters.copyrightTags.contains(spaced) &&
-          !TagFilters.isNameTag(t) &&
+          !_isKnownNonCharacterName(t) &&
           !TagFilters.commonGarbage.contains(t) &&
           !TagFilters.commonGarbage.contains(spaced);
     }).toList();
@@ -832,15 +1386,22 @@ class NovelAiService {
       filteredUniqueTags,
       effectiveUserId,
       effectiveApiKey,
+      client: client,
       onStage: onStage,
     );
     onStage?.call("정리하는 중");
     List<String> newPrompts = [];
 
-    for (var post in allValidPosts) {
-      String tagString = post['tags'] ?? "";
-      List<String> rawTags = tagString.split(' ');
+    int processed = 0;
+    for (final post in allValidPosts) {
+      // 수천 개를 한 번에 돌면 그동안 화면이 멈춘다 → 200개마다 한 번 쉬어 화면이 그려질 틈을 준다
+      if (++processed % 200 == 0) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      final List<String> rawTags = post.tags;
       List<String> finalTags = [];
+      // 캐릭터로 확인된 태그 — 저장할 때 따로 표시해 두고, 지울지는 적용 단계에서 정한다
+      List<String> charTags = [];
 
       for (String t in rawTags.toSet()) {
         if (t.isEmpty) {
@@ -848,6 +1409,23 @@ class NovelAiService {
         }
 
         String rawCleanTag = t.replaceAll('_', ' ');
+
+        // ★ 캐릭터 통과증: 카테고리 4(캐릭터)로 확인된 태그는 아래 이름 검사들을 건너뛴다.
+        //   · 항상 살려서 저장한다 — 지울지는 적용 단계(_processAndSetPrompt)에서
+        //     '캐릭터 제거' 스위치로 정하므로, 스위치를 바꿔도 다시 검색할 필요가 없다.
+        //   · 괄호는 그대로 둔다 — NovelAI 는 'hu tao (genshin impact)' 처럼 괄호를 그대로 쓴다.
+        //     (아래 일반 태그의 \( 는 A1111 문법이라 캐릭터에는 쓰지 않는다)
+        //   · 조회에 실패해 카테고리를 모르면(429·오프라인) 캐릭터 사전으로 알아본다
+        //     (_looksLikeCharacter). 사전에도 없으면 예전처럼 아래 이름 검사에서 걸러진다.
+        final int? knownCategory = tagCategories[t];
+        if (knownCategory == 4 || (knownCategory == null && _looksLikeCharacter(t))) {
+          finalTags.add(rawCleanTag);
+          charTags.add(rawCleanTag);
+          if (finalTags.length >= 40) {
+            break;
+          }
+          continue;
+        }
 
         // 로컬 필터: metadata, copyright, commonGarbage
         if (TagFilters.metadataTags.contains(rawCleanTag)) {
@@ -873,18 +1451,19 @@ class NovelAiService {
           continue;
         }
 
-        String cleanTag = t.replaceAll('_', ' ').replaceAll('(', r'\(').replaceAll(')', r'\)');
-        if (removeCharacteristics &&
-            (TagFilters.characterTraits.contains(t) ||
-                TagFilters.characterTraits.contains(rawCleanTag))) {
-          continue;
-        }
-        if (removeClothes &&
-            (TagFilters.clothesTags.contains(t) || TagFilters.clothesTags.contains(rawCleanTag))) {
+        // 괄호 든 태그 (shrug (clothing) 등)
+        //  · 카테고리로 '일반'이 확인됐으면 괄호째 살린다 — NovelAI 표기 그대로.
+        //  · 조회 실패로 모르면 버린다 — 괄호 꼬리표는 이름(작품·캐릭터·작가)인 경우가 많아,
+        //    예전의 '괄호면 버림' 안전장치를 확인이 안 된 태그에만 남겨 둔다.
+        //  ⚠️ 예전엔 \( 로 바꿔 저장했는데(A1111 문법), 적용 단계가 괄호 든 태그를
+        //     전부 버려서 일반 태그까지 사라졌다. 이제 \( 는 '예전 목록' 표시로만 쓰인다.
+        if (category == null && (t.contains('(') || t.contains(')'))) {
           continue;
         }
 
-        finalTags.add(cleanTag);
+        // 특징·의상 제거는 여기서 하지 않는다 — 적용 단계(_processAndSetPrompt)가
+        //  스위치를 보고 거른다. 그래야 스위치를 바꿔도 다시 검색할 필요가 없다.
+        finalTags.add(rawCleanTag);
         if (finalTags.length >= 40) {
           break;
         }
@@ -892,12 +1471,14 @@ class NovelAiService {
 
       if (finalTags.isNotEmpty) {
         // 프롬프트 순서 최적화: 인원수 → solo → 시점 → 시선 → 나머지(셔플) → 배경(맨 뒤)
-        final prioritized = _reorderTagsByPriority(finalTags);
+        final prioritized = _reorderTagsByPriority(finalTags, chars: charTags.toSet());
         String jsonCapsule = jsonEncode({
           "tags": prioritized.join(', '),
-          "width": int.tryParse(post['width'].toString()) ?? 0,
-          "height": int.tryParse(post['height'].toString()) ?? 0,
-          "rating": _normalizeRating(post['rating']?.toString()),
+          "width": post.width,
+          "height": post.height,
+          "rating": _normalizeRating(post.rating),
+          // 어느 태그가 캐릭터인지 — 없으면 빼서 옛 모양과 같게 둔다
+          if (charTags.isNotEmpty) "chars": charTags,
         });
         newPrompts.add(jsonCapsule);
       }
@@ -918,18 +1499,22 @@ class NovelAiService {
     String token,
   ) async {
     try {
-      final response = await http.post(
-        Uri.parse(encodeVibeUrl),
-        headers: {
-          "Authorization": "Bearer $token",
-          "Content-Type": "application/json; charset=utf-8",
-        },
-        body: jsonEncode({
-          "image": base64Image,
-          "information_extracted": infoExtracted,
-          "model": model,
-        }),
-      );
+      // ⚠️ 시간 제한이 없으면 연결이 멈췄을 때 생성이 끝나지 않는다 (로딩이 영원히 돈다).
+      //    실패하면 아래 catch 에서 null — 그 vibe 만 빼고 생성한다 (실패했을 때의 원래 동작).
+      final response = await http
+          .post(
+            Uri.parse(encodeVibeUrl),
+            headers: {
+              "Authorization": "Bearer $token",
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            body: jsonEncode({
+              "image": base64Image,
+              "information_extracted": infoExtracted,
+              "model": model,
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
       if (response.statusCode == 200) {
         // 응답은 바이너리, base64로 인코딩
         return base64Encode(response.bodyBytes);
@@ -959,6 +1544,12 @@ class NovelAiService {
     Uint8List? image,
     Uint8List? mask,
     String action = "generate",
+    // [image] 가 NovelAI 가 만든 그림(그림 정보가 있는 PNG)인지 — 인페인트에서 그대로 보내도 되는지 가른다
+    bool imageFromNovelAi = false,
+    // i2i: [image] 를 둘 크기 (0 이면 width·height 그대로). width·height 보다 작으면
+    //  모자란 오른쪽·아래를 채워 보내고, 결과에서 그만큼 잘라내 이 크기로 돌려준다.
+    int contentWidth = 0,
+    int contentHeight = 0,
     double infillStrength = 0.7,
     double img2imgStrength = 0.5, // img2img: 원본을 얼마나 바꿀지 (낮을수록 원본 충실)
     double img2imgNoise = 0.1, // img2img: 새 디테일 추가량
@@ -1061,23 +1652,35 @@ class NovelAiService {
         parameters["straight_alpha"] = true;
       }
 
-      // V5는 노이즈 스케줄이 Karras로 고정된다 (공식 UI에서도 선택기가 숨겨짐).
-      // 다른 값이 남아 있어도 요청은 karras로 정규화한다.
-      if (!caps.allowsSchedulerChoice) {
-        parameters["noise_schedule"] = "karras";
-      } else if (scheduler != "native") {
+      // 노이즈 스케줄 — 고른 값을 그대로 보낸다 ('native' 면 보내지 않아 서버 기본값을 쓴다)
+      if (scheduler != "native") {
         parameters["noise_schedule"] = scheduler;
       }
 
+      // i2i 에서 그림을 둘 크기 — 보낼 크기(width·height)보다 크거나 없으면 보낼 크기 그대로
+      final int fitW = (contentWidth > 0 && contentWidth <= width) ? contentWidth : width;
+      final int fitH = (contentHeight > 0 && contentHeight <= height) ? contentHeight : height;
+
       // 이미지/마스크 인코딩
       if (image != null) {
-        if (action == "infill") {
-          // [핵심 수정] infill: 원본 이미지를 재인코딩 없이 그대로 전송!
-          // 재인코딩하면 NovelAI PNG 메타데이터/픽셀 구조가 변형되어 서버 오류 가능
+        // infill: NovelAI 가 만든 PNG 가 요청 크기와 딱 맞으면 재인코딩 없이 그대로 보낸다
+        //  (재인코딩하면 NovelAI PNG 메타데이터/픽셀 구조가 변형되어 서버 오류 가능).
+        //  그 밖의 그림 — 밖에서 가져온 그림·Director 결과(투명 4채널일 수 있다)·크기가 다른 그림·썸네일 —
+        //  은 요청 크기의 3채널 PNG 로 맞춘다.
+        //  ⚠️ 예전엔 infill 이면 무조건 그대로 보냈다 (그림 정보 없는 그림은 앱이 아예 막고 있었다).
+        if (action == "infill" &&
+            imageFromNovelAi &&
+            fitW == width &&
+            fitH == height &&
+            isPng(image) &&
+            imageSizeFromHeader(image) == (width, height)) {
           parameters["image"] = base64Encode(image);
         } else {
-          // generate: 3채널 RGB 변환 + 64배수 리사이즈 적용
-          parameters["image"] = await compute(_processImage3Channel, image);
+          // 3채널 RGB 변환 + 둘 크기로 맞추고 보낼 크기까지 채움
+          parameters["image"] = await compute(
+            _processImage3Channel,
+            (image, fitW, fitH, width, height),
+          );
         }
 
         if (action == "infill" && mask != null) {
@@ -1259,6 +1862,13 @@ class NovelAiService {
             // ZIP 해제는 수 MB 작업이라 isolate에서 (메인 스레드 잰크 방지)
             final imageBytes = await compute(_unzipFirstEntry, response.bodyBytes);
             if (imageBytes != null) {
+              // i2i 에서 채워 보냈으면 채운 만큼 잘라 원래 그림 크기로 되돌린다
+              if (image != null && (fitW < width || fitH < height)) {
+                onStatus?.call("원래 크기로 맞추는 중...");
+                return NaiResponse(
+                  image: await compute(_cropResultToContent, (imageBytes, fitW, fitH)),
+                );
+              }
               return NaiResponse(image: imageBytes);
             }
             throw Exception('서버가 빈 아카이브를 반환했습니다.');
@@ -1502,13 +2112,18 @@ class NovelAiService {
       // 기존 api.novelai.net/user/subscription 은 현재 작동하지 않음.
       final url = Uri.parse('https://image.novelai.net/user/subscription');
 
-      final response = await http.get(
-        url,
-        headers: {
-          'Authorization': 'Bearer $cleanToken',
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-      );
+      // ⚠️ 시간 제한이 꼭 필요하다 — 앱을 켤 때 로딩 화면이 이 조회를 기다린다.
+      //    예전엔 제한이 없어서, 와이파이가 붙었는데 인터넷이 안 되는 곳(인증 전 공용 와이파이 등)에서
+      //    연결이 멈추면 로딩 화면이 끝나지 않을 수 있었다. 실패하면 아래 catch 에서 null.
+      final response = await http
+          .get(
+            url,
+            headers: {
+              'Authorization': 'Bearer $cleanToken',
+              'Content-Type': 'application/json; charset=utf-8',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(_utf8Body(response));

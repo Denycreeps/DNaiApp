@@ -21,11 +21,12 @@ class AppColors {
   /// 기본 액센트 (deepPurpleAccent와 동일한 값을 const로 고정)
   static const Color defaultAccent = Color(0xFF7C4DFF);
 
-  /// 사용자가 고를 수 있는 액센트 후보.
-  ///  ⚠️ 자유 컬러 피커를 쓰지 않는 이유:
-  ///     아래 teal/blue/orange/red/purple은 "긍정/선행/후행/부정/캐릭터"라는
-  ///     의미가 이미 고정된 색이다. 액센트가 그 색과 겹치면 UI에서 둘을
-  ///     구분할 수 없게 되므로, 의미색과 충분히 떨어진 값만 후보로 둔다.
+  /// 설정에 동그라미로 늘어놓는 액센트 후보 (그 뒤 무지개 칸에서 직접 고를 수도 있다 —
+  ///  widgets/accent_color_sheet.dart).
+  ///  ⚠️ 아래 teal/blue/orange/red/purple 등은 "긍정/선행/후행/부정/캐릭터"처럼 의미가 고정된 색이라,
+  ///     액센트가 그 색과 아주 비슷하면 화면에서 둘이 헷갈릴 수 있다. 예전엔 그래서 자유 선택을 막았는데,
+  ///     후보 중에도 비슷한 색(기본 보라≈캐릭터 보라, 호박≈즐겨찾기 호박)이 이미 있어 막는 의미가 적었다.
+  ///     지금은 직접 고르기를 열어 두고, 그 창에서 '읽기 어려운 색(너무 어둡거나 밝음)'만 알려 준다.
   static const List<({String name, Color color})> accentPalette = [
     (name: '기본 보라', color: defaultAccent),
     (name: '인디고', color: Color(0xFF5C6BC0)),
@@ -43,6 +44,41 @@ class AppColors {
   // 캐릭터 마커가 대표 용도지만, 프롬프트탭의 보조 강조(섹션 헤더·배치 버튼 등)에도
   // 같은 색을 쓴다. 액센트와 달리 사용자가 바꿀 수 없는 고정색이다.
   static const Color purple = Color(0xFF8B5CF6); // 캐릭터 · 보조 강조
+  // 조건부 규칙 (프롬프트탭의 조건부 섹션, 설정 탭의 섹션 칩).
+  //  예전엔 이 값이 두 파일에 숫자로 15번 적혀 있었다.
+  static const Color pink = Color(0xFFEC4899);
+  // 호박색 — 즐겨찾기(★)·갤러리/폴더·히스토리 '세팅' 정보·경고·작업 중 표시.
+  //  예전엔 같은 색을 Color(0xFFFFC107) 와 Colors.amber 두 가지로 섞어 적었다 (값은 같다).
+  static const Color amber = Color(0xFFFFC107);
+
+  /// 캐릭터 번호별 기본 색 — 캐릭터탭 칩·캔버스 마커·프롬프트탭 서랍이 같은 색을 쓴다.
+  ///  (예전엔 캐릭터탭 안에 이 목록이 두 벌 있었고, 서랍은 색을 쓰지 않았다)
+  static const List<Color> characterPalette = [
+    purple,
+    teal,
+    Color(0xFFFF7043),
+    Color(0xFF42A5F5),
+    Color(0xFFEC407A),
+    Color(0xFF9CCC65),
+    Color(0xFFFFCA28),
+    Color(0xFF26C6DA),
+  ];
+
+  /// 색 고르기 창에서 기본 색 뒤에 더 보여 주는 후보
+  static const List<Color> characterExtraSwatches = [
+    Color(0xFFEF5350),
+    Color(0xFFAB47BC),
+    Color(0xFF5C6BC0),
+    Color(0xFF66BB6A),
+    Color(0xFFFFA726),
+    Color(0xFF78909C),
+    Color(0xFFD4E157),
+    Color(0xFFFFFFFF),
+  ];
+
+  /// 캐릭터 색 — 사용자가 정한 색([argb])이 있으면 그 색, 없으면 [index] 번째 기본 색.
+  static Color characterColor(int? argb, int index) =>
+      argb != null ? Color(argb) : characterPalette[index % characterPalette.length];
 
   // 텍스트
   static const Color textPrimary = Colors.white;
@@ -60,17 +96,11 @@ class AppTextStyles {
     fontWeight: FontWeight.bold,
   );
 
-  static const TextStyle label = TextStyle(
-    color: Colors.white,
-    fontWeight: FontWeight.bold,
-  );
+  static const TextStyle label = TextStyle(color: Colors.white, fontWeight: FontWeight.bold);
 
   static const TextStyle body = TextStyle(color: Colors.white, fontSize: 14);
 
-  static const TextStyle caption = TextStyle(
-    color: Colors.white54,
-    fontSize: 12,
-  );
+  static const TextStyle caption = TextStyle(color: Colors.white54, fontSize: 12);
 
   static const TextStyle chipBold = TextStyle(
     color: Colors.white,

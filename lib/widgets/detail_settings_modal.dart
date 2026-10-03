@@ -3,35 +3,17 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/app_tabs.dart';
 import '../models/image_metadata.dart';
 import '../models/nai_character.dart';
 import '../models/model_caps.dart';
 import '../app_theme.dart';
 import '../widgets/app_toast.dart';
+import '../utils/ui_safety.dart'; // disposeAfterDialog
 
-const List<String> _models = [NaiModels.v4Full, NaiModels.v45Full, NaiModels.v5Full];
-const List<String> _samplers = [
-  "k_euler_ancestral",
-  "k_euler",
-  "k_dpmpp_2s_ancestral",
-  "k_dpmpp_2m_sde",
-  "k_dpmpp_2m",
-  "k_dpmpp_sde",
-  // "ddim" 제거: V4 계열에서 정상 동작하지 않는다(API로 보내면 노이즈 이미지/에러).
-];
-
-// [추가] 샘플러 표시명 매핑 (NovelAI 웹사이트와 동일)
-const Map<String, String> _samplerDisplayNames = {
-  "k_euler_ancestral": "Euler Ancestral",
-  "k_euler": "Euler",
-  "k_dpmpp_2s_ancestral": "DPM++ 2S Ancestral",
-  "k_dpmpp_2m_sde": "DPM++ 2M SDE",
-  "k_dpmpp_2m": "DPM++ 2M",
-  "k_dpmpp_sde": "DPM++ SDE",
-};
-const List<String> _schedulers = ["native", "karras", "exponential", "polyexponential"];
+// 모델·샘플러·스케줄러 목록은 model_caps.dart 한 곳에서 관리한다 (앱 상태도 같은 목록으로 값을 검사)
 // 해상도 목록은 model_caps.kNaiResolutions 한 곳에서만 관리 (중복 하드코딩 제거)
-const List<String> _defaultResolutions = [...kNaiResolutions, "직접 입력"];
+const List<String> _defaultResolutions = [...kNaiResolutions, kCustomResolutionLabel];
 
 void showDetailSettingsModal(BuildContext context) {
   FocusScope.of(context).unfocus();
@@ -44,21 +26,21 @@ void showDetailSettingsModal(BuildContext context) {
     builder: (modalContext) {
       return StatefulBuilder(
         builder: (BuildContext context, StateSetter setModalState) {
+          // 지금 모델의 능력표 — 이 화면 여러 곳이 같이 쓴다.
+          //  (모델을 바꾸면 setModalState 로 다시 그려지며 새로 받는다)
+          final caps = modelCapsFor(state.selectedModel);
           // VAR+ 토글 (모델이 미지원이면 잠금) — 하단 토글 줄에서 쓴다
           Widget varPlusToggle() {
             return GestureDetector(
               onTap: () {
-                if (!modelCapsFor(state.selectedModel).supportsVarietyPlus) {
-                  showToast(
-                    context,
-                    "${modelCapsFor(state.selectedModel).displayName}에선 VAR+를 사용할 수 없어요",
-                  );
+                if (!caps.supportsVarietyPlus) {
+                  showToast(context, "${caps.displayName}에선 VAR+를 사용할 수 없어요");
                   return;
                 }
                 setModalState(() => state.isVariancePlus = !state.isVariancePlus);
               },
               child: Opacity(
-                opacity: modelCapsFor(state.selectedModel).supportsVarietyPlus ? 1.0 : 0.35,
+                opacity: caps.supportsVarietyPlus ? 1.0 : 0.35,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -235,10 +217,8 @@ void showDetailSettingsModal(BuildContext context) {
                           ),
                           child: DropdownButtonHideUnderline(
                             child: DropdownButton<String>(
-                              // 저장된 모델이 목록에 없으면(예: 제거된 테스트 모델) 기본값으로 폴백
-                              value: _models.contains(state.selectedModel)
-                                  ? state.selectedModel
-                                  : NaiModels.v45Full,
+                              // 값은 앱 상태가 들어올 때마다 목록으로 검사해 둔다 (validModel)
+                              value: state.selectedModel,
                               isExpanded: true,
                               isDense: true,
                               dropdownColor: AppColors.surfaceAlt,
@@ -248,7 +228,7 @@ void showDetailSettingsModal(BuildContext context) {
                                 size: 20,
                               ),
                               style: const TextStyle(color: Colors.white, fontSize: 13),
-                              items: _models
+                              items: kSelectableModels
                                   .map(
                                     (e) => DropdownMenuItem(
                                       value: e,
@@ -290,21 +270,19 @@ void showDetailSettingsModal(BuildContext context) {
                               children: [
                                 buildLabel("해상도"),
                                 if (state.resolutionScale == 1.5 &&
-                                    state.selectedResolution != "직접 입력" &&
+                                    state.selectedResolution != kCustomResolutionLabel &&
                                     state.selectedResolution.contains("x"))
                                   Expanded(
                                     child: Text(
                                       () {
-                                        final resParts = state.selectedResolution
-                                            .replaceAll(" ", "")
-                                            .split("x");
-                                        if (resParts.length < 2) {
+                                        final base = parseResolution(state.selectedResolution);
+                                        if (base == null) {
                                           return "";
                                         }
                                         final (w, h) = clampResolution(
-                                          ((int.tryParse(resParts[0]) ?? 832) * 1.5).round(),
-                                          ((int.tryParse(resParts[1]) ?? 1216) * 1.5).round(),
-                                          modelCapsFor(state.selectedModel).maxPixels,
+                                          (base.$1 * 1.5).round(),
+                                          (base.$2 * 1.5).round(),
+                                          caps.maxPixels,
                                         );
                                         final anlas = (w * h > AppState.kMegapixelCap)
                                             ? " Anlas"
@@ -312,7 +290,7 @@ void showDetailSettingsModal(BuildContext context) {
                                         return " → $w x $h$anlas";
                                       }(),
                                       style: TextStyle(
-                                        color: Colors.amber.withValues(alpha: 0.8),
+                                        color: AppColors.amber.withValues(alpha: 0.8),
                                         fontSize: 10,
                                       ),
                                       overflow: TextOverflow.ellipsis,
@@ -324,13 +302,13 @@ void showDetailSettingsModal(BuildContext context) {
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
                                   value:
-                                      (state.selectedResolution != "직접 입력" &&
+                                      (state.selectedResolution != kCustomResolutionLabel &&
                                           [
                                             ..._defaultResolutions,
                                             ...state.customResolutions,
                                           ].contains(state.selectedResolution))
                                       ? state.selectedResolution
-                                      : "832 x 1216",
+                                      : kDefaultResolution,
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: AppColors.surfaceAlt,
@@ -355,7 +333,11 @@ void showDetailSettingsModal(BuildContext context) {
                                         value: e,
                                         child: Row(
                                           children: [
-                                            const Icon(Icons.star, color: Colors.amber, size: 14),
+                                            const Icon(
+                                              Icons.star,
+                                              color: AppColors.amber,
+                                              size: 14,
+                                            ),
                                             const SizedBox(width: 6),
                                             Text(e),
                                           ],
@@ -366,7 +348,7 @@ void showDetailSettingsModal(BuildContext context) {
                                   onChanged: state.resolutionMode != "수동"
                                       ? null
                                       : (val) {
-                                          if (val == "직접 입력") {
+                                          if (val == kCustomResolutionLabel) {
                                             _showCustomResolutionDialog(
                                               context,
                                               state,
@@ -499,10 +481,8 @@ void showDetailSettingsModal(BuildContext context) {
                             buildInputContainer(
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
-                                  // 예전에 저장된 값이 목록에 없으면(예: 제거된 ddim) 기본값으로 폴백
-                                  value: _samplers.contains(state.selectedSampler)
-                                      ? state.selectedSampler
-                                      : _samplers.first,
+                                  // 값은 앱 상태가 들어올 때마다 목록으로 검사해 둔다 (validSampler)
+                                  value: state.selectedSampler,
                                   isExpanded: true,
                                   isDense: true,
                                   dropdownColor: AppColors.surfaceAlt,
@@ -512,12 +492,9 @@ void showDetailSettingsModal(BuildContext context) {
                                     size: 20,
                                   ),
                                   style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                  items: _samplers
+                                  items: kNaiSamplerNames.entries
                                       .map(
-                                        (e) => DropdownMenuItem(
-                                          value: e,
-                                          child: Text(_samplerDisplayNames[e] ?? e),
-                                        ),
+                                        (e) => DropdownMenuItem(value: e.key, child: Text(e.value)),
                                       )
                                       .toList(),
                                   onChanged: (val) {
@@ -538,11 +515,12 @@ void showDetailSettingsModal(BuildContext context) {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             buildLabel("스케줄러"),
-                            // V5는 Karras 고정이라 선택기를 잠근다 (공식 UI도 숨김 처리)
+                            // 스케줄러가 고정된 모델(V5)은 설정에서 잠금 해제를 켜기 전까지 잠가 둔다.
+                            //  (보낼 때도 AppState.schedulerFor 가 고정값으로 보낸다)
                             Builder(
                               builder: (context) {
-                                final caps = modelCapsFor(state.selectedModel);
-                                if (!caps.allowsSchedulerChoice) {
+                                final locked = state.lockedScheduler;
+                                if (locked != null) {
                                   return buildInputContainer(
                                     Row(
                                       children: [
@@ -552,9 +530,12 @@ void showDetailSettingsModal(BuildContext context) {
                                           color: Colors.white24,
                                         ),
                                         const SizedBox(width: 8),
-                                        const Text(
-                                          "karras (고정)",
-                                          style: TextStyle(color: Colors.white38, fontSize: 13.5),
+                                        Text(
+                                          "$locked (고정)",
+                                          style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 13.5,
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -573,7 +554,7 @@ void showDetailSettingsModal(BuildContext context) {
                                         size: 20,
                                       ),
                                       style: const TextStyle(color: Colors.white, fontSize: 13.5),
-                                      items: _schedulers
+                                      items: kNaiSchedulers
                                           .map((e) => DropdownMenuItem(value: e, child: Text(e)))
                                           .toList(),
                                       onChanged: (val) {
@@ -736,10 +717,7 @@ void showDetailSettingsModal(BuildContext context) {
                     spacing: 10,
                     runSpacing: 8,
                     crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      varPlusToggle(),
-                      if (modelCapsFor(state.selectedModel).supportsTransparency) alphaToggle(),
-                    ],
+                    children: [varPlusToggle(), if (caps.supportsTransparency) alphaToggle()],
                   ),
                 ],
               ),
@@ -749,8 +727,7 @@ void showDetailSettingsModal(BuildContext context) {
       );
     },
   ).whenComplete(() {
-    state.saveAllSettings();
-    state.refreshUI();
+    state.saveAndRefresh();
   });
 }
 
@@ -836,7 +813,7 @@ void showSaveImageModal(
                 state.sendToI2i(imageBytes, parsedMetadata);
 
                 // i2i 탭(2번 탭)으로 즉시 이동!
-                state.navigateToTab(2);
+                state.navigateToTab(AppTab.i2i);
 
                 showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
               },
@@ -1124,10 +1101,6 @@ void _applyMetadata(
     if (state.characters.isEmpty) {
       state.characters.add(NaiCharacter());
     }
-    // 선택 인덱스가 범위를 벗어나지 않게 보정
-    if (state.selectedCharIndex >= state.characters.length) {
-      state.selectedCharIndex = state.characters.length - 1;
-    }
 
     // 화면이 캐시해 둔 캐릭터 입력 컨트롤러를 새 값으로 맞추게 한다.
     //  (이게 없으면 편집창이 열려 있을 때 옛 프롬프트가 그대로 남는다)
@@ -1140,12 +1113,12 @@ void _applyMetadata(
   }
 
   if (settings) {
-    if (meta.sampler.isNotEmpty && _samplers.contains(meta.sampler)) {
+    if (kNaiSamplerNames.containsKey(meta.sampler)) {
       state.selectedSampler = meta.sampler;
     }
 
     String? scheduler = meta.extraParams['noise_schedule']?.toString();
-    if (scheduler != null && _schedulers.contains(scheduler)) {
+    if (scheduler != null && kNaiSchedulers.contains(scheduler)) {
       state.selectedScheduler = scheduler;
     }
 
@@ -1178,7 +1151,7 @@ void _applyMetadata(
 
   state.saveAllSettings();
   // 프롬프트 탭으로 이동 (UI 리빌드도 동시에 트리거)
-  state.navigateToTab(0);
+  state.navigateToTab(AppTab.prompt);
 
   if (applied.isNotEmpty) {
     showToast(context, "${applied.join(', ')}을(를) 불러왔습니다!");
@@ -1303,10 +1276,8 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                 ),
                 const SizedBox(height: 6),
                 ...state.customResolutions.map((res) {
-                  final parts = res.replaceAll(" ", "").split("x");
-                  final pixels =
-                      (int.tryParse(parts[0]) ?? 0) *
-                      (int.tryParse(parts.length > 1 ? parts[1] : "0") ?? 0);
+                  final wh = parseResolution(res);
+                  final pixels = wh == null ? 0 : wh.$1 * wh.$2;
                   final consumesAnlas = pixels > AppState.kMegapixelCap;
                   return Container(
                     margin: const EdgeInsets.only(bottom: 4),
@@ -1331,7 +1302,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                             Text(
                               "  (Anlas)",
                               style: TextStyle(
-                                color: Colors.amber.withValues(alpha: 0.8),
+                                color: AppColors.amber.withValues(alpha: 0.8),
                                 fontSize: 10,
                               ),
                             ),
@@ -1341,7 +1312,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                         onTap: () {
                           state.customResolutions.remove(res);
                           if (state.selectedResolution == res) {
-                            state.selectedResolution = "832 x 1216";
+                            state.selectedResolution = kDefaultResolution;
                           }
                           state.saveAllSettings();
                           setModalState(() {});
@@ -1369,8 +1340,10 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
       ),
     ),
   ).then((_) {
-    // 다이얼로그가 완전히 닫힌 뒤에 정리 (닫히는 중에 버리면 예외가 난다)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // 닫히는 애니메이션이 끝난 뒤에 버린다 (DEVNOTES 1번).
+    //  ⚠️ 예전엔 addPostFrameCallback(한 프레임 뒤)이었는데, 닫히는 동안 프레임이 여러 번
+    //     더 그려져서 한 프레임으로는 부족하다. 앱의 다른 창들과 같은 도우미를 쓴다.
+    disposeAfterDialog(() {
       wCtrl.dispose();
       hCtrl.dispose();
     });

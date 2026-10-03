@@ -78,18 +78,35 @@ class I2iResult {
   // 어떤 모드로 만들어졌는지 ('inpaint' | 'mosaic' | 'upscale' | 'img2img')
   // 릴 썸네일 구석에 작은 배지로 표시. 기존 저장분엔 없으므로 기본값은 인페인트.
   String source;
+
+  /// 릴 안에서의 고유 값 — 앱 캐시에 보관하는 그림 파일 이름(r_{id}.img)에 쓴다.
+  ///  (목록 위치는 지우거나 정리할 때마다 바뀌어서 파일 이름으로 못 쓴다)
+  final String id;
+
+  /// 만든 시각 (epoch ms). 앱을 다시 켜서 릴을 되살릴 때 즐겨찾기와 섞는 순서에 쓴다.
+  ///  3.10 이전에 저장한 즐겨찾기엔 없어서 0 (= 맨 앞).
+  final int createdAt;
+
   I2iResult({
     required this.bytes,
     this.metadata,
     this.favorite = false,
     this.source = 'inpaint',
-  });
+    String? id,
+    int? createdAt,
+  }) : id = id ?? '${DateTime.now().microsecondsSinceEpoch}_${_seq++}',
+       createdAt = createdAt ?? DateTime.now().millisecondsSinceEpoch;
+
+  // 같은 순간에 여러 장이 들어와도(배경 제거 3장) id 가 겹치지 않게
+  static int _seq = 0;
 
   Map<String, dynamic> toJson() => {
     'img': base64Encode(bytes),
     'meta': metadata?.toJson(),
     'fav': favorite,
     'src': source,
+    'id': id,
+    't': createdAt,
   };
   factory I2iResult.fromJson(Map<String, dynamic> json) => I2iResult(
     bytes: base64Decode(json['img'] as String),
@@ -98,5 +115,7 @@ class I2iResult {
         : null,
     favorite: json['fav'] == true,
     source: (json['src'] as String?) ?? 'inpaint',
+    id: json['id'] as String?,
+    createdAt: (json['t'] as num?)?.toInt() ?? 0,
   );
 }

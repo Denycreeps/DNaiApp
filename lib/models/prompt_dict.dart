@@ -146,6 +146,53 @@ String appendPromptPiece(String base, String add) {
   return '$b, $add';
 }
 
+/// [text] 의 [cursor] 자리에 [piece] 를 태그 하나로 끼워 넣는다.
+/// 돌려주는 값: (결과 글자, 넣은 태그 바로 뒤 위치 — 커서를 여기 두면 연달아 넣어도 순서대로 쌓인다)
+///
+///  · 커서가 없거나(-1) 뒤에 공백뿐이면 [appendPromptPiece] 와 같다 (맨 끝에 붙이기).
+///  · 단어 한가운데('sh|irt')면 그 태그 끝으로 옮겨서 넣는다 — 태그를 쪼개지 않게.
+///  · 앞뒤 쉼표·띄어쓰기는 알아서 맞추고, 줄바꿈은 쉼표처럼 구분자로 본다.
+///
+///   'skirt, shirt,| pants' + test → 'skirt, shirt, test, pants'
+///
+///  ⚠️ substring 으로 자르지만 안전하다 — 자르는 자리가 입력창 커서(항상 글자 경계)이거나
+///     쉼표·줄바꿈 같은 ASCII 구분자 옆뿐이라, 이모지를 반으로 가를 일이 없다.
+(String, int) insertPromptPieceAt(String text, int cursor, String piece) {
+  if (cursor < 0 || cursor > text.length || text.substring(cursor).trim().isEmpty) {
+    final out = appendPromptPiece(text, piece);
+    return (out, out.length);
+  }
+  bool isSep(String ch) => ch == ',' || ch == '\n';
+  int c = cursor;
+  // 단어 한가운데면 그 태그의 끝(다음 구분자)으로
+  if (c > 0 && !isSep(text[c - 1]) && text[c - 1] != ' ' && !isSep(text[c])) {
+    while (c < text.length && !isSep(text[c])) {
+      c++;
+    }
+  }
+  final before = text.substring(0, c).replaceFirst(RegExp(r' +$'), '');
+  final after = text.substring(c).replaceFirst(RegExp(r'^ +'), '');
+  final String left;
+  if (before.trim().isEmpty) {
+    left = piece;
+  } else if (before.endsWith('\n')) {
+    left = '$before$piece';
+  } else if (before.endsWith(',')) {
+    left = '$before $piece';
+  } else {
+    left = '$before, $piece';
+  }
+  final String out;
+  if (after.isEmpty) {
+    out = left;
+  } else if (isSep(after[0])) {
+    out = '$left$after';
+  } else {
+    out = '$left, $after';
+  }
+  return (out, left.length);
+}
+
 /// 프롬프트탭 '긍정적 프롬프트' 입력창의 되돌리기 열쇠.
 ///  ⚠️ 사전 탭에서 '추가'할 때도 이 열쇠로 기록을 남겨, 프롬프트탭 입력창의
 ///     ↺ 로 되돌릴 수 있게 한다. 두 곳이 글자 하나라도 다르면 연결이 조용히 끊긴다.

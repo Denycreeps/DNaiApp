@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -6,9 +5,14 @@ import 'package:file_picker/file_picker.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import '../models/app_state.dart';
+import '../novelai_service.dart' show NovelAiService; // 검색 페이지 수 기본값
 import '../models/text_controllers.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../app_theme.dart';
+import '../models/i2i_modes.dart';
+import '../widgets/update_dialog.dart'; // 업데이트 안내 창 (main 의 자동 알림과 같은 창)
+import '../widgets/accent_color_sheet.dart'; // 액센트 색 직접 고르기
+import '../widgets/color_sliders.dart' show HueSlider; // 무지개 색 목록
 import '../utils/ui_safety.dart';
 
 class SettingsTab extends StatefulWidget {
@@ -114,7 +118,7 @@ class _SettingsTabState extends State<SettingsTab>
             ),
             const Divider(height: 1, color: Colors.white12),
             ListTile(
-              leading: const Icon(Icons.folder, color: Color(0xFFFFC107)),
+              leading: const Icon(Icons.folder, color: AppColors.amber),
               title: const Text("폴더에 저장", style: TextStyle(color: Colors.white)),
               subtitle: Text(
                 state.safRootUri != null
@@ -149,7 +153,9 @@ class _SettingsTabState extends State<SettingsTab>
 
     try {
       final data = await state.exportSettings();
-      final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
+      // JSON 만들기는 화면 밖(isolate)에서 — 히스토리·사전 그림까지 들어가 수십 MB 가 될 수 있어,
+      //  예전처럼 여기서 만들면 그동안 화면이 멈췄다.
+      final bytes = await AppState.encodeSettingsJson(data, pretty: true);
       final now = DateTime.now();
       String two(int n) => n.toString().padLeft(2, '0');
       final dateStr =
@@ -161,7 +167,7 @@ class _SettingsTabState extends State<SettingsTab>
         //  ⚠️ 예전처럼 /Android/data/<패키지>/files 아래에 쓰면 저장은 되지만,
         //     안드로이드 11부터 문서 선택기가 그 경로를 볼 수 없어서
         //     '가져오기'를 눌러도 파일이 나타나지 않는다.
-        final shown = await state.saveSettingsViaSaf(fileName, jsonStr);
+        final shown = await state.saveSettingsViaSaf(fileName, bytes);
         if (!context.mounted) {
           return;
         }
@@ -169,7 +175,7 @@ class _SettingsTabState extends State<SettingsTab>
           // 저장 폴더가 없으면 조용히 실패하지 말고 공유로 대체 (파일을 잃지 않게)
           final dir = await getTemporaryDirectory();
           final file = File('${dir.path}/$fileName');
-          await file.writeAsString(jsonStr);
+          await file.writeAsBytes(bytes);
           await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
           if (!context.mounted) {
             return;
@@ -188,7 +194,7 @@ class _SettingsTabState extends State<SettingsTab>
       } else {
         final dir = await getTemporaryDirectory();
         final file = File('${dir.path}/$fileName');
-        await file.writeAsString(jsonStr);
+        await file.writeAsBytes(bytes);
         await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
       }
     } catch (e) {
@@ -206,7 +212,7 @@ class _SettingsTabState extends State<SettingsTab>
       return AppColors.teal;
     }
     if (percent >= 20) {
-      return Colors.amber;
+      return AppColors.amber;
     }
     return Colors.redAccent;
   }
@@ -758,45 +764,89 @@ class _SettingsTabState extends State<SettingsTab>
           ),
           const SizedBox(height: 4),
           const Text(
-            "버튼·아이콘·강조 표시에 쓰이는 색이에요.",
+            "버튼·아이콘·강조 표시에 쓰이는 색이에요. 무지개 칸에서 직접 고를 수도 있어요.",
             style: TextStyle(color: Colors.white38, fontSize: 11),
           ),
           const SizedBox(height: 12),
           Wrap(
             spacing: 10,
             runSpacing: 10,
-            children: AppColors.accentPalette.map((opt) {
-              final bool selected = state.themeAccent == opt.color.toARGB32();
-              return GestureDetector(
-                onTap: () => state.setThemeAccent(opt.color.toARGB32()),
-                child: Tooltip(
-                  message: opt.name,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: opt.color,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: selected ? Colors.white : Colors.white24,
-                        width: selected ? 3 : 1,
+            children: [
+              ...AppColors.accentPalette.map((opt) {
+                final bool selected = state.themeAccent == opt.color.toARGB32();
+                return GestureDetector(
+                  onTap: () => state.setThemeAccent(opt.color.toARGB32()),
+                  child: Tooltip(
+                    message: opt.name,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: opt.color,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: selected ? Colors.white : Colors.white24,
+                          width: selected ? 3 : 1,
+                        ),
+                        boxShadow: selected
+                            ? [BoxShadow(color: opt.color.withValues(alpha: 0.5), blurRadius: 8)]
+                            : null,
                       ),
-                      boxShadow: selected
-                          ? [BoxShadow(color: opt.color.withValues(alpha: 0.5), blurRadius: 8)]
-                          : null,
+                      child: selected ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
                     ),
-                    child: selected ? const Icon(Icons.check, color: Colors.white, size: 20) : null,
                   ),
-                ),
-              );
-            }).toList(),
+                );
+              }),
+              _customAccentSwatch(state),
+            ],
           ),
         ],
       ),
     );
   }
 
+  // 무지개 칸 — 색 직접 고르기 (widgets/accent_color_sheet.dart).
+  //  지금 색이 위 목록에 없는 색(직접 고른 색)이면 그 색으로 채우고 체크를 단다.
+  Widget _customAccentSwatch(AppState state) {
+    final bool custom = !AppColors.accentPalette.any(
+      (o) => o.color.toARGB32() == state.themeAccent,
+    );
+    final Color current = Color(state.themeAccent);
+    return GestureDetector(
+      onTap: () => showAccentColorSheet(context, state),
+      child: Tooltip(
+        message: "직접 고르기",
+        child: Container(
+          width: 40,
+          height: 40,
+          padding: const EdgeInsets.all(3), // 무지개 테두리 두께
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: const SweepGradient(colors: HueSlider.rainbow),
+            boxShadow: custom
+                ? [BoxShadow(color: current.withValues(alpha: 0.5), blurRadius: 8)]
+                : null,
+          ),
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: custom ? current : AppColors.surface,
+              border: custom ? Border.all(color: Colors.white, width: 2) : null,
+            ),
+            child: Icon(
+              custom ? Icons.check : Icons.colorize,
+              color: custom ? Colors.white : Colors.white70,
+              size: custom ? 18 : 16,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// ON/OFF 한 줄. [onChanged] 는 값만 바꾸면 된다 — 저장과 화면 갱신은 여기서 한다.
+  ///  (예전엔 토글마다 'state.x = val; state.saveAndRefresh();' 두 줄을 따라 적었다)
   Widget _toggleTile({
     required IconData icon,
     required String title,
@@ -842,7 +892,10 @@ class _SettingsTabState extends State<SettingsTab>
               value: value,
               activeThumbColor: color,
               activeTrackColor: color.withValues(alpha: 0.5),
-              onChanged: onChanged,
+              onChanged: (v) {
+                onChanged(v);
+                _appState.saveAndRefresh();
+              },
             ),
           ),
         ],
@@ -912,7 +965,7 @@ class _SettingsTabState extends State<SettingsTab>
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Row(
           children: [
-            Icon(Icons.drive_file_move_outline, color: Color(0xFFFFC107)),
+            Icon(Icons.drive_file_move_outline, color: AppColors.amber),
             SizedBox(width: 8),
             Text("앱 폴더 → SAF 이전", style: TextStyle(color: Colors.white, fontSize: 16)),
           ],
@@ -934,7 +987,7 @@ class _SettingsTabState extends State<SettingsTab>
           ),
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx, "move"),
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFC107)),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.amber),
             child: const Text(
               "이동",
               style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
@@ -955,7 +1008,7 @@ class _SettingsTabState extends State<SettingsTab>
         backgroundColor: AppColors.surface,
         content: Row(
           children: [
-            const CircularProgressIndicator(color: Color(0xFFFFC107)),
+            const CircularProgressIndicator(color: AppColors.amber),
             const SizedBox(width: 20),
             Text(move ? "이동 중..." : "복사 중...", style: const TextStyle(color: Colors.white)),
           ],
@@ -1056,9 +1109,13 @@ class _SettingsTabState extends State<SettingsTab>
     return c;
   });
 
-  // 검색 페이지 수 슬라이더 타일 (본인 API 키가 있어야 조절 가능)
+  // 검색 양 카드 (본인 API 키가 있어야 고를 수 있다)
+  //  예전엔 40~120 슬라이더(5 단위) + '[실험] 정렬 다양화' 스위치였다.
+  //  이제 검색이 결과 수를 보고 필요한 만큼만 받고 섞기 순서로 고르게 뽑아서, 세 단계면 충분하다.
+  //  (단계 목록은 AppState.searchAmounts 한곳 — 정렬 다양화는 뺐다)
   Widget _searchPagesTile(AppState state) {
-    final bool hasKey = state.gelbooruApiKey.isNotEmpty;
+    // 검색이 '본인 키' 로 보는 기준과 같게 — 아이디와 키가 둘 다 있어야 한다 (NovelAiService._searchPrompts)
+    final bool hasKey = state.gelbooruApiKey.isNotEmpty && state.gelbooruUserId.isNotEmpty;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
@@ -1073,86 +1130,79 @@ class _SettingsTabState extends State<SettingsTab>
             children: [
               Icon(Icons.search, color: hasKey ? AppColors.accent : Colors.white24, size: 20),
               const SizedBox(width: 12),
-              Expanded(
-                child: Text(
-                  "검색 페이지 수",
-                  style: TextStyle(color: hasKey ? Colors.white : Colors.white38, fontSize: 15),
-                ),
-              ),
               Text(
-                hasKey ? "${state.gelbooruSearchPages}" : "40",
-                style: TextStyle(
-                  color: hasKey ? AppColors.accent : Colors.white38,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
+                "검색 양",
+                style: TextStyle(color: hasKey ? Colors.white : Colors.white38, fontSize: 15),
               ),
             ],
           ),
+          const SizedBox(height: 2),
           Text(
-            hasKey ? "많을수록 더 많은 결과를 찾지만 검색이 느려져요 (40~120)" : "본인 API 키를 등록하면 조절할 수 있어요",
+            hasKey
+                ? "결과가 아주 많을 때 몇 개까지 모아 둘지 골라요. 많을수록 검색이 조금 길어져요"
+                : "Gelbooru API 등록 시 변경 가능 "
+                      "(지금은 약 ${NovelAiService.searchPagesWithoutKey * 100}개까지)",
             style: const TextStyle(color: Colors.white38, fontSize: 11),
           ),
-          Slider(
-            value: state.gelbooruSearchPages.toDouble().clamp(40, 120),
-            min: 40,
-            max: 120,
-            divisions: 16, // 40,45,...,120
-            activeColor: AppColors.accent,
-            label: "${state.gelbooruSearchPages}",
-            onChanged: hasKey
-                ? (v) {
-                    state.gelbooruSearchPages = v.round();
-                    state.refreshUI();
-                  }
-                : null,
-            onChangeEnd: hasKey
-                ? (v) {
-                    state.gelbooruSearchPages = v.round();
-                    state.saveAllSettings();
-                    state.refreshUI();
-                  }
-                : null,
-          ),
-          const SizedBox(height: 4),
-          // [실험] 정렬 축 다양화 토글
+          const SizedBox(height: 10),
           Row(
             children: [
-              Icon(
-                Icons.shuffle,
-                color: hasKey ? const Color(0xFF3B82F6) : Colors.white24,
-                size: 18,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "정렬 다양화 (실험)",
-                      style: TextStyle(color: hasKey ? Colors.white : Colors.white38, fontSize: 14),
-                    ),
-                    Text(
-                      "여러 정렬을 섞어 더 다양한 결과를 찾아요",
-                      style: const TextStyle(color: Colors.white38, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-              Switch(
-                value: state.diversifySearchSort,
-                activeThumbColor: const Color(0xFF3B82F6),
-                onChanged: hasKey
-                    ? (v) {
-                        state.diversifySearchSort = v;
-                        state.saveAllSettings();
-                        state.refreshUI();
-                      }
-                    : null,
-              ),
+              for (int i = 0; i < AppState.searchAmounts.length; i++) ...[
+                if (i > 0) const SizedBox(width: 8),
+                Expanded(child: _searchAmountOption(state, AppState.searchAmounts[i], hasKey)),
+              ],
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  // 검색 양 한 칸 (이름 + 대략 개수). 키가 없으면 흐리게, 누를 수 없게 (아무것도 고르지 않은 모양)
+  Widget _searchAmountOption(AppState state, SearchAmount opt, bool enabled) {
+    final bool selected = enabled && state.gelbooruSearchPages == opt.pages;
+    final Color accent = AppColors.accent;
+    return GestureDetector(
+      onTap: enabled
+          ? () {
+              state.gelbooruSearchPages = opt.pages;
+              state.saveAndRefresh();
+            }
+          : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? accent.withValues(alpha: 0.18) : Colors.white.withValues(alpha: 0.04),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: selected ? accent.withValues(alpha: 0.8) : (enabled ? Colors.white24 : Colors.white10),
+            width: selected ? 1.5 : 1,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              opt.name,
+              style: TextStyle(
+                color: selected ? accent : (enabled ? Colors.white70 : Colors.white24),
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              opt.amount,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: selected ? accent.withValues(alpha: 0.85) : (enabled ? Colors.white38 : Colors.white24),
+                fontSize: 11,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1239,506 +1289,452 @@ class _SettingsTabState extends State<SettingsTab>
 
   List<Widget> _generalSection(BuildContext context, AppState state) {
     return [
-      // ── 프롬프트 ──
-      _settingGroup(
-        state,
-        id: 'prompt',
-        title: "프롬프트",
-        icon: Icons.edit_note,
-        children: [
-          // 1. 랜덤 프롬프트 알파벳 순서
-          _toggleTile(
-            icon: Icons.sort_by_alpha,
-            title: "랜덤 프롬프트 알파벳 순서",
-            value: state.randomPromptAlphabetical,
-            onChanged: (val) {
-              state.randomPromptAlphabetical = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-            radius: const BorderRadius.vertical(top: Radius.circular(16)),
-          ),
-          // 2. NovelAi 권장 순서 무시
-          _toggleTile(
-            icon: Icons.rule_folder_outlined,
-            title: "NovelAi 권장 순서 무시",
-            value: state.ignoreRecommendedOrder,
-            onChanged: (val) {
-              state.ignoreRecommendedOrder = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          // 7. 가중치 색상 표시
-          _toggleTile(
-            icon: Icons.format_color_text,
-            title: "가중치 색상 표시",
-            value: state.weightHighlight,
-            onChanged: (val) {
-              state.weightHighlight = val;
-              WeightHighlightController.highlightEnabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          // 7-1. 중첩 가중치 펼치기
-          //  NovelAI 는 숫자 없는 '::' 를 만나면 앞의 가중치를 전부 끝내 버린다.
-          //  켜 두면 보내기 직전에 바깥 가중치를 다시 열어 준다.
-          _toggleTile(
-            icon: Icons.account_tree_outlined,
-            title: "중첩 가중치 펼치기",
-            value: state.expandNestedWeightsEnabled,
-            onChanged: (val) {
-              state.expandNestedWeightsEnabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          // 8. e621 프롬프트 확장
-          _toggleTile(
-            icon: Icons.extension,
-            title: "e621 프롬프트 확장",
-            color: const Color(0xFF3B9EFF),
-            value: state.e621Enabled,
-            onChanged: (val) {
-              state.e621Enabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          _toggleTile(
-            icon: Icons.dashboard_outlined,
-            title: "프롬프트탭 새로운 UI로 변경",
-            value: state.promptNewLayout,
-            onChanged: (val) {
-              state.promptNewLayout = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          // ⚠️ [보류] 프롬프트탭 2번째 UI 토글 (promptAltLayout)
-          //  구현은 prompt_tab.dart의 _buildAltLayout 이하에 그대로 남아 있고,
-          //  AppState.promptAltLayout 을 true 로 만들면 다시 동작한다.
-          //  일반 사용자에게 노출하지 않기 위해 설정 항목만 제거한 상태.
-          //  다시 쓰려면 아래 블록의 주석을 해제하면 된다.
-          // _toggleTile(
-          //   icon: Icons.dashboard_customize,
-          //   title: "프롬프트탭 다른 UI로 변경",
-          //   value: state.promptAltLayout,
-          //   onChanged: (val) {
-          //     state.promptAltLayout = val;
-          //     state.saveAllSettings();
-          //     state.refreshUI();
-          //   },
-          // ),
-          // 11. 프롬프트 탭 캐릭터 편집 서랍
-          _toggleTile(
-            icon: Icons.people_alt,
-            title: "프롬프트 탭 캐릭터 편집",
-            value: state.promptCharDrawerEnabled,
-            onChanged: (val) {
-              state.promptCharDrawerEnabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-            radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-          ),
-          // 캐릭터 탭 재탭 토글
-          _toggleTile(
-            icon: Icons.touch_app,
-            title: "캐릭터 재선택으로 ON/OFF",
-            value: state.charRetapToggle,
-            onChanged: (val) {
-              state.charRetapToggle = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-        ],
-      ),
-
-      // ── 히스토리 · 갤러리 ──
-      _settingGroup(
-        state,
-        id: 'history',
-        title: "히스토리 · 갤러리",
-        icon: Icons.photo_library_outlined,
-        children: [
-          // 4. 갤러리 모드 비활성화 (기본은 켜져 있음)
-          _toggleTile(
-            icon: Icons.photo_library_outlined,
-            title: "갤러리 모드 비활성화",
-            color: const Color(0xFFFFC107),
-            value: !state.galleryModeEnabled,
-            onChanged: (val) {
-              state.setGalleryModeEnabled(!val);
-            },
-          ),
-          // 5. 히스토리 이미지 슬라이드
-          _toggleTile(
-            icon: Icons.view_carousel_outlined,
-            title: "히스토리 이미지 슬라이드",
-            value: state.historySlideEnabled,
-            onChanged: (val) {
-              state.historySlideEnabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-        ],
-      ),
-
-      // ── i2i · 인페인트 ──
-      _settingGroup(
-        state,
-        id: 'i2i',
-        title: "i2i · 인페인트",
-        icon: Icons.brush_outlined,
-        children: [
-          // 6. i2i용 히스토리 비활성화
-          _toggleTile(
-            icon: Icons.history_toggle_off,
-            title: "i2i용 히스토리 비활성화",
-            color: AppColors.purple,
-            value: state.i2iHistoryDisabled,
-            onChanged: (val) {
-              state.i2iHistoryDisabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-          // 6-1. i2i 히스토리 핸들이 켜져 있을 때만(=비활성화 OFF) 인페인트 세부 옵션 표시
-          if (!state.i2iHistoryDisabled) ...[
-            _subToggleTile(
-              title: "작업 후 결과로 전환 방지",
-              value: state.inpaintNoAutoSwitch,
-              onChanged: (val) {
-                state.inpaintNoAutoSwitch = val;
-                state.saveAllSettings();
-                state.refreshUI();
-              },
-            ),
-            _subToggleTile(
-              title: "인페인트 시 마스킹 자동 해제",
-              value: state.inpaintAutoClearMask,
-              onChanged: (val) {
-                state.inpaintAutoClearMask = val;
-                state.saveAllSettings();
-                state.refreshUI();
-              },
-            ),
-          ],
-          // 6-2. Director Tool 전환 버튼 표시
-          //  끄면 i2i 탭의 'Director tool' 버튼이 사라진다.
-          //  (이미 만든 결과나 고른 도구는 그대로 남는다 — 버튼만 감춘다)
-          _toggleTile(
-            icon: Icons.auto_awesome,
-            title: "Director Tool 버튼 표시",
-            color: AppColors.purple,
-            value: state.directorToolVisible,
-            onChanged: (val) {
-              state.directorToolVisible = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-        ],
-      ),
-
-      // ── 동작 · 기타 ──
-      _settingGroup(
-        state,
-        id: 'behavior',
-        title: "동작 · 기타",
-        icon: Icons.tune,
-        children: [
-          // 3. 연속 생성 딜레이 (슬라이더)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.timer_outlined, color: AppColors.accent, size: 20),
-                const SizedBox(width: 8),
-                const Text(
-                  "연속 생성 딜레이",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  "${state.batchDelay.toStringAsFixed(1)}초",
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                  ),
-                ),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderThemeData(
-                      trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                      activeTrackColor: AppColors.accent,
-                      inactiveTrackColor: Colors.white12,
-                      thumbColor: AppColors.accent,
-                    ),
-                    child: Slider(
-                      value: state.batchDelay,
-                      min: 0.0,
-                      max: 5.0,
-                      divisions: 10,
-                      onChanged: (v) {
-                        state.batchDelay = v;
-                        state.refreshUI();
-                      },
-                      onChangeEnd: (_) => state.saveAllSettings(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              border: Border.all(color: Colors.white10),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.format_size, color: AppColors.accent, size: 20),
-                const SizedBox(width: 8),
-                const Text(
-                  "프롬프트 입력 폰트 크기",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  state.promptEditorFontSize.toStringAsFixed(0),
-                  style: TextStyle(
-                    color: AppColors.accent,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                  ),
-                ),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderThemeData(
-                      trackHeight: 3,
-                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
-                      activeTrackColor: AppColors.accent,
-                      inactiveTrackColor: Colors.white12,
-                      thumbColor: AppColors.accent,
-                    ),
-                    child: Slider(
-                      value: state.promptEditorFontSize,
-                      min: 10.0,
-                      max: 28.0,
-                      divisions: 36,
-                      onChanged: (v) {
-                        state.promptEditorFontSize = v;
-                        state.refreshUI();
-                      },
-                      onChangeEnd: (_) => state.saveAllSettings(),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          // 9. 탭 좌우 스와이프
-          _toggleTile(
-            icon: Icons.swipe,
-            title: "탭 좌우 스와이프",
-            value: state.horizontalSwipeEnabled,
-            onChanged: (val) {
-              state.horizontalSwipeEnabled = val;
-              state.saveAllSettings();
-              state.refreshUI();
-            },
-          ),
-        ],
-      ),
-
-      // ── 테마 ──
-      _settingGroup(
-        state,
-        id: 'theme',
-        title: "테마",
-        icon: Icons.palette_outlined,
-        children: [_accentPickerTile(state)],
-      ),
-
+      // 프롬프트 묶음 (알파벳 순서·권장 순서·가중치·e621·캐릭터 서랍)
+      _promptGroup(context, state),
+      // 히스토리 · 갤러리 묶음
+      _historyGalleryGroup(context, state),
+      // i2i · 인페인트 묶음
+      _i2iGroup(context, state),
+      // 동작 · 기타 묶음 (연속 생성 딜레이·스와이프 등)
+      _behaviorGroup(context, state),
+      // 테마 묶음
+      _themeGroup(context, state),
       const SizedBox(height: 16),
-      // 검색 페이지 수 (API 키 있을 때만 조절 가능) — 독립 카드
+      // 검색 양 (API 키 있을 때만 고를 수 있음) — 독립 카드
       _searchPagesTile(state),
       const SizedBox(height: 16),
-      // ── ON/OFF 옵션과 폴더/파일 설정 구분선 ──
+      // ── ON/OFF 옵션과 표시 설정(탭·i2i 모드) 구분선 ──
+      //  (폴더·파일 설정은 '저장' 탭으로 옮겼다)
       const Padding(
         padding: EdgeInsets.only(bottom: 16),
         child: Divider(color: Colors.white24, thickness: 1, height: 1),
       ),
-      // 표시 설정 (탭 / i2i 모드) — 한 카드로 통합
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.tab, color: AppColors.accent, size: 15),
-                const SizedBox(width: 6),
-                const Text(
-                  "탭 표시 설정",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            // 2×2 균등 그리드 (Wrap이 3+1로 깨지는 것을 방지)
-            _chipGrid([
-              _tabChip("히스토리", state.historyTabEnabled, (v) {
-                state.historyTabEnabled = v;
-                state.saveAllSettings();
-                state.refreshUI();
-              }, icon: Icons.history),
-              _tabChip("i2i", state.i2iTabEnabled, (v) {
-                state.setI2iTabEnabled(v);
-              }, icon: Icons.image),
-              _tabChip("캐릭터", state.characterTabEnabled, (v) {
-                state.characterTabEnabled = v;
-                state.saveAllSettings();
-                state.refreshUI();
-              }, icon: Icons.people),
-              _tabChip("라이브러리", state.wildcardTabEnabled, (v) {
-                state.wildcardTabEnabled = v;
-                state.saveAllSettings();
-                state.refreshUI();
-              }, icon: Icons.casino),
-            ]),
-
-            const SizedBox(height: 16),
-            Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
-            const SizedBox(height: 14),
-
-            Row(
-              children: [
-                const Icon(Icons.dashboard_customize, color: AppColors.teal, size: 15),
-                const SizedBox(width: 6),
-                const Text(
-                  "i2i 모드 표시 설정",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            _chipGrid([
-              _tabChip(
-                "인페인트",
-                state.i2iModeInpaintEnabled,
-                (v) => state.setI2iModeEnabled('inpaint', v),
-                icon: Icons.format_paint,
-                activeColor: AppColors.teal,
-              ),
-              _tabChip(
-                "모자이크",
-                state.i2iModeMosaicEnabled,
-                (v) => state.setI2iModeEnabled('mosaic', v),
-                icon: Icons.grid_on,
-                activeColor: AppColors.accent,
-              ),
-              _tabChip(
-                "img2img",
-                state.i2iModeImg2imgEnabled,
-                (v) => state.setI2iModeEnabled('img2img', v),
-                icon: Icons.auto_fix_high,
-                activeColor: const Color(0xFF3B82F6),
-              ),
-              _tabChip(
-                "업스케일",
-                state.i2iModeUpscaleEnabled,
-                (v) => state.setI2iModeEnabled('upscale', v),
-                icon: Icons.high_quality,
-                activeColor: AppColors.orange,
-              ),
-            ]),
-
-            const SizedBox(height: 16),
-            Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
-            const SizedBox(height: 14),
-
-            Row(
-              children: [
-                const Icon(Icons.view_agenda, color: AppColors.purple, size: 15),
-                const SizedBox(width: 6),
-                const Text(
-                  "프롬프트 창 표시 설정",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              "전부 꺼도 프롬프트 탭은 그대로 유지돼요",
-              style: TextStyle(color: Colors.white38, fontSize: 11),
-            ),
-            const SizedBox(height: 10),
-            _chipGrid([
-              _promptSectionChip(
-                state,
-                'positive',
-                "긍정적",
-                Icons.add_circle_outline,
-                AppColors.teal,
-              ),
-              _promptSectionChip(state, 'prefix', "선행", Icons.arrow_right_alt, AppColors.blue),
-              _promptSectionChip(
-                state,
-                'suffix',
-                "후행",
-                Icons.keyboard_double_arrow_right,
-                AppColors.orange,
-              ),
-              _promptSectionChip(
-                state,
-                'negative',
-                "부정적",
-                Icons.remove_circle_outline,
-                AppColors.red,
-              ),
-              _promptSectionChip(
-                state,
-                'removeChips',
-                "태그 제거",
-                Icons.auto_fix_high,
-                AppColors.purple,
-              ),
-              _promptSectionChip(
-                state,
-                'customRemove',
-                "개별 제거",
-                Icons.delete_outline,
-                const Color(0xFF9E9E9E),
-              ),
-              _promptSectionChip(state, 'conditional', "조건부", Icons.bolt, const Color(0xFFEC4899)),
-              _promptSectionChip(state, 'weightRules', "가중치", Icons.tune, const Color(0xFF84CC16)),
-            ]),
-          ],
-        ),
-      ),
+      // 표시 설정 카드 (탭 / i2i 모드) — 한 카드로 통합
+      _displayCard(context, state),
       const SizedBox(height: 16),
     ];
+  }
+
+  // 프롬프트 묶음 (알파벳 순서·권장 순서·가중치·e621·캐릭터 서랍·스케줄러 잠금)
+  Widget _promptGroup(BuildContext context, AppState state) {
+    return _settingGroup(
+      state,
+      id: 'prompt',
+      title: "프롬프트",
+      icon: Icons.edit_note,
+      children: [
+        // 랜덤 프롬프트 알파벳 순서
+        _toggleTile(
+          icon: Icons.sort_by_alpha,
+          title: "랜덤 프롬프트 알파벳 순서",
+          value: state.randomPromptAlphabetical,
+          onChanged: (val) => state.randomPromptAlphabetical = val,
+          radius: const BorderRadius.vertical(top: Radius.circular(16)),
+        ),
+        // NovelAi 권장 순서 무시
+        _toggleTile(
+          icon: Icons.rule_folder_outlined,
+          title: "NovelAi 권장 순서 무시",
+          value: state.ignoreRecommendedOrder,
+          onChanged: (val) => state.ignoreRecommendedOrder = val,
+        ),
+        // 가중치 색상 표시
+        _toggleTile(
+          icon: Icons.format_color_text,
+          title: "가중치 색상 표시",
+          value: state.weightHighlight,
+          onChanged: (val) {
+            state.weightHighlight = val;
+            WeightHighlightController.highlightEnabled = val;
+          },
+        ),
+        // 7-1. 중첩 가중치 펼치기
+        //  NovelAI 는 숫자 없는 '::' 를 만나면 앞의 가중치를 전부 끝내 버린다.
+        //  켜 두면 보내기 직전에 바깥 가중치를 다시 열어 준다.
+        _toggleTile(
+          icon: Icons.account_tree_outlined,
+          title: "중첩 가중치 펼치기",
+          value: state.expandNestedWeightsEnabled,
+          onChanged: (val) => state.expandNestedWeightsEnabled = val,
+        ),
+        // e621 프롬프트 확장
+        _toggleTile(
+          icon: Icons.extension,
+          title: "e621 프롬프트 확장",
+          color: const Color(0xFF3B9EFF),
+          value: state.e621Enabled,
+          onChanged: (val) => state.e621Enabled = val,
+        ),
+        // 프롬프트 탭 캐릭터 편집 서랍
+        _toggleTile(
+          icon: Icons.people_alt,
+          title: "프롬프트 탭 캐릭터 편집",
+          value: state.promptCharDrawerEnabled,
+          onChanged: (val) => state.promptCharDrawerEnabled = val,
+        ),
+        // 캐릭터 탭 재탭 토글
+        _toggleTile(
+          icon: Icons.touch_app,
+          title: "캐릭터 재선택으로 ON/OFF",
+          value: state.charRetapToggle,
+          onChanged: (val) => state.charRetapToggle = val,
+        ),
+        // 스케줄러 잠금 해제 — 꺼 두면 V5는 karras 로만 (실수로 바꾸지 않게)
+        //  ⚠️ 아래 모서리 둥글게는 '마지막 줄'에. 예전엔 서랍 줄에 붙어 있어서
+        //     그 뒤에 추가된 줄(캐릭터 재선택)이 각진 채 맨 아래에 있었다.
+        _toggleTile(
+          icon: Icons.lock_open_outlined,
+          title: "스케줄러 잠금 해제",
+          value: state.schedulerUnlocked,
+          onChanged: (val) => state.schedulerUnlocked = val,
+          radius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+        ),
+      ],
+    );
+  }
+
+  // 히스토리 · 갤러리 묶음
+  Widget _historyGalleryGroup(BuildContext context, AppState state) {
+    return _settingGroup(
+      state,
+      id: 'history',
+      title: "히스토리 · 갤러리",
+      icon: Icons.photo_library_outlined,
+      children: [
+        // 갤러리 모드 비활성화 (기본은 켜져 있음)
+        _toggleTile(
+          icon: Icons.photo_library_outlined,
+          title: "갤러리 모드 비활성화",
+          color: AppColors.amber,
+          value: !state.galleryModeEnabled,
+          // 켜짐 = '비활성화' 이므로 반대로 넣는다
+          onChanged: (val) => state.galleryModeEnabled = !val,
+        ),
+        // 히스토리 탭 마지막 보기 유지 (기본 OFF — 들어올 때 늘 목록·그리드부터)
+        //  켜면 마지막으로 보던 보기(목록·그리드 / 갤러리)로 들어온다. 갤러리를 끄면 의미가 없어 숨긴다.
+        if (state.galleryModeEnabled)
+          _toggleTile(
+            icon: Icons.restore_page_outlined,
+            title: "히스토리 탭 마지막 보기 유지",
+            value: state.historyKeepLastView,
+            onChanged: (val) => state.historyKeepLastView = val,
+          ),
+        // 히스토리 이미지 슬라이드
+        _toggleTile(
+          icon: Icons.view_carousel_outlined,
+          title: "히스토리 이미지 슬라이드",
+          value: state.historySlideEnabled,
+          onChanged: (val) => state.historySlideEnabled = val,
+        ),
+      ],
+    );
+  }
+
+  // i2i · 인페인트 묶음
+  Widget _i2iGroup(BuildContext context, AppState state) {
+    return _settingGroup(
+      state,
+      id: 'i2i',
+      title: "i2i · 인페인트",
+      icon: Icons.brush_outlined,
+      children: [
+        // i2i용 히스토리 비활성화
+        _toggleTile(
+          icon: Icons.history_toggle_off,
+          title: "i2i용 히스토리 비활성화",
+          color: AppColors.purple,
+          value: state.i2iHistoryDisabled,
+          onChanged: (val) => state.i2iHistoryDisabled = val,
+        ),
+        // 6-1. i2i 히스토리 핸들이 켜져 있을 때만(=비활성화 OFF) 인페인트 세부 옵션 표시
+        if (!state.i2iHistoryDisabled) ...[
+          _subToggleTile(
+            title: "작업 후 결과로 전환 방지",
+            value: state.inpaintNoAutoSwitch,
+            onChanged: (val) {
+              state.inpaintNoAutoSwitch = val;
+              state.saveAndRefresh();
+            },
+          ),
+          _subToggleTile(
+            title: "인페인트 시 마스킹 자동 해제",
+            value: state.inpaintAutoClearMask,
+            onChanged: (val) {
+              state.inpaintAutoClearMask = val;
+              state.saveAndRefresh();
+            },
+          ),
+        ],
+        // 6-2. Director Tool 전환 버튼 표시
+        //  끄면 i2i 탭의 'Director tool' 버튼이 사라진다.
+        //  (이미 만든 결과나 고른 도구는 그대로 남는다 — 버튼만 감춘다)
+        _toggleTile(
+          icon: Icons.auto_awesome,
+          title: "Director Tool 버튼 표시",
+          color: AppColors.purple,
+          value: state.directorToolVisible,
+          onChanged: (val) => state.directorToolVisible = val,
+        ),
+      ],
+    );
+  }
+
+  // 동작 · 기타 묶음 (연속 생성 딜레이·스와이프 등)
+  Widget _behaviorGroup(BuildContext context, AppState state) {
+    return _settingGroup(
+      state,
+      id: 'behavior',
+      title: "동작 · 기타",
+      icon: Icons.tune,
+      children: [
+        // 연속 생성 딜레이 (슬라이더)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.timer_outlined, color: AppColors.accent, size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                "연속 생성 딜레이",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                "${state.batchDelay.toStringAsFixed(1)}초",
+                style: TextStyle(
+                  color: AppColors.accent,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    trackHeight: 3,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                    activeTrackColor: AppColors.accent,
+                    inactiveTrackColor: Colors.white12,
+                    thumbColor: AppColors.accent,
+                  ),
+                  child: Slider(
+                    value: state.batchDelay,
+                    min: 0.0,
+                    max: 5.0,
+                    divisions: 10,
+                    onChanged: (v) {
+                      state.batchDelay = v;
+                      state.refreshUI();
+                    },
+                    onChangeEnd: (_) => state.saveAllSettings(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Row(
+            children: [
+              Icon(Icons.format_size, color: AppColors.accent, size: 20),
+              const SizedBox(width: 8),
+              const Text(
+                "프롬프트 입력 폰트 크기",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                state.promptEditorFontSize.toStringAsFixed(0),
+                style: TextStyle(
+                  color: AppColors.accent,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                ),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    trackHeight: 3,
+                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                    activeTrackColor: AppColors.accent,
+                    inactiveTrackColor: Colors.white12,
+                    thumbColor: AppColors.accent,
+                  ),
+                  child: Slider(
+                    value: state.promptEditorFontSize,
+                    min: 10.0,
+                    max: 28.0,
+                    divisions: 36,
+                    onChanged: (v) {
+                      state.promptEditorFontSize = v;
+                      state.refreshUI();
+                    },
+                    onChangeEnd: (_) => state.saveAllSettings(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        // 탭 좌우 스와이프
+        _toggleTile(
+          icon: Icons.swipe,
+          title: "탭 좌우 스와이프",
+          value: state.horizontalSwipeEnabled,
+          onChanged: (val) => state.horizontalSwipeEnabled = val,
+        ),
+      ],
+    );
+  }
+
+  // 테마 묶음
+  Widget _themeGroup(BuildContext context, AppState state) {
+    return _settingGroup(
+      state,
+      id: 'theme',
+      title: "테마",
+      icon: Icons.palette_outlined,
+      children: [_accentPickerTile(state)],
+    );
+  }
+
+  // 표시 설정 카드 (탭 / i2i 모드) — 한 카드로 통합
+  Widget _displayCard(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.tab, color: AppColors.accent, size: 15),
+              const SizedBox(width: 6),
+              const Text(
+                "탭 표시 설정",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // 2×2 균등 그리드 (Wrap이 3+1로 깨지는 것을 방지)
+          _chipGrid([
+            _tabChip("히스토리", state.historyTabEnabled, (v) {
+              state.historyTabEnabled = v;
+              state.saveAndRefresh();
+            }, icon: Icons.history),
+            _tabChip("i2i", state.i2iTabEnabled, (v) {
+              state.setI2iTabEnabled(v);
+            }, icon: Icons.image),
+            _tabChip("캐릭터", state.characterTabEnabled, (v) {
+              state.characterTabEnabled = v;
+              state.saveAndRefresh();
+            }, icon: Icons.people),
+            _tabChip("라이브러리", state.wildcardTabEnabled, (v) {
+              state.wildcardTabEnabled = v;
+              state.saveAndRefresh();
+            }, icon: Icons.casino),
+          ]),
+
+          const SizedBox(height: 16),
+          Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+          const SizedBox(height: 14),
+
+          Row(
+            children: [
+              const Icon(Icons.dashboard_customize, color: AppColors.teal, size: 15),
+              const SizedBox(width: 6),
+              const Text(
+                "i2i 모드 표시 설정",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // 이름·아이콘·색은 i2i 탭과 같은 곳(I2iMode)에서 가져온다
+          _chipGrid([
+            for (final m in I2iMode.values)
+              _tabChip(
+                m.label,
+                state.isI2iModeEnabled(m),
+                (v) => state.setI2iModeEnabled(m, v),
+                icon: m.icon,
+                activeColor: m.color,
+              ),
+          ]),
+
+          const SizedBox(height: 16),
+          Divider(color: Colors.white.withValues(alpha: 0.08), height: 1),
+          const SizedBox(height: 14),
+
+          Row(
+            children: [
+              const Icon(Icons.view_agenda, color: AppColors.purple, size: 15),
+              const SizedBox(width: 6),
+              const Text(
+                "프롬프트 창 표시 설정",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "전부 꺼도 프롬프트 탭은 그대로 유지돼요",
+            style: TextStyle(color: Colors.white38, fontSize: 11),
+          ),
+          const SizedBox(height: 10),
+          _chipGrid([
+            _promptSectionChip(state, 'positive', "긍정적", Icons.add_circle_outline, AppColors.teal),
+            _promptSectionChip(state, 'prefix', "선행", Icons.arrow_right_alt, AppColors.blue),
+            _promptSectionChip(
+              state,
+              'suffix',
+              "후행",
+              Icons.keyboard_double_arrow_right,
+              AppColors.orange,
+            ),
+            _promptSectionChip(
+              state,
+              'negative',
+              "부정적",
+              Icons.remove_circle_outline,
+              AppColors.red,
+            ),
+            _promptSectionChip(
+              state,
+              'removeChips',
+              "태그 제거",
+              Icons.auto_fix_high,
+              AppColors.purple,
+            ),
+            _promptSectionChip(
+              state,
+              'customRemove',
+              "개별 제거",
+              Icons.delete_outline,
+              const Color(0xFF9E9E9E),
+            ),
+            _promptSectionChip(state, 'conditional', "조건부", Icons.bolt, AppColors.pink),
+            _promptSectionChip(state, 'weightRules', "가중치", Icons.tune, const Color(0xFF84CC16)),
+          ]),
+        ],
+      ),
+    );
   }
 
   // 프롬프트 섹션 표시 칩 (숨김 목록에 없으면 ON)
@@ -1765,11 +1761,7 @@ class _SettingsTabState extends State<SettingsTab>
         icon: Icons.folder_outlined,
         title: "날짜별 폴더에 저장",
         value: state.saveFolderByDateOnly,
-        onChanged: (val) {
-          state.saveFolderByDateOnly = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
+        onChanged: (val) => state.saveFolderByDateOnly = val,
       ),
       const SizedBox(height: 16),
       // 이미지 저장 형식 (일반 탭에서 이동 — 저장 관련이므로 여기가 맞다)
@@ -1777,11 +1769,7 @@ class _SettingsTabState extends State<SettingsTab>
         icon: Icons.image_outlined,
         title: "이미지를 Webp로 저장",
         value: state.saveAsWebp,
-        onChanged: (val) {
-          state.saveAsWebp = val;
-          state.saveAllSettings();
-          state.refreshUI();
-        },
+        onChanged: (val) => state.saveAsWebp = val,
       ),
       // WebP 저장이 켜져 있을 때만 압축 방식 선택
       if (state.saveAsWebp)
@@ -1790,354 +1778,513 @@ class _SettingsTabState extends State<SettingsTab>
           value: state.webpLossy,
           onChanged: (val) {
             state.webpLossy = val;
-            state.saveAllSettings();
-            state.refreshUI();
+            state.saveAndRefresh();
           },
         ),
       const SizedBox(height: 16),
-      // 저장 폴더 (SAF) — 임의 폴더/SD카드 지정
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                setState(() => state.safCardOpen = !state.safCardOpen);
-                state.saveAllSettings();
-              },
-              child: Row(
-                children: [
-                  const Icon(Icons.folder_special, color: AppColors.teal, size: 20),
-                  const SizedBox(width: 8),
-                  const Text(
-                    "저장 폴더 (SAF)",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const Spacer(),
-                  Icon(
-                    state.safCardOpen ? Icons.expand_less : Icons.expand_more,
-                    color: Colors.white38,
-                    size: 22,
-                  ),
-                ],
-              ),
-            ),
-            if (state.safCardOpen) ...[
-              const SizedBox(height: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                decoration: BoxDecoration(
-                  color: AppColors.background,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      state.safRootUri != null ? Icons.check_circle : Icons.remove_circle_outline,
-                      size: 16,
-                      color: state.safRootUri != null ? AppColors.teal : Colors.white30,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        state.safRootUri != null ? "선택됨: ${state.safRootName ?? '폴더'}" : "선택 안 됨",
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () async {
-                        final ok = await state.pickSafRoot();
-                        if (!context.mounted) {
-                          return;
-                        }
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            duration: const Duration(milliseconds: 2000),
-                            content: Text(ok ? "저장 폴더를 지정했어요!" : "폴더 선택이 취소됐어요."),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.create_new_folder_outlined, size: 18),
-                      label: const Text("폴더 선택"),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.teal,
-                        side: const BorderSide(color: AppColors.teal),
-                      ),
-                    ),
-                  ),
-                  if (state.safRootUri != null) ...[
-                    const SizedBox(width: 8),
-                    OutlinedButton(
-                      onPressed: () async {
-                        await state.clearSafRoot();
-                        if (!context.mounted) {
-                          return;
-                        }
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            duration: Duration(milliseconds: 2000),
-                            content: Text("저장 폴더 지정을 해제했어요."),
-                          ),
-                        );
-                      },
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white54,
-                        side: const BorderSide(color: Colors.white24),
-                      ),
-                      child: const Text("해제"),
-                    ),
-                  ],
-                ],
-              ),
-              if (state.safRootUri != null) ...[
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: () => _migrateAppToSaf(context, state),
-                    icon: const Icon(Icons.drive_file_move_outline, size: 18),
-                    label: const Text("앱 폴더의 기존 이미지를 SAF로 옮기기"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: const Color(0xFFFFC107),
-                      side: const BorderSide(color: Color(0x55FFC107)),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ],
-        ),
-      ),
+      // 저장 폴더 카드 (SAF) — 임의 폴더/SD카드 지정
+      _saveFolderCard(context, state),
       const SizedBox(height: 16),
-
-      // 파일 이름 규칙
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white10),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                setState(() => state.fileCardOpen = !state.fileCardOpen);
-                state.saveAllSettings();
-              },
-              child: Row(
-                children: [
-                  Icon(Icons.edit_document, color: AppColors.accent, size: 20),
-                  const SizedBox(width: 8),
-                  const Text(
-                    "파일 이름",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                  const Spacer(),
-                  Icon(
-                    state.fileCardOpen ? Icons.expand_less : Icons.expand_more,
-                    color: Colors.white38,
-                    size: 22,
-                  ),
-                ],
-              ),
-            ),
-            if (state.fileCardOpen) ...[
-              const SizedBox(height: 12),
-              TextField(
-                controller: state.customFileNameController,
-                style: const TextStyle(color: Colors.white),
-                decoration: _settingsInputDecoration(
-                  "예: Nai-{yy}{mm}{dd}-{time}",
-                  Icons.edit_document,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 8,
-                runSpacing: -4,
-                children: [
-                  _buildQuickTagButton(state.customFileNameController, "{yy}", "연도"),
-                  _buildQuickTagButton(state.customFileNameController, "{mm}", "월"),
-                  _buildQuickTagButton(state.customFileNameController, "{dd}", "일"),
-                  _buildQuickTagButton(state.customFileNameController, "{time}", "시간"),
-                  _buildQuickTagButton(state.customFileNameController, "{count}", "번호"),
-                ],
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    state.saveAllSettings();
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        duration: const Duration(milliseconds: 2400),
-                        content: Text("파일 이름이 저장되었습니다."),
-                      ),
-                    );
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.accent,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: const Text(
-                    "설정 저장 적용",
-                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      ),
+      // 파일 이름 규칙 카드
+      _fileNameCard(context, state),
       const SizedBox(height: 16),
-
-      // 현재 생성된 이미지 (이번 세션 생성 수)
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.photo_library_outlined, color: AppColors.accent, size: 18),
-                SizedBox(width: 8),
-                Text(
-                  "현재 생성된 이미지",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-              ],
-            ),
-            Text(
-              "${state.sessionGenerateCount} 장",
-              style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 14),
-            ),
-          ],
-        ),
-      ),
+      // 휴지통 카드 — 지우면 휴지통으로 보낼지 · 며칠 뒤 자동으로 비울지
+      _trashCard(context, state),
       const SizedBox(height: 16),
-
-      // ✅ 1번: 설정 백업 (margin 제거 → 다른 항목과 동일한 가로 크기)
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.sync_alt, color: AppColors.accent, size: 18),
-                SizedBox(width: 8),
-                Text(
-                  "설정 백업",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              "프롬프트, 캐릭터, 와일드카드, 상세 설정, 토큰, 히스토리를 파일로 저장하거나 불러옵니다.",
-              style: TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _exportSettings(context, state),
-                    icon: const Icon(Icons.upload_file, size: 18),
-                    label: const Text("내보내기"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white24),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () async {
-                      final result = await FilePicker.platform.pickFiles(
-                        type: FileType.custom,
-                        allowedExtensions: ['json'],
-                      );
-                      if (result == null || result.files.isEmpty) return;
-                      try {
-                        final file = File(result.files.single.path!);
-                        final jsonStr = await file.readAsString();
-                        final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-                        state.importSettings(data);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              duration: const Duration(milliseconds: 2400),
-                              content: Text("설정을 성공적으로 불러왔습니다!"),
-                            ),
-                          );
-                        }
-                      } catch (e) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              duration: const Duration(milliseconds: 2400),
-                              content: Text("파일을 읽는 데 실패했습니다. JSON 형식을 확인해주세요."),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                    icon: const Icon(Icons.download, size: 18),
-                    label: const Text("가져오기"),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white70,
-                      side: const BorderSide(color: Colors.white24),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
+      // 이번 세션에 생성한 이미지 수 카드
+      _sessionCountCard(context, state),
+      const SizedBox(height: 16),
+      // 설정 백업 카드 (내보내기·불러오기)
+      _backupCard(context, state),
       const SizedBox(height: 16),
     ];
+  }
+
+  // 저장 폴더 카드 (SAF) — 임의 폴더/SD카드 지정
+  Widget _saveFolderCard(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              setState(() => state.safCardOpen = !state.safCardOpen);
+              state.saveAllSettings();
+            },
+            child: Row(
+              children: [
+                const Icon(Icons.folder_special, color: AppColors.teal, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  "저장 폴더 (SAF)",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const Spacer(),
+                Icon(
+                  state.safCardOpen ? Icons.expand_less : Icons.expand_more,
+                  color: Colors.white38,
+                  size: 22,
+                ),
+              ],
+            ),
+          ),
+          if (state.safCardOpen) ...[
+            const SizedBox(height: 10),
+            // 저장 폴더 두 칸 — 계정 목록처럼 하나만 켜진다 (켜진 칸에 저장·갤러리·백업).
+            //  칸마다 [선택]·[해제] 가 붙어 그 칸만 바꾼다.
+            //  ⚠️ 예전엔 아래에 공용 '폴더 선택'·'해제' 버튼이 있어 '켜진 칸'에만 먹었다.
+            for (int i = 0; i < AppState.kSafSlotCount; i++) _safSlotRow(context, state, i),
+            if (state.safRootUri != null) ...[
+              const SizedBox(height: 2),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () => _migrateAppToSaf(context, state),
+                  icon: const Icon(Icons.drive_file_move_outline, size: 18),
+                  label: const Text("앱 폴더의 기존 이미지를 SAF로 옮기기"),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.amber,
+                    side: BorderSide(color: AppColors.amber.withValues(alpha: 0x55 / 255)),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+
+  // 저장 폴더 한 칸 — 계정 목록(_accountRow)처럼 켜진 칸만 강조한다.
+  //  칸을 누르면 그 폴더로 전환 (빈 칸이면 폴더 고르기).
+  //  오른쪽 [선택]·[해제] 는 이 칸만 바꾼다 — 켜진 칸은 그대로 (처음 지정할 때만 그 칸이 켜진다).
+  Widget _safSlotRow(BuildContext context, AppState state, int slot) {
+    final bool filled = state.safSlotUris[slot] != null;
+    final bool isActive = filled && state.activeSafSlot == slot;
+    final String name = state.safSlotNames[slot] ?? '폴더';
+    final String hint = isActive
+        ? "저장 폴더 ${slot + 1} · 지금 여기에 저장"
+        : (filled ? "저장 폴더 ${slot + 1} · 눌러서 전환" : "저장 폴더 ${slot + 1} · 선택을 눌러 지정");
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: InkWell(
+        onTap: isActive
+            ? null
+            : () => filled
+                  ? _switchSafFolder(context, state, slot)
+                  : _pickSafFolder(context, state, slot),
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          decoration: BoxDecoration(
+            color: isActive ? AppColors.teal.withValues(alpha: 0.15) : AppColors.background,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: isActive ? AppColors.teal : Colors.white12),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                filled
+                    ? (isActive ? Icons.radio_button_checked : Icons.radio_button_off)
+                    : Icons.add_circle_outline,
+                size: 18,
+                color: isActive ? AppColors.teal : Colors.white24,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      filled ? name : "비어 있음",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: filled ? (isActive ? Colors.white : Colors.white70) : Colors.white38,
+                        fontWeight: filled ? FontWeight.bold : FontWeight.normal,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      hint,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 6),
+              _safSlotButton("선택", AppColors.teal, () => _pickSafFolder(context, state, slot)),
+              if (filled) ...[
+                const SizedBox(width: 6),
+                _safSlotButton(
+                  "해제",
+                  Colors.white54,
+                  () => _clearSafFolder(context, state, slot),
+                  outlined: true,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 저장 폴더 칸 안의 작은 버튼 — [선택] 은 채운 모양, [해제] 는 테두리만
+  Widget _safSlotButton(String label, Color color, VoidCallback onPressed, {bool outlined = false}) {
+    return OutlinedButton(
+      onPressed: onPressed,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: color,
+        backgroundColor: outlined ? Colors.transparent : Colors.black26,
+        side: BorderSide(color: outlined ? Colors.white24 : Colors.transparent),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        minimumSize: const Size(0, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        visualDensity: VisualDensity.compact,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      child: Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+    );
+  }
+
+  // 폴더를 골라 [slot] 칸에 넣는다 (그 칸만 바뀐다)
+  Future<void> _pickSafFolder(BuildContext context, AppState state, int slot) async {
+    final result = await state.pickSafRoot(slot: slot);
+    if (!context.mounted) {
+      return;
+    }
+    final String picked = state.safSlotNames[slot] ?? '폴더';
+    final String msg = switch (result) {
+      SafPickResult.picked => "저장 폴더 ${slot + 1} 칸에 지정했어요! ($picked)",
+      SafPickResult.duplicate => "다른 칸에 이미 있는 폴더예요. 그 칸을 눌러 전환해 주세요.",
+      SafPickResult.cancelled => "폴더 선택이 취소됐어요.",
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(duration: const Duration(milliseconds: 2000), content: Text(msg)),
+    );
+  }
+
+  // [slot] 칸을 비운다 (쓰던 칸이면 다른 칸에 폴더가 있을 때 그쪽으로 넘어간다)
+  Future<void> _clearSafFolder(BuildContext context, AppState state, int slot) async {
+    final bool wasActive = state.activeSafSlot == slot;
+    await state.clearSafRoot(slot: slot);
+    if (!context.mounted) {
+      return;
+    }
+    final String msg;
+    if (!wasActive) {
+      msg = "저장 폴더 ${slot + 1} 칸을 비웠어요.";
+    } else if (state.safRootUri != null) {
+      msg = "비웠어요. 저장 폴더 전환: ${state.safRootName ?? '폴더'}";
+    } else {
+      msg = "저장 폴더 지정을 해제했어요.";
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(duration: const Duration(milliseconds: 2000), content: Text(msg)),
+    );
+  }
+
+  // [slot] 칸의 폴더로 전환 (계정 전환처럼)
+  Future<void> _switchSafFolder(BuildContext context, AppState state, int slot) async {
+    await state.switchSafSlot(slot);
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        duration: const Duration(milliseconds: 2000),
+        content: Text("저장 폴더 전환: ${state.safRootName ?? '폴더'}"),
+      ),
+    );
+  }
+
+  // 파일 이름 규칙 카드
+  Widget _fileNameCard(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              setState(() => state.fileCardOpen = !state.fileCardOpen);
+              state.saveAllSettings();
+            },
+            child: Row(
+              children: [
+                Icon(Icons.edit_document, color: AppColors.accent, size: 20),
+                const SizedBox(width: 8),
+                const Text(
+                  "파일 이름",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const Spacer(),
+                Icon(
+                  state.fileCardOpen ? Icons.expand_less : Icons.expand_more,
+                  color: Colors.white38,
+                  size: 22,
+                ),
+              ],
+            ),
+          ),
+          if (state.fileCardOpen) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: state.customFileNameController,
+              style: const TextStyle(color: Colors.white),
+              decoration: _settingsInputDecoration(
+                "예: Nai-{yy}{mm}{dd}-{time}",
+                Icons.edit_document,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: -4,
+              children: [
+                _buildQuickTagButton(state.customFileNameController, "{yy}", "연도"),
+                _buildQuickTagButton(state.customFileNameController, "{mm}", "월"),
+                _buildQuickTagButton(state.customFileNameController, "{dd}", "일"),
+                _buildQuickTagButton(state.customFileNameController, "{time}", "시간"),
+                _buildQuickTagButton(state.customFileNameController, "{count}", "번호"),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  state.saveAllSettings();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      duration: const Duration(milliseconds: 2400),
+                      content: Text("파일 이름이 저장되었습니다."),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.accent,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Text(
+                  "설정 저장 적용",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // 이번 세션에 생성한 이미지 수 카드
+  Widget _sessionCountCard(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.photo_library_outlined, color: AppColors.accent, size: 18),
+              SizedBox(width: 8),
+              Text(
+                "현재 생성된 이미지",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            ],
+          ),
+          Text(
+            "${state.sessionGenerateCount} 장",
+            style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 14),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 휴지통 카드 — 갤러리에서 지운 그림을 휴지통(저장 폴더의 '.trash')으로 보낼지, 며칠 뒤 비울지.
+  //  휴지통은 저장 폴더(SAF)에만 있다. 휴지통 보기는 갤러리 '변경' 목록에서.
+  //  5곳 패턴: trashEnabled · trashKeepDays (AppState)
+  Widget _trashCard(BuildContext context, AppState state) {
+    final int days = state.trashKeepDays.clamp(1, 30);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 10, 8, 4),
+      decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.delete_outline, color: AppColors.accent, size: 18),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  "삭제하면 휴지통으로",
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ),
+              Transform.scale(
+                scale: 0.85,
+                child: Switch(
+                  value: state.trashEnabled,
+                  activeThumbColor: AppColors.accent,
+                  activeTrackColor: AppColors.accent.withValues(alpha: 0.5),
+                  onChanged: (v) {
+                    state.trashEnabled = v;
+                    state.saveAndRefresh();
+                  },
+                ),
+              ),
+            ],
+          ),
+          // 자동 비우기 기한 (1~30일) — 끌어서 고른다
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Row(
+              children: [
+                const SizedBox(width: 26),
+                const Expanded(
+                  child: Text("자동 비우기", style: TextStyle(color: Colors.white70, fontSize: 12)),
+                ),
+                Text(
+                  "$days일 뒤",
+                  style: TextStyle(color: AppColors.accent, fontWeight: FontWeight.bold, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          Slider(
+            value: days.toDouble(),
+            min: 1,
+            max: 30,
+            divisions: 29,
+            activeColor: AppColors.accent,
+            label: "$days일",
+            onChanged: (v) {
+              state.trashKeepDays = v.round();
+              state.refreshUI();
+            },
+            onChangeEnd: (v) {
+              state.trashKeepDays = v.round();
+              state.saveAndRefresh();
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 설정 백업 카드 (내보내기·불러오기)
+  Widget _backupCard(BuildContext context, AppState state) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.sync_alt, color: AppColors.accent, size: 18),
+              SizedBox(width: 8),
+              Text(
+                "설정 백업",
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            "프롬프트, 캐릭터, 와일드카드, 상세 설정, 토큰, 히스토리를 파일로 저장하거나 불러옵니다.",
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _exportSettings(context, state),
+                  icon: const Icon(Icons.upload_file, size: 18),
+                  label: const Text("내보내기"),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    final result = await FilePicker.platform.pickFiles(
+                      type: FileType.custom,
+                      allowedExtensions: ['json'],
+                    );
+                    if (result == null || result.files.isEmpty) return;
+                    try {
+                      // 읽기·풀기는 화면 밖(isolate)에서 — 큰 백업이면 화면이 멈추지 않게
+                      final data = await AppState.decodeSettingsJsonFile(
+                        result.files.single.path!,
+                      );
+                      state.importSettings(data);
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            duration: const Duration(milliseconds: 2400),
+                            content: Text("설정을 성공적으로 불러왔습니다!"),
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            duration: const Duration(milliseconds: 2400),
+                            content: Text("파일을 읽는 데 실패했습니다. JSON 형식을 확인해주세요."),
+                          ),
+                        );
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.download, size: 18),
+                  label: const Text("가져오기"),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white70,
+                    side: const BorderSide(color: Colors.white24),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   List<Widget> _apiSection(BuildContext context, AppState state) {
@@ -2148,7 +2295,7 @@ class _SettingsTabState extends State<SettingsTab>
       _buildAccountList(context, state),
       const SizedBox(height: 16),
 
-      // ✅ 2번: Gelbooru API 설정 (접기/펴기)
+      // Gelbooru API 설정 (접기/펴기)
       Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
@@ -2217,9 +2364,11 @@ class _SettingsTabState extends State<SettingsTab>
                             Icons.api_rounded,
                           ),
                           onChanged: (val) {
+                            // ⚠️ 예전엔 글자마다 saveAndRefresh — 설정 전체 저장 + 앱 전체 다시 그리기였다.
+                            //    아래 확인 줄은 이 화면만 다시 그리면 되고, 저장은 멈춘 뒤 한 번.
                             state.parseGelbooruApi();
-                            state.saveAllSettings();
-                            state.refreshUI();
+                            setState(() {});
+                            state.saveAllSettingsDebounced();
                           },
                         ),
                         if (state.gelbooruApiController.text.isNotEmpty) ...[
@@ -2365,8 +2514,7 @@ class _SettingsTabState extends State<SettingsTab>
                   activeTrackColor: AppColors.accent.withValues(alpha: 0.5),
                   onChanged: (val) {
                     state.autoCheckUpdate = val;
-                    state.saveAllSettings();
-                    state.refreshUI();
+                    state.saveAndRefresh();
                   },
                 ),
               ],
@@ -2417,7 +2565,7 @@ class _SettingsTabState extends State<SettingsTab>
                     )
                   : state.hasUpdate
                   ? ElevatedButton.icon(
-                      onPressed: () => _showUpdateDialog(context, state),
+                      onPressed: () => showUpdateDialog(context, state),
                       icon: const Icon(Icons.system_update, color: Colors.white, size: 18),
                       label: Text(
                         "v${state.latestVersion} 업데이트 보기",
@@ -2440,7 +2588,7 @@ class _SettingsTabState extends State<SettingsTab>
                           return;
                         }
                         if (state.hasUpdate) {
-                          _showUpdateDialog(context, state);
+                          showUpdateDialog(context, state);
                         } else {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(
@@ -2468,80 +2616,5 @@ class _SettingsTabState extends State<SettingsTab>
       ),
       const SizedBox(height: 16),
     ];
-  }
-
-  void _showUpdateDialog(BuildContext context, AppState state) {
-    // 수동으로 열 때도 가드를 켜서, main의 자동 알림이 겹쳐 뜨지 않게 한다.
-    state.updateDialogShown = true;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.system_update, color: AppColors.accent, size: 24),
-            const SizedBox(width: 8),
-            Text(
-              "v${state.latestVersion} 업데이트",
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
-            ),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (state.releaseNotePreview.isNotEmpty) ...[
-                const Text(
-                  "변경 사항",
-                  style: TextStyle(
-                    color: Colors.white54,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                ...state.releaseNotePreview.map(
-                  (line) => Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      line,
-                      style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-              ] else
-                const Text("새로운 업데이트가 있습니다.", style: TextStyle(color: Colors.white70)),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("닫기", style: TextStyle(color: Colors.grey)),
-          ),
-          ElevatedButton.icon(
-            onPressed: () {
-              Navigator.pop(ctx);
-              state.downloadAndInstallUpdate(context);
-            },
-            icon: const Icon(Icons.download, color: Colors.white, size: 16),
-            label: const Text(
-              "업데이트",
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
-          ),
-        ],
-      ),
-    );
   }
 }

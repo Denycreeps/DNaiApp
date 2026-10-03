@@ -59,26 +59,10 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
 
   static const double _markerSize = 34;
 
-  // 마커 색상 — 캐릭터 번호로 구분한다
-  static const List<Color> _palette = [
-    AppColors.purple, // 보라
-    AppColors.teal, // 청록
-    Color(0xFFFF7043), // 주황
-    Color(0xFF42A5F5), // 파랑
-    Color(0xFFEC407A), // 분홍
-    Color(0xFF9CCC65), // 연두
-    Color(0xFFFFCA28), // 노랑
-    Color(0xFF26C6DA), // 하늘
-  ];
-
-  // 사용자가 정한 색이 있으면 그걸 쓰고, 없으면 번호별 기본 팔레트
-  Color _colorOf(int i) {
-    final custom = widget.characters[i].colorArgb;
-    if (custom != null) {
-      return Color(custom);
-    }
-    return _palette[i % _palette.length];
-  }
+  // 마커 색 — 사용자가 정한 색이 있으면 그 색, 없으면 번호별 기본 색.
+  //  캐릭터탭·프롬프트 서랍과 같은 규칙(AppColors.characterColor)을 쓴다.
+  //  ⚠️ 예전엔 같은 8색 목록을 여기 따로 갖고 있었다.
+  Color _colorOf(int i) => AppColors.characterColor(widget.characters[i].colorArgb, i);
 
   double _snap(double v) {
     if (!widget.snapToGrid) {
@@ -159,36 +143,34 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
           return RawGestureDetector(
             behavior: HitTestBehavior.opaque,
             gestures: <Type, GestureRecognizerFactory>{
-              _EagerPanRecognizer:
-                  GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
-                    () => _EagerPanRecognizer(),
-                    (r) {
-                      // ⚠️ 콜백은 void를 돌려줘야 한다.
-                      //    `(d) => _onPanStart(...)` 형태로 쓰면 void 값을 반환하는
-                      //    꼴이 되어 분석기가 오류로 잡는다. 블록으로 감싼다.
-                      r.onStart = (d) {
-                        _onPanStart(d, size);
-                      };
-                      r.onUpdate = (d) {
-                        _onPanUpdate(d, size);
-                      };
-                      r.onEnd = (_) {
-                        setState(() => _dragging = null);
-                      };
-                      r.onCancel = () {
-                        setState(() => _dragging = null);
-                      };
-                    },
-                  ),
-              TapGestureRecognizer:
-                  GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
-                    () => TapGestureRecognizer(),
-                    (r) {
-                      r.onTapDown = (d) {
-                        _onTapDown(d, size);
-                      };
-                    },
-                  ),
+              _EagerPanRecognizer: GestureRecognizerFactoryWithHandlers<_EagerPanRecognizer>(
+                () => _EagerPanRecognizer(),
+                (r) {
+                  // ⚠️ 콜백은 void를 돌려줘야 한다.
+                  //    `(d) => _onPanStart(...)` 형태로 쓰면 void 값을 반환하는
+                  //    꼴이 되어 분석기가 오류로 잡는다. 블록으로 감싼다.
+                  r.onStart = (d) {
+                    _onPanStart(d, size);
+                  };
+                  r.onUpdate = (d) {
+                    _onPanUpdate(d, size);
+                  };
+                  r.onEnd = (_) {
+                    setState(() => _dragging = null);
+                  };
+                  r.onCancel = () {
+                    setState(() => _dragging = null);
+                  };
+                },
+              ),
+              TapGestureRecognizer: GestureRecognizerFactoryWithHandlers<TapGestureRecognizer>(
+                () => TapGestureRecognizer(),
+                (r) {
+                  r.onTapDown = (d) {
+                    _onTapDown(d, size);
+                  };
+                },
+              ),
             },
             child: Stack(
               children: [
@@ -222,22 +204,15 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
                 if (widget.showGrid)
                   Positioned.fill(
                     child: CustomPaint(
-                      painter: _GridPainter(
-                        cols: widget.gridCols,
-                        rows: widget.gridRows,
-                      ),
+                      painter: _GridPainter(cols: widget.gridCols, rows: widget.gridRows),
                     ),
                   ),
                 // 캐릭터 마커
                 for (int i = 0; i < widget.characters.length; i++)
                   if (widget.characters[i].isActive)
                     Positioned(
-                      left:
-                          widget.characters[i].centerX * size.width -
-                          _markerSize / 2,
-                      top:
-                          widget.characters[i].centerY * size.height -
-                          _markerSize / 2,
+                      left: widget.characters[i].centerX * size.width - _markerSize / 2,
+                      top: widget.characters[i].centerY * size.height - _markerSize / 2,
                       child: _marker(i, i == widget.selectedIndex),
                     ),
               ],
@@ -287,11 +262,7 @@ class _CharacterCanvasState extends State<CharacterCanvas> {
             label,
             maxLines: 1,
             softWrap: false,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-            ),
+            style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
           ),
         ),
       ),

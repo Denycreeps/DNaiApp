@@ -140,7 +140,7 @@ void showPresetSaveDialog(
                     const SizedBox(width: 8),
                     Expanded(
                       child: allowSettings
-                          ? fieldChip('settings', '설정', Colors.amber)
+                          ? fieldChip('settings', '설정', AppColors.amber)
                           : const SizedBox.shrink(),
                     ),
                   ],
@@ -272,8 +272,7 @@ void showPresetSaveDialog(
                     savedFields: savedFields,
                   ),
                 );
-                state.saveAllSettings();
-                state.refreshUI();
+                state.saveAndRefresh();
                 Navigator.pop(ctx);
               },
               style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),

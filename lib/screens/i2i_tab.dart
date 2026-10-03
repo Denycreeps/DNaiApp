@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:image/image.dart' as img;
 import '../models/app_state.dart';
 import '../widgets/detail_settings_modal.dart';
+import '../models/i2i_modes.dart';
 import 'prompt_edit_dialog.dart';
 import '../models/model_caps.dart';
 import '../models/director_tools.dart';
@@ -51,6 +52,19 @@ class _I2iTabState extends State<I2iTab>
     // 핸들이 깜빡이지 않도록, 현재 결과 개수를 기준선으로 잡아둔다.
     _lastResultCount = state.i2iResults.length;
     state.addListener(_handleI2iMaskChanges);
+    _fixModeIfDisabled(state);
+  }
+
+  /// 지금 모드가 설정에서 꺼졌으면 켜진 첫 모드로 바꾼다. 바꿨으면 true.
+  ///  ⚠️ 예전엔 build 안에서 바꿨다 — 화면을 그리는 도중에 상태를 바꾸는 건
+  ///     Flutter 가 권하지 않는 방식이라, 시작할 때와 설정이 바뀔 때(리스너) 확인한다.
+  bool _fixModeIfDisabled(AppState state) {
+    final enabled = state.enabledI2iModes;
+    if (enabled.isEmpty || enabled.contains(_i2iMode)) {
+      return false;
+    }
+    _i2iMode = enabled.first;
+    return true;
   }
 
   // app_state 변화 시 마스크 처리 (build 밖에서 실행 → 탭 전환 rebuild에 안 휩쓸림)
@@ -98,6 +112,11 @@ class _I2iTabState extends State<I2iTab>
       changed = true;
     }
 
+    // ③ 설정에서 지금 모드를 껐으면 켜진 첫 모드로
+    if (_fixModeIfDisabled(state)) {
+      changed = true;
+    }
+
     if (changed) {
       setState(() {}); // 캔버스(CustomPaint) 갱신
     }
@@ -137,8 +156,8 @@ class _I2iTabState extends State<I2iTab>
   double _mosaicStrength = 5.0; // 2~50
   bool _isMosaicProcessing = false;
 
-  // i2i 모드: 'inpaint', 'mosaic', 'upscale'
-  String _i2iMode = 'inpaint';
+  // 지금 i2i 모드 (이름·아이콘·색은 I2iMode 에)
+  I2iMode _i2iMode = I2iMode.inpaint;
 
   /// Director Tools 화면인지. true면 모드 칩 자리에 도구 목록이 대신 들어간다.
   ///  일반 모드(_i2iMode)와는 별개로 관리한다 — 돌아왔을 때 쓰던 모드가 그대로 남게.
@@ -214,7 +233,10 @@ class _I2iTabState extends State<I2iTab>
   // ============================================================================
   // i2i 모드 UI 헬퍼
   // ============================================================================
-  Widget _buildModeChip(String mode, String label, IconData icon, Color color) {
+  Widget _buildModeChip(I2iMode mode) {
+    final label = mode.label;
+    final icon = mode.icon;
+    final color = mode.color;
     final isActive = _i2iMode == mode;
     return GestureDetector(
       onTap: () => setState(() {
@@ -222,7 +244,7 @@ class _I2iTabState extends State<I2iTab>
         _mosaicPreviewImage = null;
         // 마스킹이 필요한 모드(인페인트/모자이크)는 연필로 시작하고,
         // 그리기가 없는 모드(img2img/업스케일)는 손으로 전환한다.
-        if (mode == 'inpaint' || mode == 'mosaic') {
+        if (mode.usesMask) {
           if (_currentTool != 'pencil' && _currentTool != 'eraser') {
             _currentTool = 'pencil';
           }
@@ -270,7 +292,7 @@ class _I2iTabState extends State<I2iTab>
     return [
       // 그리기 도구는 마스킹이 필요한 모드에서만
       //  (img2img·Director 는 이미지 전체를 그대로 보내므로 마스크가 없다)
-      if (_i2iMode != 'img2img' && !_directorMode) ...[
+      if (_i2iMode != I2iMode.img2img && !_directorMode) ...[
         _buildToolIcon('pencil', Icons.edit, "연필 (한 번 더 누르면 크기/색상 변경)"),
         const SizedBox(width: 6),
         _buildToolIcon('eraser', Icons.cleaning_services, "지우개 (한 번 더 누르면 크기 변경)"),
@@ -306,7 +328,7 @@ class _I2iTabState extends State<I2iTab>
   List<Widget> _modeToolWidgets(AppState state) {
     return [
       // img2img 전용: 강도/노이즈 + 직전 이미지
-      if (_i2iMode == 'img2img') ...[
+      if (_i2iMode == I2iMode.img2img) ...[
         _buildImg2ImgParamButton(state, isNoise: false),
         const SizedBox(width: 6),
         _buildImg2ImgParamButton(state, isNoise: true),
@@ -340,7 +362,7 @@ class _I2iTabState extends State<I2iTab>
           },
         ),
       ],
-      if (!_directorMode && _i2iMode == 'inpaint') ...[
+      if (!_directorMode && _i2iMode == I2iMode.inpaint) ...[
         _buildStrengthButton(state),
         const SizedBox(width: 6),
         // 직전에 본 이미지로 전환 (탭=뒤로, 꾹=앞으로)
@@ -368,7 +390,7 @@ class _I2iTabState extends State<I2iTab>
           },
         ),
       ],
-      if (_i2iMode == 'mosaic') ...[
+      if (_i2iMode == I2iMode.mosaic) ...[
         _buildMosaicStrengthButton(),
         const SizedBox(width: 6),
         GestureDetector(
@@ -479,7 +501,7 @@ class _I2iTabState extends State<I2iTab>
   // 하단: 도구 2줄(왼쪽) + 실행 버튼(오른쪽)
   Widget _buildBottomBar(AppState state) {
     // 업스케일은 그리는 도구가 필요 없어 '저장'만 왼쪽에 둔다 (다른 모드와 같은 자리)
-    if (_i2iMode == 'upscale') {
+    if (_i2iMode == I2iMode.upscale) {
       return Row(
         children: [
           _saveResultButton(),
@@ -517,59 +539,26 @@ class _I2iTabState extends State<I2iTab>
 
   // 켜져 있는 모드를 배치한다. 칩들은 주어진 폭을 균등하게 나눠 가지므로
   // 모드 개수가 몇 개든 전체 영역(과 실행 버튼)의 크기는 변하지 않는다.
-  //  4개 → 2×2 / 3개 → 가로 3개 / 2개 → 가로 2개 / 1개 → 크게 1개
   List<Widget> _buildModeChipRows(AppState state) {
     // 모델이 지원하지 않는 모드는 아예 내보내지 않는다.
     //  (지금 쓰는 V4/V4.5/V5는 셋 다 지원하므로 화면 변화는 없다.
     //   미지원 모델이 추가될 때 이 한 곳만 보면 되도록 캡으로 연결해 둔다.)
     final caps = modelCapsFor(state.selectedModel);
-    bool modeSupported(String id) => switch (id) {
-      // 모자이크는 인페인트 파이프라인을 그대로 쓴다
-      'inpaint' || 'mosaic' => caps.supportsInpaint,
-      'img2img' => caps.supportsImg2img,
-      'upscale' => caps.supportsUpscale,
-      // Director Tools 는 모델과 무관하다 (이미지만 보내는 별도 엔드포인트)
-      _ => true,
-    };
-    // ⚠️ AppColors.accent는 런타임에 바뀌므로 const 리스트에 담을 수 없다 → final
-    final specs = [
-      ('inpaint', '인페인트', Icons.format_paint, AppColors.teal),
-      ('mosaic', '모자이크', Icons.grid_on, AppColors.accent),
-      ('img2img', 'img2img', Icons.auto_fix_high, const Color(0xFF3B82F6)),
-      ('upscale', '업스케일', Icons.high_quality, AppColors.orange),
-    ];
-    final enabled = state.enabledI2iModes;
+    // 이름·아이콘·색·지원 여부는 I2iMode 한 곳에 있다 (lib/models/i2i_modes.dart)
     final active = [
-      for (final s in specs)
-        if (enabled.contains(s.$1) && modeSupported(s.$1)) s,
+      for (final m in state.enabledI2iModes)
+        if (m.supportedBy(caps)) m,
     ];
     if (active.isEmpty) {
       return [];
     }
-
-    Widget chip((String, String, IconData, Color) s) =>
-        Expanded(child: _buildModeChip(s.$1, s.$2, s.$3, s.$4));
-
     // 켜진 모드 전부를 가로 한 줄로
     return [
-      Row(children: [for (final s in active) chip(s)]),
+      Row(children: [for (final m in active) Expanded(child: _buildModeChip(m))]),
     ];
   }
 
-  Color _getExecuteColor() {
-    switch (_i2iMode) {
-      case 'inpaint':
-        return AppColors.teal;
-      case 'mosaic':
-        return AppColors.accent;
-      case 'upscale':
-        return Colors.amber[700]!;
-      case 'img2img':
-        return const Color(0xFF3B82F6); // 파랑
-      default:
-        return AppColors.teal;
-    }
-  }
+  Color _getExecuteColor() => _i2iMode.color;
 
   String _getExecuteLabel(AppState state) {
     final bool anyLoading =
@@ -581,18 +570,11 @@ class _I2iTabState extends State<I2iTab>
     if (_directorMode) {
       return "${directorToolFor(state.directorTool).label} 실행";
     }
-    switch (_i2iMode) {
-      case 'inpaint':
-        return "인페인트 실행";
-      case 'mosaic':
-        return _isMosaicProcessing ? "처리중..." : "모자이크 적용";
-      case 'upscale':
-        return "업스케일 실행";
-      case 'img2img':
-        return "img2img 실행";
-      default:
-        return "실행";
+    // 모자이크만 '적용', 나머지는 '<이름> 실행'
+    if (_i2iMode == I2iMode.mosaic) {
+      return _isMosaicProcessing ? "처리중..." : "모자이크 적용";
     }
+    return "${_i2iMode.label} 실행";
   }
 
   Widget _getExecuteIcon(AppState state) {
@@ -601,7 +583,7 @@ class _I2iTabState extends State<I2iTab>
         state.isInpaintLoading ||
         state.isUpscaleLoading ||
         state.isDirectorLoading ||
-        (_i2iMode == 'mosaic' && _isMosaicProcessing);
+        (_i2iMode == I2iMode.mosaic && _isMosaicProcessing);
     if (isLoading) {
       return const SizedBox(
         width: 16,
@@ -609,18 +591,7 @@ class _I2iTabState extends State<I2iTab>
         child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
       );
     }
-    switch (_i2iMode) {
-      case 'inpaint':
-        return const Icon(Icons.format_paint, color: Colors.white, size: 18);
-      case 'mosaic':
-        return const Icon(Icons.grid_on, color: Colors.white, size: 18);
-      case 'upscale':
-        return const Icon(Icons.high_quality, color: Colors.white, size: 18);
-      case 'img2img':
-        return const Icon(Icons.auto_fix_high, color: Colors.white, size: 18);
-      default:
-        return const Icon(Icons.play_arrow, color: Colors.white, size: 18);
-    }
+    return Icon(_i2iMode.icon, color: Colors.white, size: 18);
   }
 
   /// 작업 실행 전 Anlas 안내. 진행해도 되면 true.
@@ -645,7 +616,7 @@ class _I2iTabState extends State<I2iTab>
       message: body,
       confirmLabel: "실행",
       icon: Icons.warning_amber_rounded,
-      iconColor: Colors.amber,
+      iconColor: AppColors.amber,
       confirmColor: AppColors.purple,
     );
   }
@@ -685,10 +656,16 @@ class _I2iTabState extends State<I2iTab>
     }
 
     switch (_i2iMode) {
-      case 'inpaint':
+      case I2iMode.inpaint:
         return () async {
-          if (state.targetI2iImage == null || state.targetI2iMetadata == null) {
+          if (state.targetI2iImage == null) {
             showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
+            return;
+          }
+          // 보낼 크기 — 그림 정보가 없는 그림(밖에서 가져온 그림)도 여기서 정해진다
+          //  ⚠️ 예전엔 그림 정보가 없으면 '히스토리에서 선택하라'며 막았다.
+          if (state.i2iSendPlan == null) {
+            showToast(context, "이미지 크기를 읽지 못했습니다.");
             return;
           }
           if (_strokes.isEmpty) {
@@ -701,18 +678,21 @@ class _I2iTabState extends State<I2iTab>
           if (!context.mounted) {
             return;
           }
-          final maskBytes = await _captureMask(
-            state.targetI2iMetadata!.width,
-            state.targetI2iMetadata!.height,
-          );
+          // 마스크도 보낼 그림과 똑같이 — 보낼 크기 판에, 그림 자리(왼쪽 위 w×h)에만 칠한다.
+          //  (파이프라인이 같은 계획으로 그림을 채워 보내므로 칠한 자리가 정확히 겹친다)
+          final plan = state.i2iSendPlan;
+          if (plan == null) {
+            return;
+          }
+          final maskBytes = await _captureMask(plan.sendW, plan.sendH, plan.w, plan.h);
           if (maskBytes != null && context.mounted) {
             state.handleInpaintGenerate(context, maskBytes);
           }
         };
-      case 'mosaic':
+      case I2iMode.mosaic:
         if (_isMosaicProcessing) return null;
         return () => _applyMosaic(state);
-      case 'upscale':
+      case I2iMode.upscale:
         return () {
           if (state.targetI2iImage == null) {
             showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
@@ -720,13 +700,17 @@ class _I2iTabState extends State<I2iTab>
           }
           state.handleUpscaleGenerate(context);
         };
-      case 'img2img':
+      case I2iMode.img2img:
         return () async {
-          if (state.targetI2iImage == null || state.targetI2iMetadata == null) {
+          if (state.targetI2iImage == null) {
             showToast(context, "히스토리에서 먼저 이미지를 선택해주세요!");
             return;
           }
-          if (!await _confirmAnlas(state, AnlasJob.img2img, "img2img")) {
+          if (state.i2iSendSize == null) {
+            showToast(context, "이미지 크기를 읽지 못했습니다.");
+            return;
+          }
+          if (!await _confirmAnlas(state, AnlasJob.img2img, I2iMode.img2img.label)) {
             return;
           }
           if (!context.mounted) {
@@ -734,8 +718,6 @@ class _I2iTabState extends State<I2iTab>
           }
           state.handleImg2ImgGenerate(context);
         };
-      default:
-        return null;
     }
   }
 
@@ -874,7 +856,7 @@ class _I2iTabState extends State<I2iTab>
 
   void _onPanStart(DragStartDetails details) {
     // 업스케일/img2img 모드는 마스킹 불필요 — 입력 무시
-    if (_i2iMode == 'upscale' || _i2iMode == 'img2img') {
+    if (!_i2iMode.usesMask) {
       return;
     }
     if (_currentTool != 'pencil' && _currentTool != 'eraser') {
@@ -901,7 +883,7 @@ class _I2iTabState extends State<I2iTab>
 
   void _onPanUpdate(DragUpdateDetails details) {
     // 업스케일/img2img 모드는 마스킹 불필요 — 입력 무시
-    if (_i2iMode == 'upscale' || _i2iMode == 'img2img') {
+    if (!_i2iMode.usesMask) {
       return;
     }
     if (_currentTool != 'pencil' && _currentTool != 'eraser') {
@@ -955,15 +937,15 @@ class _I2iTabState extends State<I2iTab>
     });
   }
 
-  Future<Uint8List?> _captureMask(int originalWidth, int originalHeight) async {
+  /// 마스크를 [maskW]×[maskH](보낼 크기) 판에 만든다. 화면의 그림은 판의 왼쪽 위
+  ///  [imageW]×[imageH] 자리에 대응한다 — 나머지(채워 보내는 오른쪽·아래)는 칠하지 않는다.
+  Future<Uint8List?> _captureMask(int maskW, int maskH, int imageW, int imageH) async {
     final renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null) return null;
 
-    // V4.5 풀 해상도 마스크
-    final int maskW = originalWidth;
-    final int maskH = originalHeight;
-    final double scaleX = originalWidth / renderBox.size.width;
-    final double scaleY = originalHeight / renderBox.size.height;
+    // V4.5 풀 해상도 마스크 — 화면 좌표 → 그림 좌표
+    final double scaleX = imageW / renderBox.size.width;
+    final double scaleY = imageH / renderBox.size.height;
 
     // 메인 스레드: 스트로크를 마스크 좌표로 변환해 직렬화 (가벼움)
     final strokeData = _strokes.map((stroke) {
@@ -996,28 +978,7 @@ class _I2iTabState extends State<I2iTab>
     setState(() => _isMosaicProcessing = true);
 
     try {
-      final renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
-      if (renderBox == null) return;
-
-      // 디코드 + 마스크 빌드 + 모자이크 전부 백그라운드 isolate에서 (UI 멈춤 방지)
-      final pngBytes = await compute(_processMosaicIsolate, {
-        'imageBytes': state.targetI2iImage!,
-        'strokes': _strokes
-            .map(
-              (s) => {
-                'pts': [
-                  for (final p in s.points) ...[p.dx, p.dy],
-                ],
-                'size': s.size,
-                'isEraser': s.isEraser,
-              },
-            )
-            .toList(),
-        'renderW': renderBox.size.width,
-        'renderH': renderBox.size.height,
-        'type': _mosaicType,
-        'strength': _mosaicStrength.round(),
-      });
+      final pngBytes = await _computeMosaic(state);
 
       if (pngBytes != null) {
         state.i2iMaskActionOnChange = I2iMaskAction.clearMask; // 모자이크 결과 → 마스크 초기화
@@ -1026,7 +987,7 @@ class _I2iTabState extends State<I2iTab>
         _strokes.clear();
 
         // 모자이크 결과는 메인 히스토리 대신 i2i 스크래치 릴로
-        state.addI2iResult(pngBytes, null, source: 'mosaic');
+        state.addI2iResult(pngBytes, null, source: I2iMode.mosaic.id);
 
         state.refreshUI();
       }
@@ -1182,41 +1143,45 @@ class _I2iTabState extends State<I2iTab>
     setState(() => _isPreviewLoading = true);
 
     try {
-      final renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
-      if (renderBox == null) return;
-
-      // 디코드 + 마스크 빌드 + 모자이크 전부 백그라운드 isolate에서 (UI 멈춤 방지)
-      final previewBytes = await compute(_processMosaicIsolate, {
-        'imageBytes': state.targetI2iImage!,
-        'strokes': _strokes
-            .map(
-              (s) => {
-                'pts': [
-                  for (final p in s.points) ...[p.dx, p.dy],
-                ],
-                'size': s.size,
-                'isEraser': s.isEraser,
-              },
-            )
-            .toList(),
-        'renderW': renderBox.size.width,
-        'renderH': renderBox.size.height,
-        'type': _mosaicType,
-        'strength': _mosaicStrength.round(),
-      });
-
+      final previewBytes = await _computeMosaic(state);
       if (mounted) {
-        setState(() {
-          _mosaicPreviewImage = previewBytes;
-          _isPreviewLoading = false;
-        });
+        setState(() => _mosaicPreviewImage = previewBytes);
       }
     } catch (e) {
       debugPrint("미리보기 생성 실패: $e");
+    } finally {
+      // ⚠️ 예전엔 캔버스를 못 찾아 중간에 return 하면 '불러오는 중' 표시가 꺼지지 않았다
       if (mounted) {
         setState(() => _isPreviewLoading = false);
       }
     }
+  }
+
+  /// 지금 마스크로 모자이크를 계산한다 (적용·미리보기 공용). 캔버스가 아직 없으면 null.
+  ///  디코드 + 마스크 빌드 + 모자이크 전부 백그라운드 isolate에서 (UI 멈춤 방지)
+  Future<Uint8List?> _computeMosaic(AppState state) async {
+    final renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      return null;
+    }
+    return compute(_processMosaicIsolate, {
+      'imageBytes': state.targetI2iImage!,
+      'strokes': _strokes
+          .map(
+            (s) => {
+              'pts': [
+                for (final p in s.points) ...[p.dx, p.dy],
+              ],
+              'size': s.size,
+              'isEraser': s.isEraser,
+            },
+          )
+          .toList(),
+      'renderW': renderBox.size.width,
+      'renderH': renderBox.size.height,
+      'type': _mosaicType,
+      'strength': _mosaicStrength.round(),
+    });
   }
 
   Widget _buildToolIcon(
@@ -1291,49 +1256,40 @@ class _I2iTabState extends State<I2iTab>
 
   // 강도 버튼 — 연필/지우개와 동일한 스타일, 탭하면 슬라이더 다이얼로그 표시
   Widget _buildStrengthButton(AppState state) {
-    return Tooltip(
-      message: "인페인트 강도",
-      child: InkWell(
-        onTap: _showStrengthDialog,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          width: 44,
-          height: 40,
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            border: Border.all(color: Colors.white24, width: 1.5),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text(
-                "강도",
-                style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold),
-              ),
-              Text(
-                state.infillStrength.toStringAsFixed(2),
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return _valueButton(
+      tooltip: "인페인트 강도",
+      label: "강도",
+      value: state.infillStrength.toStringAsFixed(2),
+      onTap: _showStrengthDialog,
     );
   }
 
   // img2img 파라미터 버튼 (강도/노이즈) — 인페인트 강도 버튼과 동일 규격
   Widget _buildImg2ImgParamButton(AppState state, {required bool isNoise}) {
     final double value = isNoise ? state.img2imgNoise : state.img2imgStrength;
-    final String label = isNoise ? "노이즈" : "강도";
+    return _valueButton(
+      tooltip: isNoise ? "img2img 노이즈 (새 디테일 추가량)" : "img2img 강도 (원본 변형 정도)",
+      label: isNoise ? "노이즈" : "강도",
+      value: value.toStringAsFixed(2),
+      onTap: () => _showImg2ImgParamDialog(isNoise: isNoise),
+    );
+  }
+
+  /// 값 하나를 보여 주는 작은 도구 버튼 (위: 이름, 아래: 값). 누르면 설정창.
+  ///  인페인트 강도·img2img 강도/노이즈·모자이크 강도가 같은 모양을 쓴다.
+  ///  (예전엔 세 버튼이 이 겉모양 30줄을 각자 복사해 갖고 있었다)
+  Widget _valueButton({
+    required String tooltip,
+    required String label,
+    required String value,
+    required VoidCallback onTap,
+    double valueSize = 10,
+  }) {
+    const labelStyle = TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold);
     return Tooltip(
-      message: isNoise ? "img2img 노이즈 (새 디테일 추가량)" : "img2img 강도 (원본 변형 정도)",
+      message: tooltip,
       child: InkWell(
-        onTap: () => _showImg2ImgParamDialog(isNoise: isNoise),
+        onTap: onTap,
         borderRadius: BorderRadius.circular(8),
         child: Container(
           width: 44,
@@ -1346,22 +1302,8 @@ class _I2iTabState extends State<I2iTab>
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                value.toStringAsFixed(2),
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text(label, style: labelStyle),
+              Text(value, style: labelStyle.copyWith(fontSize: valueSize)),
             ],
           ),
         ),
@@ -1390,7 +1332,7 @@ class _I2iTabState extends State<I2iTab>
                   min: 0.0,
                   max: 1.0,
                   divisions: 20,
-                  activeColor: const Color(0xFF3B82F6),
+                  activeColor: I2iMode.img2img.color, // img2img 설정창은 모드 색
                   onChanged: (val) {
                     setModalState(() => temp = double.parse(val.toStringAsFixed(2)));
                   },
@@ -1418,11 +1360,10 @@ class _I2iTabState extends State<I2iTab>
                       state.img2imgStrength = temp;
                     }
                   });
-                  state.saveAllSettings();
-                  state.refreshUI();
+                  state.saveAndRefresh();
                   Navigator.pop(ctx);
                 },
-                child: const Text("적용", style: TextStyle(color: Color(0xFF3B82F6))),
+                child: Text("적용", style: TextStyle(color: I2iMode.img2img.color)),
               ),
             ],
           );
@@ -1530,8 +1471,8 @@ class _I2iTabState extends State<I2iTab>
                         "${state.directorCostFor(t.reqType)}",
                         style: TextStyle(
                           color: state.directorTool == t.reqType
-                              ? Colors.amber
-                              : Colors.amber.withValues(alpha: 0.5),
+                              ? AppColors.amber
+                              : AppColors.amber.withValues(alpha: 0.5),
                           fontSize: 9,
                           fontWeight: FontWeight.bold,
                         ),
@@ -1546,82 +1487,59 @@ class _I2iTabState extends State<I2iTab>
     );
   }
 
-  Widget _buildMosaicStrengthButton() {
-    return Tooltip(
-      message: "모자이크 강도",
-      child: InkWell(
-        onTap: () {
-          showDialog(
-            context: context,
-            builder: (ctx) => StatefulBuilder(
-              builder: (ctx, setDialogState) => AlertDialog(
-                backgroundColor: AppColors.surface,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                title: const Text(
-                  "모자이크 강도",
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      "${_mosaicStrength.round()}",
-                      style: TextStyle(
-                        color: AppColors.accent,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    Slider(
-                      value: _mosaicStrength,
-                      min: 2,
-                      max: 50,
-                      activeColor: AppColors.accent,
-                      onChanged: (v) {
-                        setDialogState(() {});
-                        setState(() => _mosaicStrength = v);
-                      },
-                    ),
-                  ],
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    child: Text("확인", style: TextStyle(color: AppColors.accent)),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          width: 44,
-          height: 40,
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            border: Border.all(color: Colors.white24, width: 1.5),
-            borderRadius: BorderRadius.circular(8),
+  // 모자이크 강도 설정창
+  void _showMosaicStrengthDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text(
+            "모자이크 강도",
+            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
-                "강도",
-                style: TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold),
-              ),
               Text(
                 "${_mosaicStrength.round()}",
-                style: const TextStyle(
-                  color: Colors.white54,
-                  fontSize: 9,
+                style: TextStyle(
+                  color: AppColors.accent,
+                  fontSize: 24,
                   fontWeight: FontWeight.bold,
                 ),
               ),
+              Slider(
+                value: _mosaicStrength,
+                min: 2,
+                max: 50,
+                activeColor: AppColors.accent,
+                onChanged: (v) {
+                  setDialogState(() {});
+                  setState(() => _mosaicStrength = v);
+                },
+              ),
             ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text("확인", style: TextStyle(color: AppColors.accent)),
+            ),
+          ],
         ),
       ),
+    );
+  }
+
+  Widget _buildMosaicStrengthButton() {
+    return _valueButton(
+      tooltip: "모자이크 강도",
+      label: "강도",
+      value: "${_mosaicStrength.round()}",
+      onTap: _showMosaicStrengthDialog,
+      valueSize: 9, // 정수라 자릿수가 달라 조금 작게
     );
   }
 
@@ -1667,8 +1585,7 @@ class _I2iTabState extends State<I2iTab>
               TextButton(
                 onPressed: () {
                   state.infillStrength = tempStrength;
-                  state.saveAllSettings();
-                  state.refreshUI();
+                  state.saveAndRefresh();
                   Navigator.pop(ctx);
                 },
                 child: Text(
@@ -2077,7 +1994,7 @@ class _I2iTabState extends State<I2iTab>
                                       child: Icon(
                                         r.favorite ? Icons.star : Icons.star_border,
                                         size: 16,
-                                        color: r.favorite ? Colors.amber : Colors.white70,
+                                        color: r.favorite ? AppColors.amber : Colors.white70,
                                       ),
                                     ),
                                   ),
@@ -2169,19 +2086,11 @@ class _I2iTabState extends State<I2iTab>
     if (dt != null) {
       return dt.icon;
     }
-    switch (source) {
-      case 'mosaic':
-        return Icons.grid_on;
-      case 'upscale':
-        return Icons.high_quality;
-      case 'img2img':
-        return Icons.auto_fix_high;
-      case 'origin':
-        return Icons.image_outlined; // i2i로 보낸 원본
-      case 'inpaint':
-      default:
-        return Icons.format_paint;
+    if (source == 'origin') {
+      return Icons.image_outlined; // i2i로 보낸 원본
     }
+    // 모드 결과는 그 모드 아이콘 (모르는 출처는 인페인트)
+    return (I2iMode.fromId(source) ?? I2iMode.inpaint).icon;
   }
 
   Color _sourceColor(String source) {
@@ -2189,19 +2098,11 @@ class _I2iTabState extends State<I2iTab>
     if (_directorToolOfSource(source) != null) {
       return AppColors.purple;
     }
-    switch (source) {
-      case 'mosaic':
-        return AppColors.accent;
-      case 'upscale':
-        return Colors.amber[700]!;
-      case 'img2img':
-        return const Color(0xFF3B82F6);
-      case 'origin':
-        return Colors.white60;
-      case 'inpaint':
-      default:
-        return AppColors.teal;
+    if (source == 'origin') {
+      return Colors.white60; // 원본
     }
+    // 모드 결과는 그 모드 색 (모르는 출처는 인페인트)
+    return (I2iMode.fromId(source) ?? I2iMode.inpaint).color;
   }
 
   // i2i 결과 꾹 누르기 메뉴
@@ -2255,14 +2156,10 @@ class _I2iTabState extends State<I2iTab>
     // ※ 마스크 처리(_strokes 초기화 등)는 _handleI2iMaskChanges 리스너에서 담당한다.
     //   build에서 하면 탭 전환 등으로 인한 rebuild에 휩쓸려 엉뚱하게 마스크가 지워질 수 있음.
 
-    // 설정에서 현재 모드를 꺼버린 경우, 켜져 있는 첫 모드로 자동 전환
-    final enabledModes = state.enabledI2iModes;
-    if (enabledModes.isNotEmpty && !enabledModes.contains(_i2iMode)) {
-      _i2iMode = enabledModes.first;
-    }
+    // (설정에서 지금 모드를 끈 경우는 _fixModeIfDisabled 가 리스너에서 처리한다)
 
     bool canDraw =
-        (_i2iMode != 'upscale' && _i2iMode != 'img2img' && !_directorMode) &&
+        (_i2iMode.usesMask && !_directorMode) &&
         (_currentTool == 'pencil' || _currentTool == 'eraser');
 
     if (_showCanvasView) {
@@ -2331,7 +2228,7 @@ class _I2iTabState extends State<I2iTab>
                         color: AppColors.background,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: state.isInpaintLoading ? Colors.amber : Colors.white24,
+                          color: state.isInpaintLoading ? AppColors.amber : Colors.white24,
                           // 두께는 항상 동일: 로딩 때 1→2로 바뀌면 캔버스 내부가 2px 줄어
                           // 이미지가 재배치되며 마스크가 어긋나 보인다 (색만 바꾼다)
                           width: 2,
@@ -2355,9 +2252,11 @@ class _I2iTabState extends State<I2iTab>
                                       _currentTool == 'zoom_out',
                                   scaleEnabled: false,
                                   child: AspectRatio(
+                                    // 그림의 실제 비율 — 그림 정보가 없으면 파일에서 읽은 크기로
+                                    //  (예전엔 832×1216 으로 고정돼 밖에서 가져온 그림은 마스크가 어긋났다)
                                     aspectRatio:
-                                        (state.targetI2iMetadata?.width ?? 832) /
-                                        (state.targetI2iMetadata?.height ?? 1216),
+                                        (state.i2iImageSize?.$1 ?? 832) /
+                                        (state.i2iImageSize?.$2 ?? 1216),
                                     child: GestureDetector(
                                       onPanStart: canDraw ? _onPanStart : null,
                                       onPanUpdate: canDraw ? _onPanUpdate : null,
@@ -2370,7 +2269,8 @@ class _I2iTabState extends State<I2iTab>
                                         fit: StackFit.expand,
                                         children: [
                                           Image.memory(
-                                            _mosaicPreviewImage != null && _i2iMode == 'mosaic'
+                                            _mosaicPreviewImage != null &&
+                                                    _i2iMode == I2iMode.mosaic
                                                 ? _mosaicPreviewImage!
                                                 : state.targetI2iImage!,
                                             fit: BoxFit.fill,
@@ -2380,11 +2280,11 @@ class _I2iTabState extends State<I2iTab>
                                               key: _canvasKey,
                                               painter: MaskPainter(
                                                 strokes:
-                                                    (_i2iMode == 'upscale' ||
-                                                        _i2iMode == 'img2img' ||
+                                                    (_i2iMode == I2iMode.upscale ||
+                                                        _i2iMode == I2iMode.img2img ||
                                                         !_maskVisible ||
                                                         (_mosaicPreviewImage != null &&
-                                                            _i2iMode == 'mosaic'))
+                                                            _i2iMode == I2iMode.mosaic))
                                                     ? []
                                                     : _strokes,
                                                 maskColor: _maskColor,

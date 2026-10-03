@@ -107,8 +107,10 @@ class ModelCaps {
   /// 스텝 상한 (검증 기준)
   final int maxSteps;
 
-  /// 노이즈 스케줄을 고를 수 있는지. V5는 Karras로 고정이라 false.
-  final bool allowsSchedulerChoice;
+  /// 공식 UI가 고정해 두는 노이즈 스케줄. null 이면 자유롭게 고른다.
+  ///  V5는 karras — 설정의 '스케줄러 잠금 해제'를 켜야 다른 값을 쓸 수 있다
+  ///  (보낼 때 판단은 AppState.schedulerFor 한 곳).
+  final String? fixedScheduler;
 
   /// 총 픽셀 상한 (width * height)
   final int maxPixels;
@@ -146,7 +148,7 @@ class ModelCaps {
     this.tokenizer = PromptTokenizer.t5,
     this.maxCfgScale = 25.0,
     this.maxSteps = 50,
-    this.allowsSchedulerChoice = true,
+    this.fixedScheduler,
     this.maxPixels = 3145728,
     this.supportsTransparency = false,
     this.usesFreePositioning = false,
@@ -174,7 +176,7 @@ class ModelCaps {
     PromptTokenizer? tokenizer,
     double? maxCfgScale,
     int? maxSteps,
-    bool? allowsSchedulerChoice,
+    String? fixedScheduler,
     int? maxPixels,
     bool? supportsTransparency,
     bool? usesFreePositioning,
@@ -184,8 +186,7 @@ class ModelCaps {
   }) {
     return ModelCaps(
       id: id ?? this.id,
-      serverModelIdOverride:
-          serverModelIdOverride ?? this.serverModelIdOverride,
+      serverModelIdOverride: serverModelIdOverride ?? this.serverModelIdOverride,
       displayName: displayName ?? this.displayName,
       supportsVibe: supportsVibe ?? this.supportsVibe,
       supportsPrecise: supportsPrecise ?? this.supportsPrecise,
@@ -200,8 +201,7 @@ class ModelCaps {
       tokenizer: tokenizer ?? this.tokenizer,
       maxCfgScale: maxCfgScale ?? this.maxCfgScale,
       maxSteps: maxSteps ?? this.maxSteps,
-      allowsSchedulerChoice:
-          allowsSchedulerChoice ?? this.allowsSchedulerChoice,
+      fixedScheduler: fixedScheduler ?? this.fixedScheduler,
       maxPixels: maxPixels ?? this.maxPixels,
       supportsTransparency: supportsTransparency ?? this.supportsTransparency,
       usesFreePositioning: usesFreePositioning ?? this.usesFreePositioning,
@@ -256,7 +256,7 @@ const ModelCaps _v5Full = ModelCaps(
   tokenizer: PromptTokenizer.qwen, // T5가 아니라 Qwen 계열 BPE
   maxCfgScale: 10.0, // V5 Guidance 상한
   maxSteps: 50,
-  allowsSchedulerChoice: false, // V5는 Karras 고정 (공식 UI에서도 선택기 숨김)
+  fixedScheduler: 'karras', // 공식 UI는 스케줄러 선택기를 숨긴다 (설정에서 잠금 해제 가능)
   maxPixels: 3145728,
   supportsTransparency: true, // 32채널 VAE가 알파를 네이티브 지원
   usesFreePositioning: true, // 그리드 대신 캔버스에서 자유 배치
@@ -287,7 +287,6 @@ const ModelCaps _v3 = ModelCaps(
   maxCharacters: 0, // 캐릭터 프롬프트 미지원
   maxCfgScale: 25.0,
   maxSteps: 50,
-  allowsSchedulerChoice: true,
   maxPixels: 3145728,
   supportsTransparency: false,
   usesFreePositioning: false,
@@ -307,10 +306,7 @@ final Map<String, ModelCaps> _capsTable = {
   // ※ 참고: NovelAI 공식상 Precise Reference는 V4.5 전용이지만,
   //    현재 앱 동작(=V4/V4.5 동일 취급)에 맞춰 캡도 동일하게 둔다.
   //    실제 API 연결 단계에서 필요하면 이 부분만 갈라주면 된다.
-  NaiModels.v4Full: _v45Full.copyWith(
-    id: NaiModels.v4Full,
-    displayName: 'NAI Diffusion V4 Full',
-  ),
+  NaiModels.v4Full: _v45Full.copyWith(id: NaiModels.v4Full, displayName: 'NAI Diffusion V4 Full'),
   NaiModels.v4Curated: _v45Full.copyWith(
     id: NaiModels.v4Curated,
     displayName: 'NAI Diffusion V4 Curated',
@@ -322,10 +318,7 @@ final Map<String, ModelCaps> _capsTable = {
   // ---- V3 계열 (UI 선택지에는 없지만, 히스토리 메타데이터 재생성 경로로 들어온다) ----
   //  app_state._resolveModelId()가 "V3" 메타데이터를 만나면 이 값을 돌려준다.
   NaiModels.v3: _v3,
-  NaiModels.furryV3: _v3.copyWith(
-    id: NaiModels.furryV3,
-    displayName: 'NAI Diffusion Furry V3',
-  ),
+  NaiModels.furryV3: _v3.copyWith(id: NaiModels.furryV3, displayName: 'NAI Diffusion Furry V3'),
   // 레거시 V2 — 정확한 캡은 미확인이나, 최소한 V4.5로 오인되지 않게 V3 기준으로 둔다.
   NaiModels.v2: _v3.copyWith(id: NaiModels.v2, displayName: 'NAI Diffusion V2'),
 };
@@ -362,9 +355,7 @@ ModelCaps modelCapsFor(String model) {
   if (model.contains('3')) {
     return _v3.copyWith(
       id: model,
-      displayName: model.contains('furry')
-          ? 'NAI Diffusion Furry V3'
-          : 'NAI Diffusion Anime V3',
+      displayName: model.contains('furry') ? 'NAI Diffusion Furry V3' : 'NAI Diffusion Anime V3',
     );
   }
 
@@ -407,3 +398,70 @@ const List<String> kNaiResolutions = [
   "1216 x 832",
   "1344 x 768",
 ];
+
+// 샘플러 (API 값 → 화면 이름, NovelAI 웹과 같은 이름). 적힌 순서가 드롭다운 순서다.
+//  ⚠️ "ddim" 은 뺐다 — V4 계열에서 정상 동작하지 않는다(노이즈 이미지/에러).
+//  예전엔 이 목록이 상세 환경 화면 안에만 있고, 이름표도 따로 한 번 더 적혀 있었다.
+const Map<String, String> kNaiSamplerNames = {
+  "k_euler_ancestral": "Euler Ancestral",
+  "k_euler": "Euler",
+  "k_dpmpp_2s_ancestral": "DPM++ 2S Ancestral",
+  "k_dpmpp_2m_sde": "DPM++ 2M SDE",
+  "k_dpmpp_2m": "DPM++ 2M",
+  "k_dpmpp_sde": "DPM++ SDE",
+};
+
+// 노이즈 스케줄 ('native' = 보내지 않아 서버 기본값을 쓴다)
+const List<String> kNaiSchedulers = ["native", "karras", "exponential", "polyexponential"];
+
+const String kDefaultSampler = "k_euler_ancestral";
+const String kDefaultScheduler = "karras";
+
+/// 목록에 있는 샘플러면 그대로, 아니면(옛 ddim·잘못된 백업 등) 기본값.
+///  ⚠️ 목록에 없는 값이 상태에 남으면 드롭다운은 다른 걸 보여 주는데
+///     실제로는 그 값이 전송된다. 값이 들어오는 모든 길에서 이걸 거친다.
+String validSampler(Object? v) =>
+    (v is String && kNaiSamplerNames.containsKey(v)) ? v : kDefaultSampler;
+
+/// 목록에 있는 스케줄러면 그대로, 아니면 기본값.
+///  (목록에 없는 값이면 드롭다운이 디버그 모드에서 빨간 화면으로 멈춘다)
+String validScheduler(Object? v) =>
+    (v is String && kNaiSchedulers.contains(v)) ? v : kDefaultScheduler;
+
+// 상세 환경에서 고를 수 있는 모델 (적힌 순서가 드롭다운 순서)
+//  예전엔 이 목록이 상세 환경 화면 안에만 있었고, 앱 상태는 옛 테스트 모델 이름 하나만
+//  글자로 두 번 걸러 냈다. 이제 값이 들어오는 모든 길에서 validModel 을 거친다.
+const List<String> kSelectableModels = [NaiModels.v4Full, NaiModels.v45Full, NaiModels.v5Full];
+// 새로 설치했을 때(와 저장된 모델이 목록에 없을 때) 쓰는 모델.
+//  기존 사용자는 저장된 모델을 그대로 쓴다.
+const String kDefaultModel = NaiModels.v5Full;
+
+/// 고를 수 있는 모델이면 그대로, 아니면(지워진 테스트 모델·옛 프리셋 등) 기본값.
+///  ⚠️ 목록에 없는 값이 남으면 드롭다운은 다른 모델을 보여 주는데 실제로는 그 값으로 생성한다.
+String validModel(Object? v) => (v is String && kSelectableModels.contains(v)) ? v : kDefaultModel;
+
+// 해상도 기본값과 '직접 입력' 표시 (드롭다운 항목이면서 특별한 값)
+const int kDefaultWidth = 832;
+const int kDefaultHeight = 1216;
+const String kDefaultResolution = "$kDefaultWidth x $kDefaultHeight"; // "832 x 1216"
+const String kCustomResolutionLabel = "직접 입력";
+
+/// "832 x 1216" 같은 글자를 (가로, 세로)로. 모양이 틀리면 null.
+///  (띄어쓰기·대문자 X·곱하기 기호 × 도 받아 준다)
+///  ⚠️ 예전엔 앱 곳곳에서 split("x") 뒤 int.parse 를 따로 해서, 이상한 글자가 들어오면
+///     생성 버튼이 멈추거나(생성 중 표시가 안 꺼짐) 비용 표시가 화면 그리기를 망쳤다.
+(int, int)? parseResolution(String s) {
+  final parts = s.replaceAll(' ', '').toLowerCase().replaceAll('×', 'x').split('x');
+  if (parts.length != 2) {
+    return null;
+  }
+  final w = int.tryParse(parts[0]);
+  final h = int.tryParse(parts[1]);
+  if (w == null || h == null || w <= 0 || h <= 0) {
+    return null;
+  }
+  return (w, h);
+}
+
+/// [parseResolution] 이 실패하면 기본 해상도로.
+(int, int) resolutionOrDefault(String s) => parseResolution(s) ?? (kDefaultWidth, kDefaultHeight);

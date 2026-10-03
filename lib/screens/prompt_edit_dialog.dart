@@ -68,6 +68,33 @@ Future<void> showPromptEditDialog(
 
       return StatefulBuilder(
         builder: (BuildContext context, StateSetter setModalState) {
+          // 버튼으로 입력창 내용을 통째로 바꿀 때 (사전 추가·전부 지우기·되돌리기 공용).
+          //  바꾸기 전 내용을 기록해 ↺ 로 돌아올 수 있게 하고, 후보를 비우고 저장한다.
+          //  [cursorAt] — 바꾼 뒤 커서를 둘 자리 (사전 추가 뒤 이어서 입력·추가할 수 있게).
+          //   (커서 감시자가 '타이핑'으로 오해하지 않게 lastKnownText 도 맞춘다)
+          void replaceText(String next, {int? cursorAt}) {
+            state.pushPromptUndo(historyKey, controller.text);
+            controller.text = next;
+            if (cursorAt != null) {
+              controller.selection = TextSelection.collapsed(
+                offset: cursorAt.clamp(0, next.length),
+              );
+              lastKnownText = controller.text;
+            }
+            setModalState(() => suggestions.clear());
+            state.saveAndRefresh();
+          }
+
+          // 아이콘 버튼 셋(사전·지우기·되돌리기)의 공통 모양.
+          //  버튼이 네 개라 좁은 화면(360dp)에서도 한 줄에 들어가게 최소 폭을 줄인다.
+          final iconButtonStyle = OutlinedButton.styleFrom(
+            side: BorderSide(color: color),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            minimumSize: const Size(48, 44),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          );
+          // 되돌릴 수 있는 기록 수 (버튼 옆 숫자). 그릴 때 한 번만 센다.
+          final int undoCount = _undoChoices(state, historyKey, controller.text).length;
           // 커서 감시자 등록 (한 번만)
           if (cursorWatcher == null) {
             cursorWatcher = () {
@@ -179,8 +206,7 @@ Future<void> showPromptEditDialog(
             setModalState(() {
               suggestions.clear();
             });
-            state.saveAllSettings();
-            state.refreshUI();
+            state.saveAndRefresh();
           }
 
           return Dialog(
@@ -288,52 +314,39 @@ Future<void> showPromptEditDialog(
                       // 프롬프트 사전에서 불러오기
                       OutlinedButton(
                         onPressed: () async {
+                          // 창을 여는 동안에도 입력창의 커서 위치는 그대로 남아 있다
+                          final sel = controller.selection;
                           final picked = await _pickDictEntry(ctx, state, color);
                           if (picked == null) {
                             return;
                           }
-                          // 붙이기 전 내용을 기록해 둔다 (↺ 로 되돌릴 수 있게)
-                          state.pushPromptUndo(historyKey, controller.text);
-                          controller.text = appendPromptPiece(controller.text, picked.prompt);
-                          // 커서를 맨 끝으로 — 이어서 바로 입력할 수 있게
-                          controller.selection = TextSelection.collapsed(
-                            offset: controller.text.length,
-                          );
-                          lastKnownText = controller.text;
-                          setModalState(() {
-                            suggestions.clear();
-                          });
-                          state.saveAllSettings();
+                          final (entry, atEnd) = picked;
+                          if (atEnd) {
+                            // '추가' 를 길게 누름 → 예전처럼 맨 끝에
+                            final next = appendPromptPiece(controller.text, entry.prompt);
+                            replaceText(next, cursorAt: next.length);
+                          } else {
+                            // '추가' 를 그냥 누름 → 커서 자리에 태그 하나로 끼워 넣는다.
+                            //  글자를 드래그로 골라 둔 상태면 지우지 않고 그 끝 뒤에 넣는다.
+                            final cursor = sel.isValid ? sel.end : -1;
+                            final (next, at) = insertPromptPieceAt(
+                              controller.text,
+                              cursor,
+                              entry.prompt,
+                            );
+                            replaceText(next, cursorAt: at);
+                          }
                         },
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: color),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          // 버튼이 네 개라 좁은 화면(360dp)에서도 한 줄에 들어가게 최소 폭을 줄인다
-                          minimumSize: const Size(48, 44),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
+                        style: iconButtonStyle,
                         child: Icon(Icons.menu_book, color: color, size: 20),
                       ),
                       // 사전은 '불러오기', 오른쪽 둘은 '지우기·되돌리기'라 성격이 달라 더 띄운다
                       const SizedBox(width: 24),
                       OutlinedButton(
                         onPressed: () {
-                          // 지우기 직전 내용을 기록해 둔다 (되돌리기로 살릴 수 있게)
-                          state.pushPromptUndo(historyKey, controller.text);
-                          controller.clear();
-                          setModalState(() {
-                            suggestions.clear();
-                          });
-                          state.saveAllSettings();
-                          state.refreshUI();
+                          replaceText(''); // 지운 내용은 ↺ 로 살릴 수 있다
                         },
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: color),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                          // 버튼이 네 개라 좁은 화면(360dp)에서도 한 줄에 들어가게 최소 폭을 줄인다
-                          minimumSize: const Size(48, 44),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
+                        style: iconButtonStyle,
                         child: Icon(Icons.delete_sweep, color: color, size: 20),
                       ),
                       const SizedBox(width: 12), // 아이콘 버튼끼리는 조금 더 띄운다
@@ -351,14 +364,8 @@ Future<void> showPromptEditDialog(
                           if (picked == null) {
                             return;
                           }
-                          // 지금 내용도 기록해 둬야 되돌린 뒤 다시 돌아올 수 있다
-                          state.pushPromptUndo(historyKey, controller.text);
-                          controller.text = picked;
-                          setModalState(() {
-                            suggestions.clear();
-                          });
-                          state.saveAllSettings();
-                          state.refreshUI();
+                          // 지금 내용도 기록되므로 되돌린 뒤 다시 돌아올 수 있다
+                          replaceText(picked);
                         },
                         child: OutlinedButton(
                           onPressed: () {
@@ -370,31 +377,19 @@ Future<void> showPromptEditDialog(
                             if (choices.isEmpty) {
                               return;
                             }
-                            final target = choices.first;
-                            state.pushPromptUndo(historyKey, controller.text);
-                            controller.text = target;
-                            setModalState(() {
-                              suggestions.clear();
-                            });
-                            state.saveAllSettings();
-                            state.refreshUI();
+                            replaceText(choices.first);
                           },
-                          style: OutlinedButton.styleFrom(
-                            side: BorderSide(color: color),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-                            // 버튼이 네 개라 좁은 화면(360dp)에서도 한 줄에 들어가게 최소 폭을 줄인다
-                            minimumSize: const Size(48, 44),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
+                          style: iconButtonStyle,
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               Icon(Icons.restore, color: color, size: 20),
-                              // 기록이 2개 이상일 때만 개수를 보여 준다 (꾹 누르면 고를 수 있다는 힌트)
-                              if (_undoChoices(state, historyKey, controller.text).length > 1) ...[
+                              // 돌아갈 곳이 하나라도 있으면 숫자를 보여 준다
+                              //  (예전엔 2개부터라 1개일 땐 기록이 없는 것처럼 보였다)
+                              if (undoCount > 0) ...[
                                 const SizedBox(width: 3),
                                 Text(
-                                  "${_undoChoices(state, historyKey, controller.text).length}",
+                                  "$undoCount",
                                   style: TextStyle(
                                     color: color,
                                     fontSize: 11,
@@ -459,11 +454,11 @@ Future<void> showPromptEditDialog(
       SystemChannels.textInput.invokeMethod('TextInput.hide');
     }
 
-    // ⚠️ dispose 는 이번 프레임이 끝난 뒤에.
-    //    닫히는 중인 화면이 아직 이 노드를 참조하고 있을 수 있어,
-    //    같은 프레임에서 버리면 포커스 트리가 어긋난다.
-    //    (이게 어긋나면 키보드가 남고 다음 탭이 먹지 않는다)
-    WidgetsBinding.instance.addPostFrameCallback((_) => focusNode.dispose());
+    // ⚠️ dispose 는 닫히는 애니메이션이 끝난 뒤에.
+    //    닫히는 중인 화면이 아직 이 노드를 참조하고 있어, 너무 일찍 버리면 포커스 트리가
+    //    어긋난다 (키보드가 남고 다음 탭이 먹지 않는다). 한 프레임 뒤로는 부족해서
+    //    다른 창들과 같은 도우미를 쓴다 (DEVNOTES 1번).
+    disposeAfterDialog(focusNode.dispose);
 
     // 대기 중인 저장이 있으면 취소한다
     saveDebounce?.cancel();
@@ -471,8 +466,7 @@ Future<void> showPromptEditDialog(
     // ⚠️ 저장은 여기서 한 번만.
     //    onClosed 안에서도 saveAllSettings 를 부르는 호출부가 있어,
     //    둘 다 돌면 설정 116개를 두 번 쓰게 된다. 한쪽으로 모은다.
-    state.saveAllSettings();
-    state.refreshUI(); // 창이 닫혔으니 이제 뒤쪽 화면을 갱신
+    state.saveAndRefresh(); // 창이 닫혔으니 이제 뒤쪽 화면을 갱신
 
     // 호출측 정리(보통 컨트롤러 dispose)는 창이 완전히 사라진 뒤에 맡긴다.
     //  이유는 disposeAfterDialog 의 설명 참고.
@@ -487,8 +481,15 @@ Future<void> showPromptEditDialog(
 /// 지금 입력창과 똑같은 기록은 뺀다 — 골라도 아무것도 안 바뀌기 때문이다.
 /// (창을 열 때 지금 내용을 먼저 기록해 두므로, 빼지 않으면 목록 맨 위가
 ///  늘 '지금 내용'이 되어 어느 쪽이 현재인지 헷갈렸다)
+/// 되돌아갈 수 있는 기록 (최신이 앞). 지금 글과 같은 것은 빼고, 같은 글은 한 번만.
+///  (예전 버전이 남긴 기록엔 같은 글이 여러 번 들어 있을 수 있어 여기서도 한 번 거른다)
 List<String> _undoChoices(AppState state, String historyKey, String current) {
-  return state.promptUndoList(historyKey).where((t) => t != current).toList();
+  final now = current.trim();
+  final seen = <String>{};
+  return [
+    for (final t in state.promptUndoList(historyKey))
+      if (t.trim() != now && seen.add(t.trim())) t,
+  ];
 }
 
 /// 되돌리기 기록에서 하나를 고른다. 취소하면 null.
@@ -508,9 +509,8 @@ Future<String?> _pickUndoEntry(
   if (list.isEmpty) {
     return null;
   }
-  if (list.length == 1) {
-    return list.first;
-  }
+  // 하나뿐이어도 목록을 보여 준다 — 꾹 눌렀는데 묻지도 않고 바뀌면
+  //  '기록이 없나?' 싶고, 무엇으로 돌아가는지도 모른 채 바뀌었다.
 
   Widget entry({
     required String label,
@@ -643,7 +643,9 @@ Future<String?> _pickUndoEntry(
 ///
 /// ⚠️ 목록이 길 수 있어 높이를 화면의 60%로 제한하고 그 안에서 스크롤한다.
 ///    (AlertDialog 의 content 는 높이가 정해지지 않아 ListView 를 그냥 넣으면 안 된다)
-Future<PromptDictEntry?> _pickDictEntry(BuildContext context, AppState state, Color color) {
+/// 사전 항목을 고른다. 돌려주는 값: (항목, 맨 끝에 붙일지)
+///  '추가' 를 그냥 누르면 커서 자리에, 길게 누르면 맨 끝에 (화면은 같고 누르는 방식만 다르다).
+Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState state, Color color) {
   // 마지막으로 고른 분류에서 시작한다 (지워진 분류였으면 전체로)
   String filter = state.validDictFilter(state.dictPickerFilter);
   String filterName(String f) {
@@ -661,9 +663,16 @@ Future<PromptDictEntry?> _pickDictEntry(BuildContext context, AppState state, Co
     return "전체";
   }
 
-  Widget smallButton(String label, IconData icon, Color c, VoidCallback onTap) {
+  Widget smallButton(
+    String label,
+    IconData icon,
+    Color c,
+    VoidCallback onTap, {
+    VoidCallback? onLongPress,
+  }) {
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -690,7 +699,7 @@ Future<PromptDictEntry?> _pickDictEntry(BuildContext context, AppState state, Co
   // 제목을 눌러 펼쳐 본 항목들 (내용 미리보기)
   final Set<String> expanded = {};
 
-  return showDialog<PromptDictEntry>(
+  return showDialog<(PromptDictEntry, bool)>(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setPicker) {
@@ -873,9 +882,13 @@ Future<PromptDictEntry?> _pickDictEntry(BuildContext context, AppState state, Co
                                     ),
                                   ),
                                   const SizedBox(width: 6),
-                                  smallButton("추가", Icons.playlist_add, AppColors.teal, () {
-                                    Navigator.pop(ctx, e);
-                                  }),
+                                  smallButton(
+                                    "추가",
+                                    Icons.playlist_add,
+                                    AppColors.teal,
+                                    () => Navigator.pop(ctx, (e, false)), // 커서 자리에
+                                    onLongPress: () => Navigator.pop(ctx, (e, true)), // 맨 끝에
+                                  ),
                                   const SizedBox(width: 6),
                                   smallButton("복사", Icons.copy, AppColors.blue, () {
                                     Clipboard.setData(ClipboardData(text: e.prompt));

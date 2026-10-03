@@ -6,6 +6,7 @@
 //  · WeightRulesController     — 가중치 규칙 입력창 강조
 //  · WeightHighlightController — 프롬프트의 숫자:: 가중치 강조
 import 'package:flutter/material.dart';
+import '../app_theme.dart';
 
 class SyntaxHighlightController extends TextEditingController {
   SyntaxHighlightController({super.text});
@@ -44,24 +45,18 @@ class SyntaxHighlightController extends TextEditingController {
           if (colonIdx != -1) {
             // 들여쓰기(공백) + 조건부( '(' ~ ':' ) + 나머지
             if (indent > 0) {
-              spans.add(
-                TextSpan(text: line.substring(0, indent), style: style),
-              );
+              spans.add(TextSpan(text: line.substring(0, indent), style: style));
             }
             spans.add(
               TextSpan(
                 text: line.substring(indent, colonIdx + 1), // '(...):'
                 style: style?.copyWith(
-                  backgroundColor: const Color(
-                    0xFFEC4899,
-                  ).withValues(alpha: 0.30), // 조건부 섹션 색(핑크)과 통일
+                  backgroundColor: AppColors.pink.withValues(alpha: 0.30), // 조건부 섹션 색(핑크)과 통일
                   fontWeight: FontWeight.bold,
                 ),
               ),
             );
-            spans.add(
-              TextSpan(text: line.substring(colonIdx + 1), style: style),
-            );
+            spans.add(TextSpan(text: line.substring(colonIdx + 1), style: style));
           } else {
             spans.add(TextSpan(text: line, style: style));
           }
@@ -128,10 +123,7 @@ class WeightRulesController extends TextEditingController {
       spans.add(
         TextSpan(
           text: text.substring(hash, end),
-          style: style?.copyWith(
-            color: Colors.grey,
-            fontStyle: FontStyle.italic,
-          ),
+          style: style?.copyWith(color: Colors.grey, fontStyle: FontStyle.italic),
         ),
       );
       i = end;
@@ -149,12 +141,8 @@ class WeightHighlightController extends TextEditingController {
   // '::' 구분자 전용 색 (가중치/프롬프트 경계를 확실히 구분)
   // 신택스 하이라이팅 배색 (Nord/Night Owl 계열 — 채도를 낮춰 눈에 편하게)
   //  숫자는 전통적으로 파랑 계열, 구분자는 톤 다운해 덜 튀게
-  static const Color _separatorColor = Color(
-    0xFFC3A6E0,
-  ); // '::' 차분한 라벤더 (구분자, 은은하게)
-  static const Color _weightNumColor = Color(
-    0xFF82AAFF,
-  ); // 가중치 숫자 (Night Owl 파랑 — 표준 숫자색)
+  static const Color _separatorColor = Color(0xFFC3A6E0); // '::' 차분한 라벤더 (구분자, 은은하게)
+  static const Color _weightNumColor = Color(0xFF82AAFF); // 가중치 숫자 (Night Owl 파랑 — 표준 숫자색)
 
   // 가중치 → 색상 매핑
   // 1.0 = 중립(색 없음), >1.0 어두운 갈색→(10.0)완전 빨강, <1.0 파랑→검정파랑
@@ -185,14 +173,18 @@ class WeightHighlightController extends TextEditingController {
     return buildWeightSpan(text, style);
   }
 
+  // 가중치 시작: 단어 경계 뒤의 (숫자):: / 종료: ::
+  // 단어 경계 = 문장 시작, 또는 앞 글자가 , [ ] { } 공백 중 하나
+  // (artist:7010 같은 경우 숫자 앞이 ':' 또는 글자라 가중치로 인식 안 함)
+  //  한 번만 만든다 — 입력창은 글자를 칠 때마다 이 강조를 다시 그린다.
+  static final RegExp _startRegex = RegExp(r'(?:^|(?<=[,\[\]{}\s]))(-?\d+\.?\d*)\s*::');
+  static final RegExp _endRegex = RegExp(r'::');
+
   // 가중치 문법을 색상 TextSpan으로 변환 (controller + RichText 공용)
   static TextSpan buildWeightSpan(String text, TextStyle? style) {
     final List<TextSpan> spans = [];
-    // 가중치 시작: 단어 경계 뒤의 (숫자):: / 종료: ::
-    // 단어 경계 = 문장 시작, 또는 앞 글자가 , [ ] { } 공백 중 하나
-    // (artist:7010 같은 경우 숫자 앞이 ':' 또는 글자라 가중치로 인식 안 함)
-    final startRegex = RegExp(r'(?:^|(?<=[,\[\]{}\s]))(-?\d+\.?\d*)\s*::');
-    final endRegex = RegExp(r'::');
+    final startRegex = _startRegex;
+    final endRegex = _endRegex;
 
     int pos = 0;
     double? currentWeight;
@@ -208,14 +200,10 @@ class WeightHighlightController extends TextEditingController {
         }
         // 마커 이전 일반 텍스트
         if (m.start > 0) {
-          spans.add(
-            TextSpan(text: text.substring(pos, pos + m.start), style: style),
-          );
+          spans.add(TextSpan(text: text.substring(pos, pos + m.start), style: style));
         }
         currentWeight = double.tryParse(m.group(1)!);
-        final markerColor = currentWeight != null
-            ? _weightColor(currentWeight)
-            : null;
+        final markerColor = currentWeight != null ? _weightColor(currentWeight) : null;
         // 시작 마커: 숫자만 볼드, :: 는 볼드 해제. 글씨 흰색, 배경 색상 음영.
         final numStr = m.group(1)!; // 숫자 부분
         final fullMarker = m.group(0)!; // 숫자 + (공백) + ::
