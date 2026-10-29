@@ -12,6 +12,7 @@
 //  · 원본 크기 WebP q80        약 40~65KB   ← 사전 큰 이미지
 //  · 긴 변 768 WebP q75        약 20~30KB   ← 히스토리 오래된 이미지·백업
 //  · 긴 변 320 WebP q75        약 4~8KB     ← 사전 목록 썸네일
+import 'dart:typed_data'; // BytesBuilder (PNG 글자 청크 옮기기)
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -56,13 +57,11 @@ Future<(int, int)?> readImageSize(Uint8List bytes) async {
     return ok(be32(16), be32(20));
   }
   // GIF — 'GIF' 뒤 논리 화면 크기
-  if (n >= 10 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) {
+  if (n >= 10 && isGif(b)) {
     return ok(le16(6), le16(8));
   }
   // WebP — 'RIFF' .... 'WEBP' 뒤 첫 청크 종류에 따라 자리가 다르다
-  if (n >= 30 &&
-      b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46 &&
-      b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+  if (n >= 30 && isWebp(b)) {
     final String chunk = String.fromCharCodes(b.sublist(12, 16));
     if (chunk == 'VP8 ') {
       return ok(le16(26) & 0x3FFF, le16(28) & 0x3FFF); // 손실 압축
@@ -279,3 +278,74 @@ String mimeForExt(String ext) {
 
 /// JPEG 인지 (파일 첫 2바이트 서명으로 판단)
 bool isJpeg(Uint8List b) => b.length >= 2 && b[0] == 0xFF && b[1] == 0xD8;
+
+/// WebP 인지 ('RIFF' + 크기 4바이트 + 'WEBP')
+bool isWebp(Uint8List b) =>
+    b.length >= 12 &&
+    b[0] == 0x52 && // R
+    b[1] == 0x49 && // I
+    b[2] == 0x46 && // F
+    b[3] == 0x46 && // F
+    b[8] == 0x57 && // W
+    b[9] == 0x45 && // E
+    b[10] == 0x42 && // B
+    b[11] == 0x50; // P
+
+/// GIF 인지 ('GIF' 로 시작)
+bool isGif(Uint8List b) => b.length >= 6 && b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46;
+
+/// 이미 압축된 그림이면 그 확장자 (jpg · webp · gif), PNG 나 모르는 형식이면 null.
+///  저장할 때 이런 그림은 다시 굽지 않고 '내용 그대로 · 내용에 맞는 확장자' 로 쓴다 (AppState._prepareForSave).
+///  ⚠️ 확장자는 반드시 내용을 따른다 — 예전엔 WebP 내용을 .png 이름으로 저장한 적이 있다.
+String? compressedImageExt(Uint8List b) {
+  if (isJpeg(b)) {
+    return 'jpg';
+  }
+  if (isWebp(b)) {
+    return 'webp';
+  }
+  if (isGif(b)) {
+    return 'gif';
+  }
+  return null;
+}
+
+/// [src] PNG 의 글자 청크(tEXt·zTXt·iTXt — NovelAI 가 넣은 프롬프트 · 설정)를 [png] 의 IHDR 바로 뒤에 그대로 끼워 넣는다.
+///  청크는 CRC 까지 통째로 옮기므로 다시 계산할 필요가 없다. 옮길 게 없거나 [png] 가 IHDR 로 시작하지 않으면 [png] 그대로.
+///  그림 크기는 IHDR 에서 읽히므로(extractNovelAIMetadata) 크기가 다른 그림에 옮겨도 크기 정보는 새 그림의 것이다.
+///  쓰는 곳: i2i 결과 자르기(NovelAiService) · 부분 인페인트 결과 붙이기(models/focus_inpaint.dart).
+///  (예전엔 NovelAiService 안에 있었다 — 부분 인페인트도 써야 해서 여기로 옮겼다)
+Uint8List withPngTextChunks(Uint8List png, Uint8List src) {
+  int be32(Uint8List b, int i) => (b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3];
+
+  final text = BytesBuilder(copy: false);
+  int o = 8; // PNG 서명 뒤
+  while (o + 12 <= src.length) {
+    final int end = o + 12 + be32(src, o); // 길이(4) 종류(4) 자료 CRC(4)
+    if (end > src.length) {
+      break;
+    }
+    final String type = String.fromCharCodes(src.sublist(o + 4, o + 8));
+    if (type == 'tEXt' || type == 'zTXt' || type == 'iTXt') {
+      text.add(src.sublist(o, end));
+    }
+    if (type == 'IEND') {
+      break;
+    }
+    o = end;
+  }
+
+  // 새 PNG 의 첫 청크는 늘 IHDR(자료 13바이트) — 아니면 건드리지 않는다
+  const int ihdrEnd = 8 + 12 + 13;
+  if (text.isEmpty ||
+      png.length < ihdrEnd ||
+      be32(png, 8) != 13 ||
+      String.fromCharCodes(png.sublist(12, 16)) != 'IHDR') {
+    return png;
+  }
+  final out = BytesBuilder(copy: false)
+    ..add(png.sublist(0, ihdrEnd))
+    ..add(text.takeBytes())
+    ..add(png.sublist(ihdrEnd));
+  return out.takeBytes();
+}

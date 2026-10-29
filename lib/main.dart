@@ -13,6 +13,8 @@ import 'screens/wildcard_tab.dart';
 import 'screens/settings_tab.dart';
 import 'widgets/detail_settings_modal.dart';
 import 'widgets/update_dialog.dart';
+import 'widgets/keyboard_inset_fix.dart'; // 다른 앱에 갔다 오면 키보드 자리가 검게 남는 엔진 버그 덮기
+import 'utils/ui_safety.dart' show releaseTextFocus, TextFocusReleaseObserver; // 빈 곳 누르기 · 창 띄우기 — 창이 닫힐 때 키보드가 다시 뜨지 않게
 import 'models/app_tabs.dart';
 import 'utils/qwen_tokenizer.dart';
 
@@ -62,6 +64,11 @@ void main() {
           fontFamily: 'Pretendard',
         ),
         home: const NovelAiApp(),
+        // 창(다이얼로그 · 아래 시트)이 뜰 때 화면의 입력칸이 쥔 포커스를 놓는다 — 창이 닫히면 그 칸으로 포커스가 돌아가
+        //  키보드가 저절로 뜨던 문제 (ui_safety.dart). 창을 띄우는 곳마다 부르지 않고 여기 한 곳에서.
+        navigatorObservers: [TextFocusReleaseObserver()],
+        // 앱 전체(다이얼로그 · 아래 창 포함)를 감싼다 — 다른 앱에 갔다 오면 키보드 높이가 남는 문제 (keyboard_inset_fix.dart)
+        builder: (context, child) => KeyboardInsetFix(child: child ?? const SizedBox.shrink()),
         debugShowCheckedModeBanner: false,
       ),
     ),
@@ -136,12 +143,14 @@ class _NovelAiAppState extends State<NovelAiApp>
         ),
       );
     }
-    return state.currentImageBytes != null
-        ? GestureDetector(
-            onLongPress: () => showSaveImageModal(context, state, state.currentImageBytes!),
-            child: Image.memory(state.currentImageBytes!, fit: BoxFit.contain),
-          )
-        : const Center(
+    // 생성 과정 미리보기(설정)가 오는 동안은 중간 그림을, 아니면 마지막 결과를 보여 준다.
+    //  중간 그림은 AppState 전체가 아니라 previewFrame 만 듣는다 — 스텝마다 앱 전체를 다시 그리지 않게.
+    return ValueListenableBuilder<PreviewFrame?>(
+      valueListenable: state.previewFrame,
+      builder: (context, frame, _) {
+        final shown = frame?.image ?? state.currentImageBytes; // (형 이름을 적지 않는다 — Uint8List 때문에 import 를 늘리지 않게)
+        if (shown == null) {
+          return const Center(
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -151,6 +160,50 @@ class _NovelAiAppState extends State<NovelAiApp>
               ],
             ),
           );
+        }
+        final result = state.currentImageBytes;
+        return GestureDetector(
+          // 저장 메뉴는 완성 그림에서만 (미리보기는 중간 그림이라 저장할 것이 아니다)
+          onLongPress: frame == null && result != null
+              ? () => showSaveImageModal(
+                  context,
+                  state,
+                  result,
+                  // 이 그림의 히스토리 칸 (그림 정보에 VAR+ 표시까지 있다 — 다시 뽑기 · 프롬프트 불러오기에 쓴다)
+                  historyEntry: state.historyEntryOf(result),
+                )
+              : null,
+          // ⚠️ 자식 수를 바꾸지 않는다 (DEVNOTES 2) — 스텝 표시는 늘 두고 보이기만 바꾼다
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // gaplessPlayback — 다음 그림을 다 풀 때까지 앞 그림을 둔다 (스텝마다 깜빡이지 않게)
+              Image.memory(shown, fit: BoxFit.contain, gaplessPlayback: true),
+              Positioned(
+                right: 8,
+                bottom: 8,
+                child: Visibility(
+                  visible: frame != null,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      frame == null
+                          ? ''
+                          : "미리보기 ${(frame.step + 1).clamp(1, frame.steps)}/${frame.steps}",
+                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // 탭을 눌러(또는 다른 곳의 요청으로) 페이지가 넘어가는 중인지 — 이동마다 번호가 는다.
@@ -437,7 +490,10 @@ class _NovelAiAppState extends State<NovelAiApp>
         }
       },
       child: GestureDetector(
-        onTap: () => FocusScope.of(context).unfocus(),
+        // 빈 곳을 누르면 키보드를 내린다 — 입력칸 자신에서 포커스를 놓는다 (ui_safety.dart 의 releaseTextFocus).
+        //  ⚠️ 예전엔 FocusScope.of(context).unfocus() 였다 — 범위가 그 입력칸을 기억한 채라, 나중에 아무 창이나 닫히면
+        //     그 칸이 포커스를 되찾아 (다른 탭에 있어도) 키보드가 저절로 떴다.
+        onTap: releaseTextFocus,
         child: Scaffold(
           appBar: AppBar(
             toolbarHeight: 0,

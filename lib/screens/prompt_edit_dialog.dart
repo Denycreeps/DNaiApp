@@ -8,6 +8,7 @@ import '../utils/ui_safety.dart';
 import '../models/prompt_dict.dart';
 import '../widgets/app_toast.dart';
 import '../widgets/dict_image_viewer.dart'; // 사전 이미지 크게 보기
+import '../widgets/dict_compact.dart'; // 사전 간단히 보기 (이름 - 분류)
 
 // ══════════════════════════════════════════════════════════════════════
 // 프롬프트 입력 다이얼로그 (공용)
@@ -281,13 +282,15 @@ Future<void> showPromptEditDialog(
                             scrollDirection: Axis.horizontal,
                             itemCount: suggestions.length,
                             itemBuilder: (context, index) {
+                              // 그릴 때의 태그를 잡아 둔다 — 누르기 직전 제안이 바뀌면(타이핑 · 포커스 빠짐) 번호로는 다른 태그가 들어갔다
+                              final String tag = suggestions[index];
                               return Padding(
                                 padding: const EdgeInsets.only(right: 8.0),
                                 child: ActionChip(
                                   label: Text(
-                                    PromptUtils.displayTag(suggestions[index]),
+                                    PromptUtils.displayTag(tag),
                                     style: TextStyle(
-                                      color: state.isE621Tag(suggestions[index])
+                                      color: state.isE621Tag(tag)
                                           ? const Color(0xFF3B9EFF)
                                           : Colors.white,
                                       fontWeight: FontWeight.bold,
@@ -299,7 +302,7 @@ Future<void> showPromptEditDialog(
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(8),
                                   ),
-                                  onPressed: () => insertTag(suggestions[index]),
+                                  onPressed: () => insertTag(tag),
                                 ),
                               );
                             },
@@ -648,20 +651,8 @@ Future<String?> _pickUndoEntry(
 Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState state, Color color) {
   // 마지막으로 고른 분류에서 시작한다 (지워진 분류였으면 전체로)
   String filter = state.validDictFilter(state.dictPickerFilter);
-  String filterName(String f) {
-    if (f == kDictFilterAll) {
-      return "전체";
-    }
-    if (f == kDictFilterNone) {
-      return "미분류";
-    }
-    for (final c in state.promptDictCategories) {
-      if (c.id == f) {
-        return c.name;
-      }
-    }
-    return "전체";
-  }
+  String filterName(String f) =>
+      f == kDictFilterAll ? "전체" : state.dictCategoryLabel(f == kDictFilterNone ? null : f);
 
   Widget smallButton(
     String label,
@@ -772,6 +763,13 @@ Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState s
                 ),
               ),
               const Spacer(),
+              // 간단히 보기 (이름 - 분류) — 라이브러리 탭의 사전 목록과 함께 바뀐다
+              DictCompactToggle(
+                compact: state.promptDictCompact,
+                color: color,
+                onPressed: () => setPicker(state.toggleDictCompact),
+              ),
+              const SizedBox(width: 2),
               Text("${list.length}개", style: const TextStyle(color: Colors.white38, fontSize: 12)),
             ],
           ),
@@ -796,8 +794,54 @@ Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState s
                       separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (_, i) {
                         final e = list[i];
-                        final t = state.dictThumb(e); // 한 번 푼 건 다시 안 푼다 (사전 탭과 공용)
                         final isOpen = expanded.contains(e.id);
+                        // ── 자세히 · 간단히 보기 공용 ──
+                        void toggleOpen() => setPicker(() {
+                          if (!expanded.remove(e.id)) {
+                            expanded.add(e.id);
+                          }
+                        });
+                        void copy() {
+                          Clipboard.setData(ClipboardData(text: e.prompt));
+                          Navigator.pop(ctx);
+                          showToast(context, "'${e.displayTitle}' 프롬프트를 복사했습니다.");
+                        }
+
+                        // 펼쳤을 때: 저장된 프롬프트 전체 (보기만, 길면 그 안에서 스크롤)
+                        final Widget? preview = isOpen
+                            ? Container(
+                                margin: const EdgeInsets.only(top: 6),
+                                padding: const EdgeInsets.all(8),
+                                constraints: const BoxConstraints(maxHeight: 140),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.04),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: SingleChildScrollView(
+                                  child: SelectableText(
+                                    e.prompt,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.4),
+                                  ),
+                                ),
+                              )
+                            : null;
+
+                        // 간단히 보기 — 한 줄에 '이름 - 분류' (누르면 펼치기 · 추가는 꾹 누르면 맨 끝에)
+                        if (state.promptDictCompact) {
+                          return DictCompactRow(
+                            title: e.displayTitle,
+                            category: state.dictCategoryLabel(e.categoryId),
+                            background: AppColors.background,
+                            borderColor: isOpen ? color.withValues(alpha: 0.5) : null,
+                            onTap: toggleOpen,
+                            onAdd: () => Navigator.pop(ctx, (e, false)), // 커서 자리에
+                            onAddLongPress: () => Navigator.pop(ctx, (e, true)), // 맨 끝에
+                            onCopy: copy,
+                            below: preview,
+                          );
+                        }
+
+                        final t = state.dictThumb(e); // 한 번 푼 건 다시 안 푼다 (사전 탭과 공용)
                         return Container(
                           padding: const EdgeInsets.all(6),
                           decoration: BoxDecoration(
@@ -849,11 +893,7 @@ Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState s
                                   // 미리보기와 버튼 사이(제목)를 누르면 내용을 펼쳐 본다
                                   Expanded(
                                     child: InkWell(
-                                      onTap: () => setPicker(() {
-                                        if (!expanded.remove(e.id)) {
-                                          expanded.add(e.id);
-                                        }
-                                      }),
+                                      onTap: toggleOpen,
                                       borderRadius: BorderRadius.circular(6),
                                       child: Padding(
                                         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -890,34 +930,10 @@ Future<(PromptDictEntry, bool)?> _pickDictEntry(BuildContext context, AppState s
                                     onLongPress: () => Navigator.pop(ctx, (e, true)), // 맨 끝에
                                   ),
                                   const SizedBox(width: 6),
-                                  smallButton("복사", Icons.copy, AppColors.blue, () {
-                                    Clipboard.setData(ClipboardData(text: e.prompt));
-                                    Navigator.pop(ctx);
-                                    showToast(context, "'${e.displayTitle}' 프롬프트를 복사했습니다.");
-                                  }),
+                                  smallButton("복사", Icons.copy, AppColors.blue, copy),
                                 ],
                               ),
-                              // 펼쳤을 때: 저장된 프롬프트 전체 (보기만, 길면 그 안에서 스크롤)
-                              if (isOpen)
-                                Container(
-                                  margin: const EdgeInsets.only(top: 6),
-                                  padding: const EdgeInsets.all(8),
-                                  constraints: const BoxConstraints(maxHeight: 140),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.04),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: SingleChildScrollView(
-                                    child: SelectableText(
-                                      e.prompt,
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 12,
-                                        height: 1.4,
-                                      ),
-                                    ),
-                                  ),
-                                ),
+                              ?preview,
                             ],
                           ),
                         );

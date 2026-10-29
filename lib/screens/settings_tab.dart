@@ -1,9 +1,6 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import '../models/app_state.dart';
 import '../novelai_service.dart' show NovelAiService; // 검색 페이지 수 기본값
 import '../models/text_controllers.dart';
@@ -14,6 +11,8 @@ import '../widgets/update_dialog.dart'; // 업데이트 안내 창 (main 의 자
 import '../widgets/accent_color_sheet.dart'; // 액센트 색 직접 고르기
 import '../widgets/color_sliders.dart' show HueSlider; // 무지개 색 목록
 import '../utils/ui_safety.dart';
+import '../utils/temp_files.dart'; // 고른 파일 복사본 치우기
+import '../widgets/export_sheet.dart'; // 내보내기 — 폴더에 저장 / 공유하기
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -100,50 +99,10 @@ class _SettingsTabState extends State<SettingsTab>
   bool _isGelbooruExpanded = false;
   bool _gelbooruExpandChecked = false;
 
-  // 설정 내보내기: 폴더에 저장 / 공유하기 선택
+  // 설정 내보내기: 폴더에 저장 / 공유하기 선택 (고르는 창 · 쓰기는 바이브 · 정밀 참조와 같이 — export_sheet.dart)
   Future<void> _exportSettings(BuildContext context, AppState state) async {
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text("설정 내보내기", style: TextStyle(color: Colors.white70, fontSize: 13)),
-            ),
-            const Divider(height: 1, color: Colors.white12),
-            ListTile(
-              leading: const Icon(Icons.folder, color: AppColors.amber),
-              title: const Text("폴더에 저장", style: TextStyle(color: Colors.white)),
-              subtitle: Text(
-                state.safRootUri != null
-                    ? "저장 폴더의 settings 안에 저장 (파일 앱에서 열람 가능)"
-                    : "⚠️ 저장 폴더 미설정 — 가져오기로 다시 못 읽습니다",
-                style: const TextStyle(color: Colors.white38, fontSize: 11),
-              ),
-              onTap: () => Navigator.pop(ctx, 'folder'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.share, color: AppColors.purple),
-              title: const Text("공유하기", style: TextStyle(color: Colors.white)),
-              subtitle: const Text(
-                "다른 앱으로 전송 (드라이브, 메신저 등)",
-                style: TextStyle(color: Colors.white38, fontSize: 11),
-              ),
-              onTap: () => Navigator.pop(ctx, 'share'),
-            ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
-    );
-
-    if (choice == null || !context.mounted) {
+    final target = await pickExportTarget(context, state, title: "설정 내보내기");
+    if (target == null || !context.mounted) {
       return;
     }
 
@@ -160,42 +119,15 @@ class _SettingsTabState extends State<SettingsTab>
       String two(int n) => n.toString().padLeft(2, '0');
       final dateStr =
           "${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}";
-      final fileName = "DNaiApp_Settings_$dateStr.json";
-
-      if (choice == 'folder') {
-        // SAF 폴더에 저장한다.
-        //  ⚠️ 예전처럼 /Android/data/<패키지>/files 아래에 쓰면 저장은 되지만,
-        //     안드로이드 11부터 문서 선택기가 그 경로를 볼 수 없어서
-        //     '가져오기'를 눌러도 파일이 나타나지 않는다.
-        final shown = await state.saveSettingsViaSaf(fileName, bytes);
-        if (!context.mounted) {
-          return;
-        }
-        if (shown == null) {
-          // 저장 폴더가 없으면 조용히 실패하지 말고 공유로 대체 (파일을 잃지 않게)
-          final dir = await getTemporaryDirectory();
-          final file = File('${dir.path}/$fileName');
-          await file.writeAsBytes(bytes);
-          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
-          if (!context.mounted) {
-            return;
-          }
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              duration: Duration(seconds: 5),
-              content: Text("저장 폴더가 없어 공유로 내보냈습니다. 설정에서 저장 폴더를 지정해 주세요."),
-            ),
-          );
-          return;
-        }
+      // 폴더에 저장은 SAF 폴더에 쓴다.
+      //  ⚠️ 예전처럼 /Android/data/<패키지>/files 아래에 쓰면 저장은 되지만,
+      //     안드로이드 11부터 문서 선택기가 그 경로를 볼 수 없어서
+      //     '가져오기'를 눌러도 파일이 나타나지 않는다.
+      final msg = await exportToTarget(state, target, "DNaiApp_Settings_$dateStr.json", bytes);
+      if (msg != null && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(duration: const Duration(seconds: 5), content: Text("저장 완료: $shown")),
+          SnackBar(duration: const Duration(seconds: 5), content: Text(msg)),
         );
-      } else {
-        final dir = await getTemporaryDirectory();
-        final file = File('${dir.path}/$fileName');
-        await file.writeAsBytes(bytes);
-        await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
       }
     } catch (e) {
       if (context.mounted) {
@@ -515,16 +447,27 @@ class _SettingsTabState extends State<SettingsTab>
                       ],
                       if (acc.limitPercent != null) ...[
                         const SizedBox(width: 8),
-                        Icon(Icons.bolt, size: 15, color: _quotaColor(acc.limitPercent!)),
+                        // 색은 부스트까지 더한 '쓸 수 있는 양' 으로 (기본을 다 쓰면 부스트를 쓴다)
+                        Icon(Icons.bolt, size: 15, color: _quotaColor(acc.limitPercent! + acc.extraPercent)),
                         const SizedBox(width: 2),
                         Text(
                           "${acc.limitPercent!.round()}%",
                           style: TextStyle(
-                            color: _quotaColor(acc.limitPercent!),
+                            color: _quotaColor(acc.limitPercent! + acc.extraPercent),
                             fontSize: 13,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
+                        // 부스트(공식 'Extra Usage') — 있을 때만 '+100%' 처럼 붙인다
+                        if (acc.extraPercent > 0)
+                          Text(
+                            " +${acc.extraPercent.round()}%",
+                            style: const TextStyle(
+                              color: AppColors.purple,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                       ],
                       if (acc.checkedAgo != null) ...[
                         const SizedBox(width: 8),
@@ -1537,6 +1480,42 @@ class _SettingsTabState extends State<SettingsTab>
             ],
           ),
         ),
+        // 자동 저장이 꺼진 채 연속 생성할 때 한 번 묻기 (기본 꺼짐 — 프롬프트탭의 생성 버튼에서 확인)
+        _toggleTile(
+          icon: Icons.save_outlined,
+          title: "연속 생성 시 자동 저장 OFF 경고",
+          value: state.warnBatchWithoutAutoSave,
+          onChanged: (val) => state.warnBatchWithoutAutoSave = val,
+        ),
+        // Anlas 소모 확인 창 끄기 (기본 꺼짐 = 예전처럼 묻는다).
+        //  켜면 생성 · i2i · 업스케일 · 다시 뽑기의 비용 확인 창이 안 뜨고, 대신 Anlas 가 드는 실행 버튼에 빨간 테두리가 생긴다
+        //  (AppState.anlasMarked). 원본 모델을 몰라 묻는 창은 비용과 상관없어 그대로 뜬다.
+        _toggleTile(
+          icon: Icons.toll_outlined,
+          title: "Anlas 소모 확인 창 끄기",
+          value: state.skipAnlasConfirm,
+          // (켤 때 '이제 묻지 않아요…' 알림을 띄웠는데 뺐다 — 켜고 끌 때의 알림은 띄우지 않는다, 2026-10)
+          onChanged: (val) => state.skipAnlasConfirm = val,
+        ),
+        // 생성 진행 · 완료 알림 (기본 꺼짐) — 연속 생성은 알림창에 진행, 끝나면 알림(앱이 뒤에 있을 때) · 진동(앱을 볼 때)
+        _toggleTile(
+          icon: Icons.notifications_active_outlined,
+          title: "생성 진행 · 완료 알림",
+          value: state.generationNotify,
+          onChanged: (val) {
+            state.generationNotify = val;
+            if (val) {
+              _onGenerationNotifyOn(context, state);
+            }
+          },
+        ),
+        // 생성 과정 미리보기 (기본 꺼짐) — 생성 중간 단계를 이미지 자리에 (V4 이상의 그냥 생성만 · 데이터를 조금 더 쓴다)
+        _toggleTile(
+          icon: Icons.slow_motion_video,
+          title: "생성 과정 미리보기",
+          value: state.streamPreview,
+          onChanged: (val) => state.streamPreview = val,
+        ),
         // 프롬프트 입력 폰트 크기 (확대 입력창 전용)
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -1730,7 +1709,6 @@ class _SettingsTabState extends State<SettingsTab>
               const Color(0xFF9E9E9E),
             ),
             _promptSectionChip(state, 'conditional', "조건부", Icons.bolt, AppColors.pink),
-            _promptSectionChip(state, 'weightRules', "가중치", Icons.tune, const Color(0xFF84CC16)),
           ]),
         ],
       ),
@@ -1878,7 +1856,7 @@ class _SettingsTabState extends State<SettingsTab>
         onTap: isActive
             ? null
             : () => filled
-                  ? _switchSafFolder(context, state, slot)
+                  ? _switchSafFolder(state, slot)
                   : _pickSafFolder(context, state, slot),
         borderRadius: BorderRadius.circular(10),
         child: Container(
@@ -1929,7 +1907,7 @@ class _SettingsTabState extends State<SettingsTab>
                 _safSlotButton(
                   "해제",
                   Colors.white54,
-                  () => _clearSafFolder(context, state, slot),
+                  () => _clearSafFolder(state, slot),
                   outlined: true,
                 ),
               ],
@@ -1958,56 +1936,47 @@ class _SettingsTabState extends State<SettingsTab>
     );
   }
 
-  // 폴더를 골라 [slot] 칸에 넣는다 (그 칸만 바뀐다)
-  Future<void> _pickSafFolder(BuildContext context, AppState state, int slot) async {
-    final result = await state.pickSafRoot(slot: slot);
-    if (!context.mounted) {
-      return;
-    }
-    final String picked = state.safSlotNames[slot] ?? '폴더';
-    final String msg = switch (result) {
-      SafPickResult.picked => "저장 폴더 ${slot + 1} 칸에 지정했어요! ($picked)",
-      SafPickResult.duplicate => "다른 칸에 이미 있는 폴더예요. 그 칸을 눌러 전환해 주세요.",
-      SafPickResult.cancelled => "폴더 선택이 취소됐어요.",
-    };
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(duration: const Duration(milliseconds: 2000), content: Text(msg)),
-    );
-  }
-
-  // [slot] 칸을 비운다 (쓰던 칸이면 다른 칸에 폴더가 있을 때 그쪽으로 넘어간다)
-  Future<void> _clearSafFolder(BuildContext context, AppState state, int slot) async {
-    final bool wasActive = state.activeSafSlot == slot;
-    await state.clearSafRoot(slot: slot);
-    if (!context.mounted) {
-      return;
-    }
-    final String msg;
-    if (!wasActive) {
-      msg = "저장 폴더 ${slot + 1} 칸을 비웠어요.";
-    } else if (state.safRootUri != null) {
-      msg = "비웠어요. 저장 폴더 전환: ${state.safRootName ?? '폴더'}";
-    } else {
-      msg = "저장 폴더 지정을 해제했어요.";
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(duration: const Duration(milliseconds: 2000), content: Text(msg)),
-    );
-  }
-
-  // [slot] 칸의 폴더로 전환 (계정 전환처럼)
-  Future<void> _switchSafFolder(BuildContext context, AppState state, int slot) async {
-    await state.switchSafSlot(slot);
-    if (!context.mounted) {
+  // '생성 진행 · 완료 알림' 을 켰을 때 — 알림 권한을 묻고 (안드로이드 13+), 권한이 없을 때만 알려 준다.
+  //  권한이 없어도 설정은 켜 둔다 (앱을 보고 있을 때의 진동은 된다).
+  //  (예전엔 '켰어요! …' 도 띄웠는데 뺐다 — 켜고 끌 때의 알림은 띄우지 않는다. 권한 없음은 켠 효과가 반쯤 없으니 남긴다)
+  Future<void> _onGenerationNotifyOn(BuildContext context, AppState state) async {
+    final bool canNotify = await state.prepareGenerationNotify();
+    if (canNotify || !context.mounted) {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        duration: const Duration(milliseconds: 2000),
-        content: Text("저장 폴더 전환: ${state.safRootName ?? '폴더'}"),
+      const SnackBar(
+        duration: Duration(seconds: 5),
+        content: Text(
+          "알림 권한이 없어 알림은 뜨지 않아요 — 앱을 보고 있을 때 진동만 울려요.\n휴대폰 설정 > 앱 > DNaiApp > 알림에서 켤 수 있어요.",
+        ),
       ),
     );
   }
+
+  // 폴더를 골라 [slot] 칸에 넣는다 (그 칸만 바뀐다)
+  //  고른 결과는 칸에 바로 보이므로 알리지 않는다 — 다른 칸에 이미 있는 폴더라 안 넣었을 때만 이유를 알려 준다.
+  //  (예전엔 지정 · 취소 · 비우기 · 전환마다 알림을 띄웠다 — 화면에 보이는 걸 또 말해 줄 필요가 없어 뺐다, 2026-10)
+  Future<void> _pickSafFolder(BuildContext context, AppState state, int slot) async {
+    final result = await state.pickSafRoot(slot: slot);
+    if (result != SafPickResult.duplicate || !context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        duration: Duration(milliseconds: 2000),
+        content: Text("다른 칸에 이미 있는 폴더예요. 그 칸을 눌러 전환해 주세요."),
+      ),
+    );
+  }
+
+  // [slot] 칸을 비운다 (쓰던 칸이면 다른 칸에 폴더가 있을 때 그쪽으로 넘어간다 — 칸의 표시로 보인다)
+  Future<void> _clearSafFolder(AppState state, int slot) =>
+      state.clearSafRoot(slot: slot);
+
+  // [slot] 칸의 폴더로 전환 (계정 전환처럼 — 켜진 칸이 바뀌어 보인다)
+  Future<void> _switchSafFolder(AppState state, int slot) =>
+      state.switchSafSlot(slot);
 
   // 파일 이름 규칙 카드
   Widget _fileNameCard(BuildContext context, AppState state) {
@@ -2269,6 +2238,8 @@ class _SettingsTabState extends State<SettingsTab>
                           ),
                         );
                       }
+                    } finally {
+                      await clearPickedFiles(); // file_picker 가 캐시에 만든 복사본 — 다 읽었으니 치운다
                     }
                   },
                   icon: const Icon(Icons.download, size: 18),

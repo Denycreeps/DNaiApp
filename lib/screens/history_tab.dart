@@ -1,13 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/app_state.dart';
+import '../models/history_search.dart'; // 히스토리 검색 (프롬프트로 거르기)
 import '../models/image_metadata.dart';
+import '../models/model_caps.dart'; // 다시 생성 창의 모델 고르기
 import '../widgets/detail_settings_modal.dart';
 import '../widgets/gallery_view.dart';
-import 'package:image_picker/image_picker.dart';
 import '../app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/app_toast.dart';
+import '../widgets/tag_search_field.dart'; // 검색칸 (갤러리 검색과 같은 모양)
+import '../utils/ui_safety.dart'; // hideKeyboardIfShown (DEVNOTES 4)
+import '../utils/temp_files.dart'; // 그림 고르기 (캐시 복사본은 읽고 바로 지운다)
 
 // ============================================================================
 // 히스토리 탭 메인 UI
@@ -43,6 +47,9 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
 
   int _currentIndex = 0;
   int _prevImageCount = 0;
+  // 목록의 맨 끝 칸 — 장수와 함께 '새 그림이 들어왔나' 를 본다 (⑤).
+  //  ⚠️ 장수만 보면 상한이 찬 뒤엔 한 장 빠지고 한 장 들어와 장수가 그대로라 새 그림을 못 알아챈다.
+  HistoryEntry? _prevLastEntry;
   bool _isPromptOpen = false;
   _InfoTab _infoTab = _InfoTab.positive; // 정보 칸에서 보고 있는 탭
   bool _isAnimating = false;
@@ -50,8 +57,29 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   bool _wasGridView = false;
   bool _isSelectMode = false;
   bool _isGalleryMode = false; // 갤러리 모드 (폴더 탐색)
+  // 갤러리 검색칸이 열려 있는지 — 갤러리 줄의 🔍 색을 맞추려고. 쓰는 쪽은 GalleryView (열고 닫을 때),
+  //  갤러리에 들어갈 때만 여기서 false 로 맞춘다 (새 GalleryView 는 닫힌 채로 시작한다).
+  final ValueNotifier<bool> _gallerySearchOpen = ValueNotifier<bool>(false);
   final GlobalKey<GalleryViewState> _galleryKey = GlobalKey<GalleryViewState>();
-  final Set<int> _selectedIndices = {};
+  // 그리드에서 고른 칸 — 번호가 아니라 칸(객체)으로 든다.
+  //  ⚠️ 예전엔 번호로 들었다. 고르는 사이 상한이 찬 채 새 그림이 들어오면 맨 앞 칸이 빠져 번호가 하나씩 밀려,
+  //     '선택 삭제' 가 옆 칸(즐겨찾기도)을 지웠다 (DEVNOTES 5).
+  final Set<HistoryEntry> _selected = {};
+
+  // ── 히스토리 검색 (models/history_search.dart) ──
+  //  그리드에서 거르고, 결과를 누르면 목록에서 그 그림을 연다 (목록은 늘 전체 — 번호가 섞이지 않게).
+  //  검색어는 저장하지 않는다 (이 탭이 살아 있는 동안만).
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  HistoryQuery _query = parseHistoryQuery('');
+  // 그림 정보 → 찾을 글. 정보는 바뀌지 않으므로 한 번만 만든다 (정보를 통째로 바꾸면 새 열쇠라 새로 만든다)
+  final Expando<String> _searchTextCache = Expando<String>();
+
+  bool get _isSearching => !isEmptyQuery(_query);
+
+  // 검색칸을 열어 두었는지 (돋보기). 닫으면 검색어도 지운다 — 안 보이는 검색어가 그리드를 거르고 있지 않게.
+  //  그래서 검색 중(_isSearching)이면 늘 열려 있다.
+  bool _searchOpen = false;
 
   @override
   void initState() {
@@ -62,6 +90,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     // 탭 재생성 시 기존 이미지들을 "새로 추가된 것"으로 오인해
     // 불필요한 점프/스크롤이 발동하지 않도록 현재 개수를 기준선으로 잡는다.
     _prevImageCount = _appState.historyImages.length;
+    _prevLastEntry = _appState.history.isEmpty ? null : _appState.history.last;
 
     _thumbnailScrollController = _newThumbController(_appState.historyThumbnailScrollOffset);
     _wasGridView = _appState.isHistoryGridView;
@@ -97,17 +126,104 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     _pageController.dispose();
     _thumbnailScrollController.dispose();
     _listScrollController.dispose();
+    _searchController.dispose();
+    _gallerySearchOpen.dispose();
+    // FocusNode 는 한 프레임 뒤에 버린다 (DEVNOTES 4)
+    final FocusNode focus = _searchFocus;
+    WidgetsBinding.instance.addPostFrameCallback((_) => focus.dispose());
     super.dispose();
+  }
+
+  // ── 히스토리 검색 ───────────────────────────────────────────────
+  String _searchTextOf(NaiMetadata? meta) =>
+      meta == null ? '' : (_searchTextCache[meta] ??= historySearchText(meta));
+
+  /// 그리드에 보일 칸들 (실제 번호, 최신 먼저) — 즐겨찾기 · 검색을 함께 건다
+  List<int> _visibleIndices(AppState state) {
+    final history = state.history;
+    return [
+      for (int i = history.length - 1; i >= 0; i--)
+        if ((!_showFavoritesOnly || history[i].favorite) &&
+            (!_isSearching || historyMatches(_searchTextOf(history[i].metadata), _query)))
+          i,
+    ];
+  }
+
+  /// 키보드만 내린다 — 포커스는 건드리지 않는다 (DEVNOTES 4 · utils/ui_safety.dart)
+  void _hideKeyboard() => hideKeyboardIfShown(_searchFocus);
+
+  /// 검색어를 바꾼다. [fromTyping] — 사용자가 칸에 친 것 (지우기 버튼은 false).
+  void _setQuery(String text, {bool fromTyping = true}) {
+    setState(() {
+      _query = parseHistoryQuery(text);
+      // 고르기 중이면 화면에서 사라진 칸은 고른 것에서 뺀다 — 안 보이는 그림이 '선택 삭제' 로 지워지지 않게
+      if (_isSelectMode) {
+        final List<HistoryEntry> all = _appState.history;
+        final Set<HistoryEntry> shown = {for (final i in _visibleIndices(_appState)) all[i]};
+        _selected.retainWhere(shown.contains);
+        if (_selected.isEmpty) {
+          _isSelectMode = false;
+        }
+      }
+    });
+    // 목록 보기에서 치면 결과(그리드)로 간다 — 목록은 거르지 않는다.
+    //  검색어가 비게 쳐도 간다 (안 가면 목록의 검색칸이 치는 도중에 사라진다)
+    if (fromTyping && !_appState.isHistoryGridView) {
+      _appState.isHistoryGridView = true;
+      _appState.refreshUI();
+    }
+  }
+
+  /// 검색칸을 연다 — 칸이 그려진 뒤 커서를 둔다 (돋보기를 눌렀으니 바로 칠 수 있게)
+  ///  막 생긴 칸으로 포커스를 '넣는' 것이라 DEVNOTES 4 (포커스를 빼지 않는다) 와 부딪히지 않는다.
+  void _openSearch() {
+    setState(() => _searchOpen = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchOpen && !_searchFocus.hasFocus) {
+        _searchFocus.requestFocus();
+      }
+    });
+  }
+
+  /// 검색칸을 닫는다 — 검색어도 지운다. 칸이 사라지기 전에 키보드부터 내린다 (포커스는 건드리지 않는다).
+  void _closeSearch() {
+    _hideKeyboard();
+    _searchController.clear();
+    _setQuery('', fromTyping: false);
+    setState(() => _searchOpen = false);
+  }
+
+  /// 검색칸 — 돋보기로 열면 그리드에, 목록에서는 검색 중일 때만 보인다 (결과로 돌아갈 수 있게)
+  Widget _buildSearchBar() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TagSearchField(
+        controller: _searchController,
+        focusNode: _searchFocus,
+        active: _isSearching,
+        onChanged: _setQuery,
+        // 검색 키 — 키보드만 내린다
+        onSearchKey: _hideKeyboard,
+        onClear: () {
+          // 목록 보기에서 지우면 검색칸이 사라진다 — 키보드부터 내린다
+          if (!_appState.isHistoryGridView) {
+            _hideKeyboard();
+          }
+          _searchController.clear();
+          _setQuery('', fromTyping: false);
+        },
+      ),
+    );
   }
 
   // ── 도구 줄 ─────────────────────────────────────────────────────
   /// 도구 줄의 알약 버튼.
   ///  [color] 가 있으면 '켜진' 모양 — 그 색을 옅게 깐 바탕([fill]) + 그 색 테두리.
   ///  없으면 기본 모양 — 어두운 바탕 + 흐린 테두리.
-  ///  [label] 이 없으면 아이콘만 (가로 여백이 조금 좁다).
+  ///  [label] 이 없으면 아이콘만 (가로 여백이 조금 좁다), [icon] 이 없으면 글자만.
   ///  ⚠️ 예전엔 이 모양 코드를 버튼마다 복사해서 도구 줄 하나가 270줄이었다.
   Widget _pill({
-    required IconData icon,
+    IconData? icon,
     String? label,
     Color? color,
     double fill = 0.15,
@@ -131,28 +247,39 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
             width: borderWidth ?? (color != null ? 1.5 : 1.0),
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: iconSize, color: iconColor ?? color ?? Colors.white54),
-            if (label != null) ...[
-              SizedBox(width: gap),
-              Text(
-                label,
-                style: TextStyle(color: labelColor, fontSize: 13, fontWeight: FontWeight.bold),
-              ),
+        // 글자만인 알약도 아이콘 알약과 높이가 같게 (아이콘 높이만큼은 늘 차지한다)
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minHeight: iconSize),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null)
+                Icon(icon, size: iconSize, color: iconColor ?? color ?? Colors.white54),
+              if (icon != null && label != null) SizedBox(width: gap),
+              if (label != null)
+                Text(
+                  label,
+                  style: TextStyle(color: labelColor, fontSize: 13, fontWeight: FontWeight.bold),
+                ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
   /// 목록/그리드 위의 도구 줄. 선택 모드(그리드)면 [취소 · n장 선택됨 · 삭제],
-  ///  아니면 [목록/그리드 · 갤러리 · n장 · (그리드면) 즐겨찾기 · 삭제 · 불러오기].
-  Widget _buildToolbar(BuildContext context, AppState state, int count, bool isGridView) {
+  ///  아니면 [목록/그리드 · 갤러리 · n장 · 검색 · (그리드면) 즐겨찾기 · 삭제 · 불러오기].
+  ///  ⚠️ 폭이 빠듯하다 — 목록/그리드 · 갤러리는 글자만, 오른쪽은 아이콘만 둔다 (남는 자리는 장수가 쓴다).
+  Widget _buildToolbar(
+    BuildContext context,
+    AppState state,
+    int count,
+    bool isGridView, {
+    int? shown, // 그리드에서 거르는 중이면 보이는 장수 ("12/340장")
+  }) {
     const countStyle = TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.bold);
-    final bool hasSelection = _selectedIndices.isNotEmpty;
+    final bool hasSelection = _selected.isNotEmpty;
     return SizedBox(
       height: 40,
       child: _isSelectMode && isGridView
@@ -167,12 +294,12 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   labelColor: Colors.white54,
                   onTap: () => setState(() {
                     _isSelectMode = false;
-                    _selectedIndices.clear();
+                    _selected.clear();
                   }),
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  "${_selectedIndices.length}장 선택됨",
+                  "${_selected.length}장 선택됨",
                   style: countStyle.copyWith(color: Colors.white),
                 ),
                 const Spacer(),
@@ -193,17 +320,18 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                             context,
                             title: "선택 삭제",
                             message:
-                                "${_selectedIndices.length}장의 이미지를 히스토리에서 삭제하시겠습니까?\n(실제 파일은 삭제되지 않습니다.)",
+                                "${_selected.length}장의 이미지를 히스토리에서 삭제하시겠습니까?\n(실제 파일은 삭제되지 않습니다.)",
                             confirmLabel: "삭제",
                             icon: Icons.delete_outline,
                           );
                           if (!ok || !mounted) {
                             return;
                           }
-                          state.deleteHistoryByIndices(_selectedIndices);
+                          // 칸(객체)으로 지운다 — 확인 창이 떠 있는 사이 번호가 밀려도 고른 그대로
+                          state.deleteHistoryEntries(_selected);
                           setState(() {
                             _isSelectMode = false;
-                            _selectedIndices.clear();
+                            _selected.clear();
                           });
                         },
                 ),
@@ -212,16 +340,16 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           // ===== 일반 모드 =====
           : Row(
               children: [
-                // 목록 ↔ 그리드 (하나의 토글)
+                // 목록 ↔ 그리드 (하나의 토글) — 글자만 (자리를 아끼려 아이콘을 뺐다)
                 _pill(
-                  icon: isGridView ? Icons.view_carousel_outlined : Icons.grid_view_rounded,
                   label: isGridView ? "리스트" : "그리드",
                   color: AppColors.accent,
                   onTap: () {
                     if (isGridView) {
+                      _hideKeyboard(); // 큰 그림이 키보드에 가리지 않게
                       setState(() {
                         _isSelectMode = false;
-                        _selectedIndices.clear();
+                        _selected.clear();
                       });
                       state.isHistoryGridView = false;
                     } else {
@@ -232,23 +360,56 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                 ),
                 if (state.galleryModeEnabled) ...[
                   const SizedBox(width: 8),
-                  // 갤러리 (폴더 탐색 모드)
+                  // 갤러리 (폴더 탐색 모드) — 글자만
                   _pill(
-                    icon: Icons.photo_library_outlined,
                     label: "갤러리",
                     color: AppColors.amber,
                     fill: 0.12,
-                    onTap: () => setState(() {
-                      _isGalleryMode = true;
-                      state.setHistoryLastWasGallery(true);
-                      _isSelectMode = false;
-                      _selectedIndices.clear();
-                    }),
+                    onTap: () {
+                      _hideKeyboard(); // 검색칸이 사라지기 전에 키보드부터
+                      _gallerySearchOpen.value = false; // 새 갤러리는 검색칸이 닫힌 채로 시작한다
+                      setState(() {
+                        _isGalleryMode = true;
+                        state.setHistoryLastWasGallery(true);
+                        _isSelectMode = false;
+                        _selected.clear();
+                      });
+                    },
                   ),
                 ],
-                const Spacer(),
-                Text("$count장", style: countStyle),
+                // 장수 — 남는 자리에 오른쪽으로. 좁으면 글자를 줄인다 ('12/340장' 처럼 길어져도 줄이 넘치지 않게)
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(shown == null ? "$count장" : "$shown/$count장", style: countStyle),
+                    ),
+                  ),
+                ),
+                // 목록 보기의 검색 — 그리드로 가서 검색칸을 연다 (검색 중이면 목록에도 검색칸이 보여 필요 없다)
+                if (!isGridView && !_isSearching && count > 0) ...[
+                  const SizedBox(width: 8),
+                  _pill(
+                    icon: Icons.search,
+                    onTap: () {
+                      state.isHistoryGridView = true;
+                      state.refreshUI();
+                      _openSearch();
+                    },
+                  ),
+                ],
                 if (isGridView) ...[
+                  // 검색칸 열기/닫기 — 열려 있으면 강조색 (닫으면 검색어도 지운다)
+                  if (count > 0) ...[
+                    const SizedBox(width: 8),
+                    _pill(
+                      icon: Icons.search,
+                      color: _searchOpen ? AppColors.accent : null,
+                      fill: 0.2,
+                      onTap: _searchOpen ? _closeSearch : _openSearch,
+                    ),
+                  ],
                   const SizedBox(width: 8),
                   // 즐겨찾기만 보기
                   _pill(
@@ -265,22 +426,13 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                       onTap: () => _showBulkDeleteSheet(context, state),
                     ),
                   ],
-                  // 불러오기 (맨 오른쪽)
+                  // 불러오기 (맨 오른쪽) — 아이콘만. 기본 모양 (검색 · 즐겨찾기 · 삭제와 같은 회색 — 켜고 끄는 버튼이 아니라서)
                   const SizedBox(width: 8),
-                  OutlinedButton(
-                    onPressed: () => state.importImageToHistory(context),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.purple, width: 1.5),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    ),
-                    child: const Text(
-                      "불러오기",
-                      style: TextStyle(
-                        color: AppColors.purple,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
+                  Tooltip(
+                    message: "이미지 불러오기",
+                    child: _pill(
+                      icon: Icons.add_photo_alternate_outlined,
+                      onTap: () => state.importImageToHistory(context),
                     ),
                   ),
                 ],
@@ -303,6 +455,19 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     final bool isGridView = state.isHistoryGridView;
     bool changed = false;
 
+    // ⓪ 고르는 중이면 그 사이 없어진 칸(상한 정리 · 가져오기 · 전부 지우기)은 고른 것에서 뺀다 — 'n장 선택됨' 이 맞게
+    if (_isSelectMode && _selected.isNotEmpty) {
+      final Set<HistoryEntry> live = state.history.toSet();
+      final int before = _selected.length;
+      _selected.retainWhere(live.contains);
+      if (_selected.length != before) {
+        if (_selected.isEmpty) {
+          _isSelectMode = false;
+        }
+        changed = true;
+      }
+    }
+
     // ① 탭을 떠날 때 보낸 신호 — 화면 밖에 있는 동안 갤러리를 닫아 둔다
     //  (이 탭은 KeepAlive 라 화면 밖에서도 살아 있다 → 돌아오면 이미 목록/그리드)
     if (state.historyGalleryResetRevision != _lastEnterRevision) {
@@ -312,8 +477,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           // 마지막 보기 유지 — 갤러리는 그대로 두고, 다른 저장 폴더를 보던 중이면 지금 폴더로 돌려 둔다
           _galleryKey.currentState?.showActiveFolder();
         } else {
-          _isGalleryMode = false;
-          state.setHistoryLastWasGallery(false);
+          _leaveGallery();
           changed = true;
         }
       }
@@ -364,9 +528,21 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     _wasGridView = isGridView;
 
     // ⑤ 새 이미지가 추가됐으면 선택된(보통 마지막) 이미지로 이동 (목록 모드일 때만)
-    if (!isGridView && images.length != _prevImageCount) {
+    //  ⚠️ 장수만 보면 상한이 찬 뒤엔 새 그림을 못 알아챈다 (한 장 빠지고 한 장 들어와 장수가 그대로) —
+    //     큰 그림이 그 번호에 머문 채 내용만 이웃 그림으로 밀려 보였다. 맨 끝 칸이 바뀌었는지도 본다.
+    final HistoryEntry? last = state.history.isEmpty ? null : state.history.last;
+    if (!isGridView && (images.length != _prevImageCount || !identical(last, _prevLastEntry))) {
       _prevImageCount = images.length;
-      if (images.isNotEmpty && state.selectedHistoryIndex >= 0) {
+      _prevLastEntry = last;
+      if (images.isNotEmpty && state.selectedHistoryIndex >= 0 && _isGalleryMode) {
+        // 갤러리를 보는 중 — 목록 화면이 없어 옮길 수 없다. 번호만 맞춰 두고, 갤러리를 닫을 때 그 자리에서 시작한다
+        //  (_leaveGallery). ⚠️ 예전엔 여기서도 '옮기는 중' 표시(_pendingJumpTarget)를 세우고 목록이 붙기를 기다렸다.
+        //  갤러리에서 여러 장을 넣으면 기다림이 끝내 포기된 채 표시만 남아, 목록에서 다른 그림을 눌러도 onPageChanged 가
+        //  무시돼 선택 테두리 · 정보가 맨 끝 그림에 멈춰 있었다 (그 번호를 다시 누를 때까지).
+        _currentIndex = state.selectedHistoryIndex.clamp(0, images.length - 1);
+        _pendingJumpTarget = null;
+        changed = true;
+      } else if (images.isNotEmpty && state.selectedHistoryIndex >= 0) {
         final target = state.selectedHistoryIndex.clamp(0, images.length - 1);
         _currentIndex = target;
         _pendingJumpTarget = target;
@@ -380,6 +556,8 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           if (!_pageController.hasClients) {
             if (tries < 10) {
               WidgetsBinding.instance.addPostFrameCallback((_) => jumpWhenReady(tries + 1));
+            } else if (_pendingJumpTarget == target) {
+              _pendingJumpTarget = null; // 끝내 못 옮겼다 — 표시를 남기면 이후 넘기기가 전부 무시된다
             }
             return;
           }
@@ -403,6 +581,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   ///     옛 컨트롤러가 어디에도 붙어 있지 않아 바로 버려도 된다.
   void _startListAt(int target) {
     _currentIndex = target;
+    _pendingJumpTarget = null; // 새 컨트롤러가 이 자리에서 시작한다 — 옮기는 중인 것은 없다
     _pageController.dispose();
     _pageController = PageController(initialPage: target);
     final double offset = _thumbCenterOffset(target, _appState.historyImages.length) ?? 0;
@@ -422,20 +601,32 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     if (images.isEmpty) {
       return;
     }
-    final target = state.selectedHistoryIndex.clamp(0, images.length - 1);
     setState(() {
-      _isGalleryMode = false;
-      state.setHistoryLastWasGallery(false);
+      _leaveGallery(); // 방금 넣은 그림(AppState 가 이미 골라 둠)에서 시작
       _isSelectMode = false;
-      _selectedIndices.clear();
-      // 갤러리를 보는 동안 목록 화면은 없었다 → 새 위치로 시작
-      _startListAt(target);
-      // 새 이미지 감지(⑤)·그리드→목록(④)이 한 번 더 움직이지 않게 기준을 맞춘다
-      _prevImageCount = images.length;
+      _selected.clear();
+      // 그리드→목록(④)이 한 번 더 움직이지 않게
       _wasGridView = false;
     });
     state.isHistoryGridView = false;
     state.refreshUI();
+  }
+
+  /// 갤러리를 닫는다 — 목록 화면이 고른 그림(갤러리에서 넣은 그림 포함)에서 다시 시작하게. setState 안에서 부른다.
+  ///  갤러리를 보는 동안 목록 화면은 없었다 → 컨트롤러를 그 자리로 새로 만든다 (_startListAt).
+  ///  ⚠️ 예전엔 '히스토리' 버튼으로 닫으면 표시만 바꿔, 갤러리에서 넣은 그림 · 옮기던 표시가 목록에 반영되지 않았다.
+  void _leaveGallery() {
+    _isGalleryMode = false;
+    _appState.setHistoryLastWasGallery(false);
+    final images = _appState.historyImages;
+    if (images.isEmpty) {
+      return;
+    }
+    final int sel = _appState.selectedHistoryIndex;
+    _startListAt((sel >= 0 ? sel : _currentIndex).clamp(0, images.length - 1));
+    // 새 이미지 감지(⑤)가 한 번 더 움직이지 않게 기준을 맞춘다
+    _prevImageCount = images.length;
+    _prevLastEntry = _appState.history.last;
   }
 
   // ── 썸네일 줄 ─────────────────────────────────────────────────
@@ -613,20 +804,40 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
 
   // 그리드 → 리스트 전환하며 해당 이미지로 이동
   void _switchToListAtIndex(AppState state, int index) {
+    // 칸을 잡아 둔다 — 다음 프레임 전에 새 그림이 들어와 상한 정리로 번호가 밀려도 누른 그림으로 간다 (DEVNOTES 5)
+    final HistoryEntry? entry = index >= 0 && index < state.history.length ? state.history[index] : null;
     setState(() {
       _currentIndex = index;
       state.isHistoryGridView = false;
     });
     state.selectedHistoryIndex = index;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_pageController.hasClients) {
-        _pageController.jumpToPage(index);
+      if (!mounted) {
+        return;
       }
-      _scrollToThumbnail(index);
+      final int now = entry == null ? index : state.history.indexOf(entry);
+      if (now < 0) {
+        return; // 그 사이 지워졌다
+      }
+      if (_pageController.hasClients) {
+        _pageController.jumpToPage(now);
+      }
+      _scrollToThumbnail(now);
+      // 번호가 밀렸으면 '지금 보는 번호' 도 맞춘다 (위 setState 때 적은 건 옛 번호)
+      if (_currentIndex != now || state.selectedHistoryIndex != now) {
+        setState(() => _currentIndex = now);
+        state.selectedHistoryIndex = now;
+      }
     });
   }
 
   Future<void> _showDeleteDialog(BuildContext context, AppState state, int index) async {
+    if (index < 0 || index >= state.history.length) {
+      return;
+    }
+    // 번호가 아니라 칸을 잡아 둔다 — 확인 창이 떠 있는 사이 생성이 끝나 상한 정리가 일어나면 번호가 밀린다
+    //  (예전엔 그때 옆 칸 — 즐겨찾기여도 — 이 지워졌다. DEVNOTES 5)
+    final HistoryEntry entry = state.history[index];
     final ok = await showConfirmDialog(
       context,
       title: "히스토리 삭제",
@@ -634,8 +845,12 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
       confirmLabel: "삭제",
       icon: Icons.delete_outline,
     );
-    if (ok) {
-      state.deleteHistoryImage(index);
+    if (!ok) {
+      return;
+    }
+    final int i = state.history.indexOf(entry); // 지금 번호 (그 사이 지워졌으면 -1)
+    if (i >= 0) {
+      state.deleteHistoryImage(i);
     }
   }
 
@@ -643,9 +858,25 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   // 재생성 다이얼로그 (썸네일 + 파일 없을 때)
   // ============================================================================
   void _showRegenerateDialog(BuildContext context, AppState state, int index) {
+    // 번호가 아니라 '칸' 을 잡아 둔다 — 창이 떠 있는 사이 생성이 끝나 상한(300장) 정리가 일어나면
+    //  번호가 하나씩 밀려, 누를 때의 번호로는 엉뚱한 칸을 다시 생성하거나 지운다.
+    final HistoryEntry entry = state.history[index];
+    // 누르는 순간의 번호 (칸이 이미 지워졌으면 -1)
+    int currentIndex() => state.history.indexOf(entry);
+    // 원본 모델 — 그림 정보에 있으면 그대로 쓰고, 없으면 사용자가 고른다.
+    //  ⚠️ 예전엔 모르면 말없이 지금 고른 모델로 생성해, V4.5 그림이 V5 로 다시 만들어졌다.
+    final String? sourceModel = state.historySourceModel(index);
+    // 모델 이름은 있는데 알아보지 못한 경우 그 이름을 보여 준다 (아주 옛 모델 등)
+    final String rawSource = entry.metadata?.source ?? '';
+    String chosenModel = sourceModel ?? state.selectedModel;
+    bool newSeed = false; // '새 시드로' — 같은 설정의 다른 그림 (꺼 두면 원본 시드 그대로)
+    // 'NAI Diffusion V4.5 Full' → 'V4.5 Full' (칩에 들어가게)
+    String shortName(String id) =>
+        modelCapsFor(id).displayName.replaceFirst(RegExp(r'^(NAI Diffusion|NovelAI)\s+'), '');
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true, // 가로 화면 · 큰 글씨에서도 넘치지 않게 (내용에 세로 Expanded 없음 — 새 시드 줄의 Expanded 는 가로)
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
@@ -658,9 +889,98 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
             ),
           ],
         ),
-        content: const Text(
-          "메타데이터를 서버로 보내 새로 생성합니다.\n(Anlas가 소모될 수 있습니다.)",
-          style: TextStyle(color: Colors.white70, fontSize: 14),
+        // 보통 생성처럼 프롬프트탭으로 넘어가 생성하고, 새 그림은 히스토리 끝에 새 칸으로 들어간다 (이 칸은 그대로)
+        //  모델 칩만 다시 그리면 되므로 StatefulBuilder 는 내용에만 — '새로 생성' 버튼은 누를 때 chosenModel 을 읽는다
+        content: StatefulBuilder(
+          builder: (_, setDialogState) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                "메타데이터로 이미지를 새로 생성합니다.\n(Anlas가 소모될 수 있습니다.)",
+                style: TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+              const SizedBox(height: 14),
+              if (sourceModel != null)
+                Text(
+                  "모델: ${modelCapsFor(sourceModel).displayName} (원본 그대로)",
+                  style: TextStyle(
+                    color: AppColors.accent,
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                  ),
+                )
+              else ...[
+                Text(
+                  rawSource.isEmpty
+                      ? "원본 모델 정보가 없어요. 어떤 모델로 만들까요?"
+                      : "원본 모델($rawSource)을 알아보지 못했어요. 어떤 모델로 만들까요?",
+                  style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final id in kSelectableModels)
+                      ChoiceChip(
+                        label: Text(shortName(id)),
+                        selected: chosenModel == id,
+                        onSelected: (_) => setDialogState(() => chosenModel = id),
+                        showCheckmark: false,
+                        labelStyle: TextStyle(
+                          color: chosenModel == id ? Colors.white : Colors.white60,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        backgroundColor: AppColors.surface,
+                        selectedColor: AppColors.accent.withValues(alpha: 0.35),
+                        side: BorderSide(
+                          color: chosenModel == id ? AppColors.accent : Colors.white24,
+                        ),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 6),
+              // 시드 — 원본 그대로(같은 그림을 다시) / 새로(같은 설정의 다른 그림)
+              InkWell(
+                onTap: () => setDialogState(() => newSeed = !newSeed),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              "새 시드로",
+                              style: TextStyle(color: Colors.white, fontSize: 14),
+                            ),
+                            // 켜고 끌 때 글을 바꾸지 않는다 — 창 폭이 글 길이를 따라가(IntrinsicWidth) 누를 때마다 출렁인다
+                            const Text(
+                              "끄면 원본 시드 그대로 · 켜면 다른 그림",
+                              style: TextStyle(color: Colors.white54, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Switch(
+                        value: newSeed,
+                        onChanged: (v) => setDialogState(() => newSeed = v),
+                        activeThumbColor: AppColors.accent,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -671,7 +991,10 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           OutlinedButton(
             onPressed: () {
               Navigator.pop(ctx);
-              state.deleteHistoryImage(index);
+              final int i = currentIndex();
+              if (i >= 0) {
+                state.deleteHistoryImage(i);
+              }
             },
             style: OutlinedButton.styleFrom(side: const BorderSide(color: Colors.redAccent)),
             child: const Text("삭제", style: TextStyle(color: Colors.redAccent)),
@@ -679,7 +1002,10 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           ElevatedButton(
             onPressed: () {
               Navigator.pop(ctx);
-              state.regenerateFromMetadata(context, index);
+              final int i = currentIndex();
+              if (i >= 0) {
+                state.regenerateFromMetadata(context, i, model: chosenModel, newSeed: newSeed);
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
             child: const Text(
@@ -845,62 +1171,69 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
     );
   }
 
-  Widget _buildGridView(AppState state, List images) {
+  // 그리드 (슬리버 — 보이는 칸만 만든다. 위 build 의 CustomScrollView 설명)
+  Widget _buildGridSliver(AppState state, List images, List<int> displayIndices) {
     if (images.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.symmetric(vertical: 80),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.image_not_supported_outlined, size: 48, color: Colors.white24),
-              SizedBox(height: 16),
-              Text("저장된 히스토리 이미지가 없습니다.", style: TextStyle(color: Colors.white30)),
-            ],
+      return const SliverToBoxAdapter(
+        child: Center(
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 80),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.image_not_supported_outlined, size: 48, color: Colors.white24),
+                SizedBox(height: 16),
+                Text("저장된 히스토리 이미지가 없습니다.", style: TextStyle(color: Colors.white30)),
+              ],
+            ),
           ),
         ),
       );
     }
 
-    // 즐겨찾기 필터 적용: 실제 인덱스 목록 (역순)
-    List<int> displayIndices = [];
-    for (int i = images.length - 1; i >= 0; i--) {
-      if (_showFavoritesOnly) {
-        if (i < state.historyFavorites.length && state.historyFavorites[i]) {
-          displayIndices.add(i);
-        }
-      } else {
-        displayIndices.add(i);
-      }
-    }
-
-    if (_showFavoritesOnly && displayIndices.isEmpty) {
-      return const Center(
-        child: Padding(
-          padding: EdgeInsets.symmetric(vertical: 80),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.star_border, size: 48, color: Colors.white24),
-              SizedBox(height: 16),
-              Text("즐겨찾기한 이미지가 없습니다.", style: TextStyle(color: Colors.white30)),
-            ],
+    // [displayIndices] — 즐겨찾기 · 검색으로 거른 실제 번호 (최신 먼저, _visibleIndices)
+    if (displayIndices.isEmpty) {
+      return SliverToBoxAdapter(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 80),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _isSearching ? Icons.search_off : Icons.star_border,
+                  size: 48,
+                  color: Colors.white24,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _isSearching
+                      ? (_showFavoritesOnly ? "즐겨찾기 중에 검색에 맞는 이미지가 없습니다." : "검색에 맞는 이미지가 없습니다.")
+                      : "즐겨찾기한 이미지가 없습니다.",
+                  style: const TextStyle(color: Colors.white30),
+                ),
+              ],
+            ),
           ),
         ),
       );
     }
 
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
+    return SliverGrid(
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 4,
         crossAxisSpacing: 4,
         mainAxisSpacing: 4,
       ),
-      itemCount: displayIndices.length,
-      itemBuilder: (context, index) {
+      // 칸 하나 — 화면에 들어올 때 만든다
+      delegate: SliverChildBuilderDelegate((context, index) {
         final realIndex = displayIndices[index];
+        // 칸은 화면에 들어올 때 만든다 — 그린 뒤 목록이 줄었을 수 있다 (다음 그리기에서 맞춰진다)
+        if (realIndex >= state.history.length) {
+          return const SizedBox.shrink();
+        }
+        // 고르기 · 별 · 열기는 칸(객체)으로 — 번호는 새 그림이 들어오며 밀릴 수 있다 (위 _selected)
+        final HistoryEntry entry = state.history[realIndex];
         final isFav = realIndex < state.historyFavorites.length
             ? state.historyFavorites[realIndex]
             : false;
@@ -912,17 +1245,22 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
             if (_isSelectMode) {
               // 선택 모드: 체크 토글
               setState(() {
-                if (_selectedIndices.contains(realIndex)) {
-                  _selectedIndices.remove(realIndex);
-                  if (_selectedIndices.isEmpty) {
+                if (_selected.contains(entry)) {
+                  _selected.remove(entry);
+                  if (_selected.isEmpty) {
                     _isSelectMode = false;
                   }
                 } else {
-                  _selectedIndices.add(realIndex);
+                  _selected.add(entry);
                 }
               });
             } else {
-              _switchToListAtIndex(state, realIndex);
+              _hideKeyboard(); // 검색하다 누른 경우 — 큰 그림이 키보드에 가리지 않게
+              // 누르는 순간의 번호로 (그린 뒤 새 그림이 들어와 번호가 밀렸을 수 있다)
+              final int i = state.history.indexOf(entry);
+              if (i >= 0) {
+                _switchToListAtIndex(state, i);
+              }
             }
           },
           onLongPress: () {
@@ -930,8 +1268,8 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
               // 선택 모드 진입
               setState(() {
                 _isSelectMode = true;
-                _selectedIndices.clear();
-                _selectedIndices.add(realIndex);
+                _selected.clear();
+                _selected.add(entry);
               });
             }
           },
@@ -942,12 +1280,12 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
-                      color: _isSelectMode && _selectedIndices.contains(realIndex)
+                      color: _isSelectMode && _selected.contains(entry)
                           ? Colors.redAccent
                           : isFav
                           ? AppColors.amber.withValues(alpha: 0.5)
                           : AppColors.accent.withValues(alpha: 0.2),
-                      width: _isSelectMode && _selectedIndices.contains(realIndex)
+                      width: _isSelectMode && _selected.contains(entry)
                           ? 2.5
                           : (isFav ? 1.5 : 1),
                     ),
@@ -974,18 +1312,18 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                     width: 24,
                     height: 24,
                     decoration: BoxDecoration(
-                      color: _selectedIndices.contains(realIndex)
+                      color: _selected.contains(entry)
                           ? Colors.redAccent
                           : Colors.black.withValues(alpha: 0.4),
                       shape: BoxShape.circle,
                       border: Border.all(
-                        color: _selectedIndices.contains(realIndex)
+                        color: _selected.contains(entry)
                             ? Colors.redAccent
                             : Colors.white38,
                         width: 1.5,
                       ),
                     ),
-                    child: _selectedIndices.contains(realIndex)
+                    child: _selected.contains(entry)
                         ? const Icon(Icons.check, color: Colors.white, size: 16)
                         : null,
                   ),
@@ -996,7 +1334,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                   top: 4,
                   right: 4,
                   child: GestureDetector(
-                    onTap: () => state.toggleHistoryFavorite(realIndex),
+                    onTap: () => state.toggleHistoryFavorite(entry), // 칸으로 — 번호는 밀릴 수 있다
                     child: Container(
                       width: 28,
                       height: 28,
@@ -1033,7 +1371,7 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
             ],
           ),
         );
-      },
+      }, childCount: displayIndices.length),
     );
   }
 
@@ -1155,6 +1493,8 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
                               state,
                               images[index],
                               savedFilePath: filePath,
+                              // 이 칸의 그림 정보로 (썸네일 칸도 프롬프트 불러오기 · 다시 뽑기가 된다)
+                              historyEntry: index < state.history.length ? state.history[index] : null,
                             );
                           }
                         },
@@ -1439,16 +1779,14 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
   // 갤러리 꾹 메뉴의 '프롬프트 불러오기'와 같은 다이얼로그를 띄운다.
   Future<void> _importPromptOnly(BuildContext context, AppState state) async {
     try {
-      final picker = ImagePicker();
-      final image = await picker.pickImage(source: ImageSource.gallery);
-      if (image == null) {
+      final bytes = await pickGalleryImageBytes();
+      if (bytes == null || !context.mounted) {
         return;
       }
-      final bytes = await image.readAsBytes();
+      final meta = await readNovelAIMetadata(bytes); // 알파 채널까지 (사이트를 거친 그림)
       if (!context.mounted) {
         return;
       }
-      final meta = extractNovelAIMetadata(bytes);
       if (meta == null) {
         showToast(context, "이 이미지에서 프롬프트 정보를 찾지 못했습니다.");
         return;
@@ -1490,28 +1828,51 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
               children: [
-                _pill(
-                  icon: Icons.arrow_back,
-                  label: "히스토리",
-                  color: AppColors.accent,
-                  onTap: () => setState(() {
-                    _isGalleryMode = false;
-                    state.setHistoryLastWasGallery(false);
-                  }),
+                // 왼쪽 묶음 — 폭이 모자라면 통째로 조금 줄인다 (줄이 넘치지 않게 · 오른쪽 🔍 [- +] 는 그대로)
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _pill(
+                            icon: Icons.arrow_back,
+                            label: "히스토리",
+                            color: AppColors.accent,
+                            onTap: () => setState(_leaveGallery),
+                          ),
+                          const SizedBox(width: 8),
+                          // 폴더 변경 버튼 (작게: 바로 아래 경로가 보이므로 "변경"만)
+                          _pill(
+                            icon: Icons.folder_open,
+                            label: "변경",
+                            iconSize: 16,
+                            iconColor: AppColors.amber,
+                            onTap: () => _galleryKey.currentState?.openLocationPicker(),
+                          ),
+                          const SizedBox(width: 8),
+                          // 정렬 버튼 (이름순 오름/내림 토글)
+                          _buildSortButton(state),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
                 const SizedBox(width: 8),
-                // 폴더 변경 버튼 (작게: 바로 아래 경로가 보이므로 "변경"만)
-                _pill(
-                  icon: Icons.folder_open,
-                  label: "변경",
-                  iconSize: 16,
-                  iconColor: AppColors.amber,
-                  onTap: () => _galleryKey.currentState?.openLocationPicker(),
+                // 검색 — 지금 폴더와 그 아래 폴더 전부에서 (열고 닫기는 GalleryView 가, 색은 _gallerySearchOpen 으로)
+                ValueListenableBuilder<bool>(
+                  valueListenable: _gallerySearchOpen,
+                  builder: (_, open, _) => _pill(
+                    icon: Icons.search,
+                    color: open ? AppColors.accent : null,
+                    fill: 0.2,
+                    onTap: () => _galleryKey.currentState?.toggleSearch(),
+                  ),
                 ),
                 const SizedBox(width: 8),
-                // 정렬 버튼 (이름순 오름/내림 토글)
-                _buildSortButton(state),
-                const Spacer(),
                 // 열 개수 조정
                 _buildColumnAdjust(state),
               ],
@@ -1520,7 +1881,12 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
           const Divider(height: 1, color: Colors.white12),
           // 갤러리 본문
           Expanded(
-            child: GalleryView(key: _galleryKey, state: state, onAddedToHistory: _showAddedInList),
+            child: GalleryView(
+              key: _galleryKey,
+              state: state,
+              onAddedToHistory: _showAddedInList,
+              searchOpen: _gallerySearchOpen,
+            ),
           ),
         ],
       );
@@ -1535,32 +1901,55 @@ class _HistoryTabState extends State<HistoryTab> with AutomaticKeepAliveClientMi
 
     final Color currentActiveColor = _infoTab.color;
 
-    return SingleChildScrollView(
+    // 그리드에 보일 칸 (즐겨찾기 · 검색). 거르는 중이면 도구 줄에 '보이는 수/전체' 를 쓴다
+    final List<int>? visible = isGridView ? _visibleIndices(state) : null;
+    final bool filtering = isGridView && !isEmpty && (_showFavoritesOnly || _isSearching);
+
+    // ⚠️ 그리드는 SliverGrid 로 — 화면에 보이는 칸(과 그 언저리)만 만들고 그림을 푼다.
+    //    예전엔 SingleChildScrollView 안의 shrinkWrap GridView 라 칸을 '전부' 한꺼번에 만들어 그림을 다 풀어 두었다
+    //    (300장이면 풀린 그림만 100MB 남짓 · 앱 상태가 바뀔 때마다 300칸을 다시 만듦).
+    //    목록 모드는 예전과 같은 한 덩어리 (SliverToBoxAdapter — 폭이 꽉 차는 것도 예전 stretch 와 같다).
+    return CustomScrollView(
       controller: _listScrollController,
-      padding: const EdgeInsets.all(16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 리스트/그리드 도구 줄 (고정 높이로 모드 전환 시 버튼 움직임 방지)
-          _buildToolbar(context, state, images.length, isGridView),
-          const SizedBox(height: 12),
-
-          // 메인 컨텐츠
-          if (isGridView)
-            _buildGridView(state, images)
-          else
-            _buildListView(
-              state,
-              images,
-              isEmpty,
-              displayIndex,
-              currentMetadata,
-              currentActiveColor,
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          sliver: SliverToBoxAdapter(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 리스트/그리드 도구 줄 (고정 높이로 모드 전환 시 버튼 움직임 방지)
+                _buildToolbar(
+                  context,
+                  state,
+                  images.length,
+                  isGridView,
+                  shown: filtering ? visible!.length : null,
+                ),
+                const SizedBox(height: 12),
+                // 검색칸 — 그리드에서는 돋보기로 열었을 때, 목록에서는 검색 중일 때만 (히스토리가 비었으면 숨긴다)
+                if (!isEmpty && (_isSearching || (_searchOpen && isGridView))) _buildSearchBar(),
+              ],
             ),
-
-          const SizedBox(height: 40),
-        ],
-      ),
+          ),
+        ),
+        // 메인 컨텐츠 — 아래 여백 56 = 예전 끝의 SizedBox(40) + 바깥 여백 16
+        SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 56),
+          sliver: isGridView
+              ? _buildGridSliver(state, images, visible!)
+              : SliverToBoxAdapter(
+                  child: _buildListView(
+                    state,
+                    images,
+                    isEmpty,
+                    displayIndex,
+                    currentMetadata,
+                    currentActiveColor,
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }

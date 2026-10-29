@@ -16,7 +16,9 @@ import '../utils/ui_safety.dart'; // disposeAfterDialog
 const List<String> _defaultResolutions = [...kNaiResolutions, kCustomResolutionLabel];
 
 void showDetailSettingsModal(BuildContext context) {
-  FocusScope.of(context).unfocus();
+  // (입력칸의 포커스는 창이 뜰 때 TextFocusReleaseObserver 가 놓는다 — 창이 닫힐 때 숨은 입력칸에 키보드가 뜨지 않게.
+  //  예전엔 여기서 FocusScope.of(context).unfocus() 를 불렀는데, 범위의 기억이 남아 i2i 확장에서 '상세' 를 열었다 닫으면
+  //  다른 탭의 숨은 입력칸이 포커스를 되찾아 키보드가 뜨고 화면이 그만큼 눌렸다 — ui_safety.dart)
   final state = context.read<AppState>();
 
   showModalBottomSheet(
@@ -29,38 +31,34 @@ void showDetailSettingsModal(BuildContext context) {
           // 지금 모델의 능력표 — 이 화면 여러 곳이 같이 쓴다.
           //  (모델을 바꾸면 setModalState 로 다시 그려지며 새로 받는다)
           final caps = modelCapsFor(state.selectedModel);
-          // VAR+ 토글 (모델이 미지원이면 잠금) — 하단 토글 줄에서 쓴다
-          Widget varPlusToggle() {
+          // 하단 토글 줄의 '이름 + 스위치' 알약 — VAR+ · Effort 가 같이 쓴다.
+          //  [enabled] 가 false 면 흐리게 (누르면 onTap 이 이유를 알린다)
+          Widget pillSwitch({
+            required String label,
+            required bool on,
+            required Color color,
+            required VoidCallback onTap,
+            bool enabled = true,
+          }) {
             return GestureDetector(
-              onTap: () {
-                if (!caps.supportsVarietyPlus) {
-                  showToast(context, "${caps.displayName}에선 VAR+를 사용할 수 없어요");
-                  return;
-                }
-                setModalState(() => state.isVariancePlus = !state.isVariancePlus);
-              },
+              onTap: onTap,
               child: Opacity(
-                opacity: caps.supportsVarietyPlus ? 1.0 : 0.35,
+                opacity: enabled ? 1.0 : 0.35,
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
-                    color: state.isVariancePlus
-                        ? AppColors.accent.withValues(alpha: 0.25)
-                        : AppColors.surfaceAlt,
+                    color: on ? color.withValues(alpha: 0.25) : AppColors.surfaceAlt,
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                      color: state.isVariancePlus ? AppColors.accent : Colors.white24,
-                      width: 1.5,
-                    ),
+                    border: Border.all(color: on ? color : Colors.white24, width: 1.5),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        "VAR+",
+                        label,
                         style: TextStyle(
-                          color: state.isVariancePlus ? AppColors.accent : Colors.white38,
+                          color: on ? color : Colors.white38,
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                           letterSpacing: 0.5,
@@ -72,14 +70,12 @@ void showDetailSettingsModal(BuildContext context) {
                         width: 28,
                         height: 16,
                         decoration: BoxDecoration(
-                          color: state.isVariancePlus ? AppColors.accent : Colors.white24,
+                          color: on ? color : Colors.white24,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: AnimatedAlign(
                           duration: const Duration(milliseconds: 200),
-                          alignment: state.isVariancePlus
-                              ? Alignment.centerRight
-                              : Alignment.centerLeft,
+                          alignment: on ? Alignment.centerRight : Alignment.centerLeft,
                           child: Container(
                             width: 12,
                             height: 12,
@@ -97,6 +93,21 @@ void showDetailSettingsModal(BuildContext context) {
               ),
             );
           }
+
+          // VAR+ 토글 (모델이 미지원이면 잠금) — 하단 토글 줄에서 쓴다
+          Widget varPlusToggle() => pillSwitch(
+            label: "VAR+",
+            on: state.isVariancePlus,
+            color: AppColors.accent,
+            enabled: caps.supportsVarietyPlus,
+            onTap: () {
+              if (!caps.supportsVarietyPlus) {
+                showToast(context, "${caps.displayName}에선 VAR+를 사용할 수 없어요");
+                return;
+              }
+              setModalState(() => state.isVariancePlus = !state.isVariancePlus);
+            },
+          );
 
           // 투명 배경(알파) 토글 — V5 전용
           Widget alphaToggle() {
@@ -137,6 +148,18 @@ void showDetailSettingsModal(BuildContext context) {
             );
           }
 
+          // Effort 토글 — V5 Full 전용. 켜면 Medium (공식이 스텝 14 · Euler Ancestral · Rescale · 부정 프롬프트를 잠근다).
+          //  끄면 지금까지의 V5 Full(High) 그대로. 입력칸의 값은 건드리지 않는다 (끄면 그대로 돌아온다).
+          Widget effortToggle() => pillSwitch(
+            label: "Effort",
+            on: state.effortMedium,
+            color: AppColors.amber,
+            onTap: () => setModalState(() => state.effortMedium = !state.effortMedium),
+          );
+
+          // Medium effort 일 때 잠긴 칸 — 입력 대신 고정값을 보여 준다
+          final bool medium = state.effortMediumActive;
+
           Widget buildLabel(String text) => Padding(
             padding: const EdgeInsets.only(bottom: 6, left: 4),
             child: Text(
@@ -159,6 +182,24 @@ void showDetailSettingsModal(BuildContext context) {
               border: Border.all(color: Colors.white12),
             ),
             child: child,
+          );
+
+          // 잠긴 칸 (자물쇠 + 고정값) — 스케줄러 잠금 · Medium effort 가 같이 쓴다
+          Widget buildLockedValue(String text) => buildInputContainer(
+            Row(
+              children: [
+                const Icon(Icons.lock_outline, size: 14, color: Colors.white24),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Colors.white38, fontSize: 13.5),
+                  ),
+                ),
+              ],
+            ),
           );
 
           return Container(
@@ -269,7 +310,7 @@ void showDetailSettingsModal(BuildContext context) {
                             Row(
                               children: [
                                 buildLabel("해상도"),
-                                if (state.resolutionScale == 1.5 &&
+                                if (state.resolutionScale != 1.0 &&
                                     state.selectedResolution != kCustomResolutionLabel &&
                                     state.selectedResolution.contains("x"))
                                   Expanded(
@@ -279,9 +320,11 @@ void showDetailSettingsModal(BuildContext context) {
                                         if (base == null) {
                                           return "";
                                         }
-                                        final (w, h) = clampResolution(
-                                          (base.$1 * 1.5).round(),
-                                          (base.$2 * 1.5).round(),
+                                        // 생성과 같은 계산 (배율 · 64 정렬 · 상한에서 비율 유지)
+                                        final (w, h) = scaledResolution(
+                                          base.$1,
+                                          base.$2,
+                                          state.resolutionScale,
                                           caps.maxPixels,
                                         );
                                         final anlas = (w * h > AppState.kMegapixelCap)
@@ -373,34 +416,39 @@ void showDetailSettingsModal(BuildContext context) {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      // 1.5x 토글 버튼
+                      // 해상도 배율 버튼 — 누를 때마다 1x → 1.25x → 1.5x → 1x (kResolutionScales)
+                      //  글자는 '지금 배율'. 폭을 고정해 글자 길이가 바뀌어도 옆 칸이 움직이지 않게.
                       Padding(
                         padding: const EdgeInsets.only(top: 26),
                         child: GestureDetector(
                           onTap: () {
                             setModalState(() {
-                              state.resolutionScale = state.resolutionScale == 1.5 ? 1.0 : 1.5;
+                              state.resolutionScale = nextResolutionScale(state.resolutionScale);
                             });
                             state.saveAllSettings();
                           },
                           child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                            width: 52,
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
                             decoration: BoxDecoration(
-                              color: state.resolutionScale == 1.5
+                              color: state.resolutionScale != 1.0
                                   ? AppColors.purple.withValues(alpha: 0.2)
                                   : AppColors.surfaceAlt,
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                color: state.resolutionScale == 1.5
+                                color: state.resolutionScale != 1.0
                                     ? AppColors.purple
                                     : Colors.white12,
-                                width: state.resolutionScale == 1.5 ? 1.5 : 1,
+                                width: state.resolutionScale != 1.0 ? 1.5 : 1,
                               ),
                             ),
                             child: Text(
-                              "1.5x",
+                              resolutionScaleLabel(state.resolutionScale),
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              softWrap: false,
                               style: TextStyle(
-                                color: state.resolutionScale == 1.5
+                                color: state.resolutionScale != 1.0
                                     ? AppColors.purple
                                     : Colors.white54,
                                 fontWeight: FontWeight.bold,
@@ -478,6 +526,9 @@ void showDetailSettingsModal(BuildContext context) {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             buildLabel("샘플러"),
+                            if (medium)
+                              buildLockedValue("${kNaiSamplerNames[kMediumEffortSampler]} (고정)")
+                            else
                             buildInputContainer(
                               DropdownButtonHideUnderline(
                                 child: DropdownButton<String>(
@@ -521,25 +572,7 @@ void showDetailSettingsModal(BuildContext context) {
                               builder: (context) {
                                 final locked = state.lockedScheduler;
                                 if (locked != null) {
-                                  return buildInputContainer(
-                                    Row(
-                                      children: [
-                                        const Icon(
-                                          Icons.lock_outline,
-                                          size: 14,
-                                          color: Colors.white24,
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Text(
-                                          "$locked (고정)",
-                                          style: const TextStyle(
-                                            color: Colors.white38,
-                                            fontSize: 13.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
+                                  return buildLockedValue("$locked (고정)");
                                 }
                                 return buildInputContainer(
                                   DropdownButtonHideUnderline(
@@ -653,6 +686,9 @@ void showDetailSettingsModal(BuildContext context) {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             buildLabel("스텝"),
+                            if (medium)
+                              buildLockedValue("$kMediumEffortSteps (고정)")
+                            else
                             buildInputContainer(
                               TextField(
                                 controller: state.stepsController,
@@ -695,6 +731,9 @@ void showDetailSettingsModal(BuildContext context) {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             buildLabel("Prompt Rescale"),
+                            if (medium)
+                              buildLockedValue("미지원")
+                            else
                             buildInputContainer(
                               TextField(
                                 controller: state.cfgRescaleController,
@@ -712,12 +751,21 @@ void showDetailSettingsModal(BuildContext context) {
                     ],
                   ),
                   const SizedBox(height: 16),
-                  // 하단 토글 줄 — 앞으로 버튼이 더 늘어날 수 있어 Wrap으로 둔다
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [varPlusToggle(), if (caps.supportsTransparency) alphaToggle()],
+                  // 하단 토글 줄 — 앞으로 버튼이 더 늘어날 수 있어 Wrap으로 둔다.
+                  //  오른쪽 끝엔 Effort (V5 Full 에서만 — 공식도 V5 Full 에만 있다)
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Wrap(
+                          spacing: 10,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [varPlusToggle(), if (caps.supportsTransparency) alphaToggle()],
+                        ),
+                      ),
+                      if (state.selectedModel == NaiModels.v5Full) effortToggle(),
+                    ],
                   ),
                 ],
               ),
@@ -731,17 +779,24 @@ void showDetailSettingsModal(BuildContext context) {
   });
 }
 
+/// 이미지 옵션 (꾹 누르기 메뉴) — 저장 · i2i 로 보내기 · 프롬프트 불러오기 · 같은 설정으로 다시 뽑기.
+///  [historyEntry] 는 이 그림의 히스토리 칸 (있으면 그 칸의 그림 정보를 쓴다 — 앱이 따로 붙인 VAR+ 표시까지 있고,
+///  썸네일로 줄어든 칸은 바이트에 그림 정보가 남아 있지 않다). 없으면 바이트에서 읽는다.
 void showSaveImageModal(
   BuildContext context,
   AppState state,
   Uint8List imageBytes, {
   String? savedFilePath,
+  HistoryEntry? historyEntry,
 }) {
   if (state.isLoading) return;
 
   // 파일이 이미 존재하는지 확인
   final bool alreadySaved =
       savedFilePath != null && savedFilePath.isNotEmpty && File(savedFilePath).existsSync();
+
+  // 그림 정보 — 누를 때 읽는다 (바이트에서 읽기는 그림을 풀어야 할 수도 있어 창을 열 때 미리 하지 않는다)
+  NaiMetadata? metadata() => historyEntry?.metadata ?? extractNovelAIMetadata(imageBytes);
 
   showModalBottomSheet(
     context: context,
@@ -750,95 +805,133 @@ void showSaveImageModal(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
     builder: (modalContext) {
+      // 다시 뽑기 (줄 · [같은 시드] 공용) — 창을 닫고 그림 정보로 한 장 (Anlas 가 들 때만 묻는다)
+      void reroll({required bool sameSeed}) {
+        Navigator.pop(modalContext);
+        final NaiMetadata? meta = metadata();
+        if (meta == null) {
+          showToast(context, "이 이미지에서 메타데이터를 찾을 수 없습니다.");
+          return;
+        }
+        state.rerollFromMetadata(context, meta, keep: historyEntry, sameSeed: sameSeed);
+      }
+
       return Padding(
         padding: EdgeInsets.only(bottom: MediaQuery.of(modalContext).padding.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              margin: const EdgeInsets.symmetric(vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.grey[600],
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  "이미지 옵션",
-                  style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+        // 항목이 4개라 가로 화면에선 시트 높이를 넘을 수 있다 — 넘치면 스크롤 (안에 Expanded 없음)
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[600],
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-            ),
-
-            ListTile(
-              leading: Icon(
-                alreadySaved ? Icons.check_circle : Icons.download,
-                color: alreadySaved ? Colors.tealAccent : AppColors.accent,
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    "이미지 옵션",
+                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                ),
               ),
-              title: Text(
-                alreadySaved ? "이미 저장된 이미지" : "기본 폴더에 저장",
-                style: const TextStyle(color: Colors.white),
+
+              ListTile(
+                leading: Icon(
+                  alreadySaved ? Icons.check_circle : Icons.download,
+                  color: alreadySaved ? Colors.tealAccent : AppColors.accent,
+                ),
+                title: Text(
+                  alreadySaved ? "이미 저장된 이미지" : "기본 폴더에 저장",
+                  style: const TextStyle(color: Colors.white),
+                ),
+                subtitle: Text(
+                  alreadySaved ? "이 이미지는 이미 기기에 저장되어 있습니다." : "지정된 경로로 원본 이미지가 저장됩니다.",
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                onTap: alreadySaved
+                    ? () {
+                        Navigator.pop(modalContext);
+                        showToast(context, "이미 저장된 이미지입니다.");
+                      }
+                    : () {
+                        Navigator.pop(modalContext);
+                        state.manualSaveImage(context, imageBytes);
+                      },
               ),
-              subtitle: Text(
-                alreadySaved ? "이 이미지는 이미 기기에 저장되어 있습니다." : "지정된 경로로 원본 이미지가 저장됩니다.",
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
+
+              // [추가] i2i 전송 액션 및 탭 이동!
+              ListTile(
+                leading: Icon(Icons.brush, color: AppColors.accent),
+                title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
+                subtitle: const Text(
+                  "i2i 탭으로 이미지를 보내 후가공(인페인트 등)을 진행합니다.",
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(modalContext);
+                  // ⚠️ 여기는 바이트에서 읽는다 (히스토리 칸의 정보를 쓰지 않는다) — 썸네일 칸이면 바이트는 작은 그림인데
+                  //    칸의 정보는 원본 크기라, i2i 가 원본 크기로 알고 마스크 · 보낼 크기를 잘못 잡는다.
+                  NaiMetadata? parsedMetadata = extractNovelAIMetadata(imageBytes);
+                  state.sendToI2i(imageBytes, parsedMetadata);
+
+                  // i2i 탭(2번 탭)으로 즉시 이동! (탭이 바뀌어 보이므로 따로 알리지 않는다)
+                  state.navigateToTab(AppTab.i2i);
+                },
               ),
-              onTap: alreadySaved
-                  ? () {
-                      Navigator.pop(modalContext);
-                      showToast(context, "이미 저장된 이미지입니다.");
-                    }
-                  : () {
-                      Navigator.pop(modalContext);
-                      state.manualSaveImage(context, imageBytes);
-                    },
-            ),
 
-            // [추가] i2i 전송 액션 및 탭 이동!
-            ListTile(
-              leading: Icon(Icons.brush, color: AppColors.accent),
-              title: const Text("이미지 수정하기 (i2i)", style: TextStyle(color: Colors.white)),
-              subtitle: const Text(
-                "i2i 탭으로 이미지를 보내 후가공(인페인트 등)을 진행합니다.",
-                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ListTile(
+                leading: Icon(Icons.file_download_outlined, color: AppColors.accent),
+                title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
+                subtitle: const Text(
+                  "이 이미지의 프롬프트와 설정을 현재 작업 환경에 불러옵니다.",
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                onTap: () {
+                  Navigator.pop(modalContext);
+                  final NaiMetadata? meta = metadata();
+                  if (meta == null) {
+                    showToast(context, "이 이미지에서 메타데이터를 찾을 수 없습니다.");
+                    return;
+                  }
+                  showLoadPromptDialog(context, state, meta);
+                },
               ),
-              onTap: () {
-                Navigator.pop(modalContext);
-                NaiMetadata? parsedMetadata = extractNovelAIMetadata(imageBytes);
-                state.sendToI2i(imageBytes, parsedMetadata);
 
-                // i2i 탭(2번 탭)으로 즉시 이동!
-                state.navigateToTab(AppTab.i2i);
-
-                showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
-              },
-            ),
-
-            ListTile(
-              leading: Icon(Icons.file_download_outlined, color: AppColors.accent),
-              title: const Text("프롬프트 불러오기", style: TextStyle(color: Colors.white)),
-              subtitle: const Text(
-                "이 이미지의 프롬프트와 설정을 현재 작업 환경에 불러옵니다.",
-                style: TextStyle(color: Colors.white54, fontSize: 12),
+              // 같은 설정 · 새 시드로 한 장 더 (AppState.rerollFromMetadata — Anlas 가 들 때만 묻는다).
+              //  줄을 누르면 새 시드, 오른쪽 [같은 시드] 는 시드까지 그대로 (거의 같은 그림 — 원본 크기로 되살릴 때).
+              //  ⚠️ 자주 쓰는 '새 시드' 는 지금처럼 한 번에 — 고르는 창을 끼우면 무료일 때도 한 번 더 눌러야 한다.
+              ListTile(
+                leading: Icon(Icons.casino_outlined, color: AppColors.accent),
+                title: const Text("같은 설정으로 다시 뽑기", style: TextStyle(color: Colors.white)),
+                subtitle: const Text(
+                  "설정 그대로 시드만 바꿔 한 장 더 · 오른쪽은 시드까지 그대로",
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                trailing: OutlinedButton.icon(
+                  onPressed: () => reroll(sameSeed: true),
+                  icon: const Icon(Icons.push_pin_outlined, size: 16),
+                  label: const Text("같은 시드", style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.accent,
+                    side: BorderSide(color: AppColors.accent.withValues(alpha: 0.6)),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                onTap: () => reroll(sameSeed: false),
               ),
-              onTap: () {
-                Navigator.pop(modalContext);
-                NaiMetadata? meta = extractNovelAIMetadata(imageBytes);
-                if (meta == null) {
-                  showToast(context, "이 이미지에서 메타데이터를 찾을 수 없습니다.");
-                  return;
-                }
-                showLoadPromptDialog(context, state, meta);
-              },
-            ),
 
-            const SizedBox(height: 16),
-          ],
+              const SizedBox(height: 16),
+            ],
+          ),
         ),
       );
     },
@@ -1038,16 +1131,12 @@ void _applyMetadata(
   required bool replaceAllCharacters,
   required bool settings,
 }) {
-  List<String> applied = [];
-
   if (positive && meta.positive.isNotEmpty) {
     state.positiveController.text = meta.positive;
-    applied.add("긍정적 프롬프트");
   }
 
   if (negative && meta.negative.isNotEmpty) {
     state.negativeController.text = meta.negative;
-    applied.add("부정적 프롬프트");
   }
 
   if (characters && meta.characterPrompts.isNotEmpty) {
@@ -1105,11 +1194,6 @@ void _applyMetadata(
     // 화면이 캐시해 둔 캐릭터 입력 컨트롤러를 새 값으로 맞추게 한다.
     //  (이게 없으면 편집창이 열려 있을 때 옛 프롬프트가 그대로 남는다)
     state.markCharactersReplaced();
-
-    final int n = meta.characterPrompts.length;
-    applied.add(
-      replaceAllCharacters ? "캐릭터 $n개로 교체" : (addCharactersAsNew ? "캐릭터 $n개 추가" : "캐릭터 $n개 덮어쓰기"),
-    );
   }
 
   if (settings) {
@@ -1145,17 +1229,11 @@ void _applyMetadata(
 
     var skipCfg = meta.extraParams['skip_cfg_above_sigma'];
     state.isVariancePlus = skipCfg != null && skipCfg.toString() != "null";
-
-    applied.add("상세 설정");
   }
 
   state.saveAllSettings();
-  // 프롬프트 탭으로 이동 (UI 리빌드도 동시에 트리거)
+  // 프롬프트 탭으로 이동 (UI 리빌드도 동시에 트리거) — 불러온 값이 그대로 보이므로 '…을(를) 불러왔습니다' 알림은 뺐다
   state.navigateToTab(AppTab.prompt);
-
-  if (applied.isNotEmpty) {
-    showToast(context, "${applied.join(', ')}을(를) 불러왔습니다!");
-  }
 }
 
 void _showCustomResolutionDialog(BuildContext context, AppState state, StateSetter setModalState) {
@@ -1226,7 +1304,7 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                       final w = int.tryParse(wCtrl.text);
                       final h = int.tryParse(hCtrl.text);
                       if (w != null && h != null && w > 0 && h > 0) {
-                        // 64px 정렬 + 모델별 픽셀 상한 (공용 헬퍼)
+                        // 64px 정렬 + 모델별 픽셀 상한 (공용 헬퍼 — 상한을 넘으면 비율을 지킨 채 줄인다)
                         final (aw, ah) = clampResolution(
                           w,
                           h,
@@ -1243,8 +1321,11 @@ void _showCustomResolutionDialog(BuildContext context, AppState state, StateSett
                         setDialogState(() {});
                         wCtrl.clear();
                         hCtrl.clear();
-                        final adjustNote = adjusted ? "\n입력: $w x $h → 조정됨" : "";
-                        showToast(context, "$res 추가됨$warning$adjustNote");
+                        // 목록에 바로 보이므로 알리지 않는다 — 크기를 고쳤거나 Anlas 가 드는 크기일 때만 알려 준다
+                        if (adjusted || warning.isNotEmpty) {
+                          final adjustNote = adjusted ? "\n입력: $w x $h → 조정됨" : "";
+                          showToast(context, "$res 추가됨$warning$adjustNote");
+                        }
                       }
                     },
                     style: ElevatedButton.styleFrom(

@@ -76,17 +76,21 @@ List<String> smartMatchTags(List<String> tags, String query, {int limit = 40}) {
   // 3글자+, 스페이스 없음: 단어경계 우선 + 중간매칭 후순위
   final wordBoundaryResults = <String>[];
   final midWordResults = <String>[];
-  // '태그 안의 어떤 단어가 쿼리로 시작' = (첫 단어면 위의 startsWith) 아니면 ' 쿼리' 가 들어 있음.
+  // '태그 안의 어떤 단어가 쿼리로 시작' = (첫 단어면 위의 startsWith) 아니면 ' 쿼리' · '_쿼리' 가 들어 있음.
   //  ⚠️ 예전엔 태그마다 split(' ') 로 단어 목록을 새로 만들었다 — 태그가 십만 개가 넘어
-  //     글자를 칠 때마다 목록 수만 개를 만들고 버렸다. 결과는 같다.
+  //     글자를 칠 때마다 목록 수만 개를 만들고 버렸다.
+  //  ⚠️ 태그 사전(assets/tags.json · e621)은 단어를 '_' 로 잇는다 (long_hair). 예전엔 띄어쓰기만
+  //     단어 경계로 봐서 사전 태그는 한 번도 여기 걸리지 않았다 — 'hair' 를 치면 long_hair 가
+  //     '중간 매칭'(연한 표시)으로 맨 뒤 몇 칸에만 나왔다. (여러 조각 매칭은 원래 '_' 도 경계로 본다)
   final spacedLower = ' $lower';
+  final underscoredLower = '_$lower';
 
   for (final tag in tags) {
     final tagLower = tag.toLowerCase();
     if (tagLower.startsWith(lower)) {
       // 태그 자체가 쿼리로 시작 (최우선)
       wordBoundaryResults.add(tag);
-    } else if (tagLower.contains(spacedLower)) {
+    } else if (tagLower.contains(spacedLower) || tagLower.contains(underscoredLower)) {
       // 태그 안의 단어가 쿼리로 시작 (단어 경계 매칭)
       wordBoundaryResults.add(tag);
     } else if (tagLower.contains(lower)) {

@@ -19,7 +19,11 @@ class NaiAccount {
   ///  Opus 구독에만 존재하는 값이라, 하위 티어 계정은 계속 null이다.
   double? limitPercent;
 
-  /// 위 두 값을 마지막으로 확인한 시각(epoch ms). 0이면 확인한 적 없음.
+  /// 마지막으로 확인한 부스트 추가 사용량(%, 공식 화면의 'Extra Usage'). 없으면 0.
+  ///  기본 한도(limitPercent)와 따로 센다 — 기본을 다 쓰면 이걸 쓴다.
+  double extraPercent;
+
+  /// 위 값들을 마지막으로 확인한 시각(epoch ms). 0이면 확인한 적 없음.
   ///  "5분 전 확인" 같은 표시에 쓴다 — 숫자만 보면 언제 값인지 알 수 없어서.
   int checkedAtMs;
 
@@ -28,6 +32,7 @@ class NaiAccount {
     required this.token,
     this.anlas = -1,
     this.limitPercent,
+    this.extraPercent = 0,
     this.checkedAtMs = 0,
   });
 
@@ -36,6 +41,7 @@ class NaiAccount {
     'token': token,
     'anlas': anlas,
     if (limitPercent != null) 'limitPercent': limitPercent,
+    if (extraPercent > 0) 'extraPercent': extraPercent,
     'checkedAtMs': checkedAtMs,
   };
 
@@ -44,6 +50,7 @@ class NaiAccount {
     token: json['token'] ?? '',
     anlas: json['anlas'] ?? -1,
     limitPercent: (json['limitPercent'] as num?)?.toDouble(),
+    extraPercent: (json['extraPercent'] as num?)?.toDouble() ?? 0,
     checkedAtMs: json['checkedAtMs'] ?? 0,
   );
 

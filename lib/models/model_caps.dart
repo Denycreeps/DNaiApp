@@ -14,6 +14,8 @@
 // ⚠️ 이 파일은 아직 "정의"만 담는다. 실제 API 호출부/UI 연결(하드코딩 분기 치환)은
 //    다음 단계에서 점진적으로 진행한다. (지금 단계에서는 기존 동작 변화 없음)
 
+import 'dart:math' show sqrt;
+
 /// 프롬프트 토큰을 세는 방식.
 ///  모델마다 토크나이저가 달라 같은 글에서도 토큰 수가 크게 달라진다.
 enum PromptTokenizer {
@@ -38,6 +40,24 @@ class NaiModels {
 
   // ---- v5 ----
   static const String v5Full = 'nai-diffusion-5-full';
+
+  /// V5 Full 의 'Medium' effort (2026-10 공식 추가) — 14스텝용으로 증류한 별도 모델.
+  ///  요청에 effort 값을 넣는 게 아니라 모델 이름을 바꿔 보낸다 (인페인트는 뒤에 -inpainting).
+  ///  고를 수 있는 모델 목록에는 넣지 않는다 — V5 Full 을 고른 채 상세 환경의 Effort 를 켜면 이 이름으로 보낸다.
+  ///  ⚠️ 공식 문서엔 API 표기가 없어, 공식 웹 코드를 옮긴 다른 앱들(ComfyUI_RS_NAI_API_Request · MooshieUI)의 값을 따른다.
+  static const String v5FullMedium = 'nai-diffusion-5-full-medium';
+}
+
+/// Medium effort 에서 공식이 잠그는 값 (공식 안내: 스텝 14 · Euler Ancestral · CFG Rescale 미지원 · 부정 프롬프트 고정)
+const int kMediumEffortSteps = 14;
+const String kMediumEffortSampler = 'k_euler_ancestral';
+
+/// 그림 정보의 모델 이름(Source)이 V5 Full Medium(생성 · 인페인트)인지 — 이름 뒤의 해시로 가른다.
+///  ⚠️ 공식 문서에 없는 값이라 다른 앱(MooshieUI)이 공식 웹에서 옮긴 해시를 따른다.
+///     틀리면 Medium 그림을 High(V5 Full)로 볼 뿐이다 (다시 생성이 High 로 만든다).
+bool isMediumEffortSource(String source) {
+  final String s = source.toLowerCase();
+  return s.contains('93f4bd30') || s.contains('70ab5786');
 }
 
 /// 한 모델이 지원하는 기능 / 제약을 나타낸다.
@@ -363,23 +383,88 @@ ModelCaps modelCapsFor(String model) {
   return _fallbackCaps(model);
 }
 
-/// 해상도를 64px 단위로 정렬한 뒤, [maxPixels] 이내가 되도록 긴 변부터 줄인다.
+/// 한 변의 최대 길이 — 64 의 배수여야 한다.
+///  (예전엔 9999 로 잘라서, 그보다 긴 값을 넣으면 64 의 배수가 아닌 값이 그대로 나갔다)
+const int kMaxResolutionSide = 9984;
+
+/// 해상도를 64px 단위로 맞추고, [maxPixels](총 픽셀 상한, 0 이하면 상한 없음)를 넘으면
+/// 비율을 지킨 채 상한 안에서 가장 크게 줄인다.
 ///  NovelAI는 64의 배수만 받고, 총 픽셀 상한도 있다.
-///  같은 로직이 app_state/detail_settings_modal 4곳에 복사돼 있어 여기로 모았다.
-(int, int) clampResolution(int width, int height, int maxPixels) {
-  int w = ((width / 64).round() * 64).clamp(64, 9999);
-  int h = ((height / 64).round() * 64).clamp(64, 9999);
-  if (maxPixels <= 0) {
+///  직접 입력 해상도 저장 · 생성 · 비용 추정 · 미리보기가 모두 이것(과 [scaledResolution])을 거친다.
+///  ⚠️ 예전엔 긴 변만 64 씩 깎아서, 상한을 크게 넘으면 그림 모양이 바뀌었다
+///     (직접 입력 2048x3072 → 1792x1728 거의 정사각형 · 4000x3000 → 1792x1728).
+(int, int) clampResolution(int width, int height, int maxPixels) =>
+    _fitResolution(width.toDouble(), height.toDouble(), maxPixels);
+
+/// 해상도 배율 단계 — 상세 환경의 배율 버튼을 누를 때마다 이 순서로 돈다 (1x → 1.25x → 1.5x → 1x).
+///  · 1.25x: 832x1216 · 1216x832 에 곱하면 공식 Large(1024x1536 · 1536x1024)와 같은 크기
+///  · 1.5x : 예전부터 있던 값 — 예전 저장값 · 백업이 그대로 이어진다
+///  ⚠️ 2배는 넣지 않는다 — 기본 해상도만 해도 4MP 라 픽셀 상한을 넘는다.
+///     더 크게 하려면 직접 입력 해상도에 배율을 곱한다 (상한에서 비율을 지킨 채 멈춘다).
+const List<double> kResolutionScales = [1.0, 1.25, 1.5];
+
+/// 목록에 있는 배율이면 그대로, 아니면(옛 값 · 잘못된 백업) 1.0
+double validResolutionScale(double v) => kResolutionScales.contains(v) ? v : 1.0;
+
+/// 배율 버튼을 한 번 눌렀을 때의 다음 배율 (끝에서는 1x 로 돌아간다)
+double nextResolutionScale(double current) {
+  final i = kResolutionScales.indexOf(current);
+  return kResolutionScales[(i + 1) % kResolutionScales.length];
+}
+
+/// 배율 버튼 글자 — 1.0 → "1x", 1.25 → "1.25x", 1.5 → "1.5x"
+String resolutionScaleLabel(double scale) =>
+    '${scale.toStringAsFixed(2).replaceFirst(RegExp(r'\.?0+$'), '')}x';
+
+/// 배율을 곱한 실제 생성 해상도 — 생성 · 비용 추정 · 상세 환경 미리보기가 모두 이것 하나를 쓴다.
+///  [width]x[height] 에 [scale] 을 곱한 뒤 [clampResolution] 과 같은 규칙 (64 정렬 · 상한을 넘으면 비율 유지).
+///  배율이 1 이면 clampResolution 과 똑같다.
+///  ⚠️ 예전엔 곱한 뒤 긴 변만 깎아서 모양이 바뀌었다 (832x1216 의 2배 → 1664x1856, 거의 정사각형).
+(int, int) scaledResolution(int width, int height, double scale, int maxPixels) =>
+    _fitResolution(width * scale, height * scale, maxPixels);
+
+/// [clampResolution] · [scaledResolution] 의 실제 계산 (둘이 따로 계산하지 않게 한 곳에).
+///  1) 64 단위 반올림 · 한 변 64 ~ [kMaxResolutionSide]. 상한 안이면 여기서 끝 (예전과 같은 값)
+///  2) 상한을 넘으면 상한에 딱 맞는 배율로 다시 — 64 단위 내림 · 올림 네 조합 중 상한 안에서
+///     비율이 원래와 가장 가까운 것 (비율이 같으면 큰 쪽)
+///  3) 그래도 못 고르면 (한 변이 64 밑으로 내려가야 하는 아주 가는 그림) 예전처럼 긴 변부터 64 씩
+(int, int) _fitResolution(double width, double height, int maxPixels) {
+  int w = ((width / 64).round() * 64).clamp(64, kMaxResolutionSide);
+  int h = ((height / 64).round() * 64).clamp(64, kMaxResolutionSide);
+  if (maxPixels <= 0 || w * h <= maxPixels) {
     return (w, h);
   }
-  while (w * h > maxPixels) {
+  if (width > 0 && height > 0) {
+    final fit = sqrt(maxPixels / (width * height));
+    final ratio = width / height;
+    final fw = width * fit / 64;
+    final fh = height * fit / 64;
+    (int, int)? best;
+    double bestErr = double.infinity;
+    for (final cw in {fw.floor(), fw.ceil()}) {
+      for (final ch in {fh.floor(), fh.ceil()}) {
+        final a = cw * 64;
+        final b = ch * 64;
+        if (a < 64 || b < 64 || a > kMaxResolutionSide || b > kMaxResolutionSide || a * b > maxPixels) {
+          continue;
+        }
+        final err = ((a / b) / ratio - 1).abs();
+        final bigger = best != null && a * b > best.$1 * best.$2;
+        if (best == null || err < bestErr - 1e-9 || ((err - bestErr).abs() <= 1e-9 && bigger)) {
+          best = (a, b);
+          bestErr = err;
+        }
+      }
+    }
+    if (best != null) {
+      return best;
+    }
+  }
+  while (w * h > maxPixels && (w > 64 || h > 64)) {
     if (w > h) {
       w -= 64;
     } else {
       h -= 64;
-    }
-    if (w < 64 || h < 64) {
-      break;
     }
   }
   return (w, h);

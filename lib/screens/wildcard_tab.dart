@@ -7,15 +7,18 @@ import '../app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/app_toast.dart';
 import 'dart:math' as math; // 이름 창 흔들기
-import 'package:image_picker/image_picker.dart';
 import 'dart:convert'; // 미리보기 base64
 import 'package:flutter/foundation.dart' show compute;
 import 'package:image/image.dart' as img;
 import '../models/prompt_dict.dart';
 import 'prompt_edit_dialog.dart'; // 모든 프롬프트 칸이 같은 확대 입력창을 쓴다
 import '../widgets/dict_image_viewer.dart'; // 사전 이미지 크게 보기
+import '../widgets/dict_compact.dart'; // 사전 간단히 보기 (이름 - 분류)
 import '../widgets/prompt_preview_card.dart';
 import '../utils/image_codec.dart'; // WebP 굽기 (한곳)
+import '../utils/temp_files.dart'; // 그림 고르기 (캐시 복사본은 읽고 바로 지운다)
+import '../models/app_tabs.dart'; // 안쪽 탭 번호 (kLibrary…Page)
+import 'trigger_library.dart'; // 세 번째 쪽 — 조건부 트리거 목록
 
 class WildcardTab extends StatefulWidget {
   const WildcardTab({super.key});
@@ -33,10 +36,12 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
   late final AppState _appState;
   NaiWildcard? _lastSelectedCard;
 
-  // 안쪽 탭: 0 와일드카드 / 1 프롬프트 사전
+  // 안쪽 탭: 0 와일드카드 / 1 프롬프트 사전 / 2 조건부 트리거 (app_tabs.dart 의 kLibrary…Page)
   late TabController _subTab;
   // 사전 탭을 한 번이라도 열었는지 (안 열었으면 만들지 않는다 — 미리보기 디코딩 절약)
   bool _dictVisited = false;
+  // 조건부 트리거 쪽을 한 번이라도 열었는지 (사전과 같은 이유로 처음 볼 때 만든다)
+  bool _triggerVisited = false;
   // 지금 화면에 보여 주고 있는 안쪽 탭 (리스너 중복 호출 걸러내기용)
   int _shownSubTab = 0;
   // 사전 분류 칩: 전체 / 미분류 / 분류 id
@@ -51,11 +56,20 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     //  ⚠️ 창이 닫힐 때 옮기면 늦다 — 입력창은 닫히는 '순간' 저장하는데,
     //     그때 아직 옛 내용이면 옛 내용이 저장된다. (저장은 입력창이 모아서 한다)
     _contentController.addListener(_syncWildcardContent);
-    // 마지막으로 본 쪽에서 시작한다 (탭을 떠났다 오면 이 화면이 새로 만들어진다)
-    final start = _appState.wildcardSubTab;
-    _subTab = TabController(length: 2, vsync: this, initialIndex: start);
+    // 마지막으로 본 쪽에서 시작한다 (탭을 떠났다 오면 이 화면이 새로 만들어진다).
+    //  다른 화면이 쪽을 지정해 보냈으면(프롬프트탭의 조건부 트리거 칸) 처음부터 그 쪽으로 —
+    //  지정 값을 비우는 일은 build 의 프레임 뒤 처리가 한다.
+    final start = (_appState.requestedLibrarySubTab ?? _appState.wildcardSubTab).clamp(
+      0,
+      kLibraryPageCount - 1,
+    );
+    _subTab = TabController(length: kLibraryPageCount, vsync: this, initialIndex: start);
     _shownSubTab = start;
-    _dictVisited = start == 1;
+    _dictVisited = start == kLibraryDictPage;
+    _triggerVisited = start == kLibraryTriggerPage;
+    if (start != _appState.wildcardSubTab) {
+      _appState.setWildcardSubTab(start); // 지정받은 쪽도 '마지막으로 본 쪽'으로 기억
+    }
     _subTab.addListener(() {
       // ⚠️ indexIsChanging 을 기다리지 않는다.
       //    예전엔 '밑줄 애니메이션이 끝난 뒤'에만 내용을 바꿔서, 누르고 나서
@@ -68,8 +82,11 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
       _shownSubTab = _subTab.index;
       _appState.setWildcardSubTab(_subTab.index);
       setState(() {
-        if (_subTab.index == 1) {
+        if (_subTab.index == kLibraryDictPage) {
           _dictVisited = true;
+        }
+        if (_subTab.index == kLibraryTriggerPage) {
+          _triggerVisited = true;
         }
       });
     });
@@ -137,6 +154,20 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final page = _subTab.index;
+    // 다른 화면이 "이 쪽을 보여 달라"고 했으면 그리로 옮긴다 (프롬프트탭의 조건부 트리거 칸).
+    //  ⚠️ build 도중에 탭을 옮기거나 값을 비우면 안 되므로 프레임 뒤로 미룬다 (설정 탭과 같은 방식).
+    final requested = state.requestedLibrarySubTab;
+    if (requested != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        if (requested >= 0 && requested < _subTab.length && _subTab.index != requested) {
+          _subTab.animateTo(requested); // 리스너가 기억 · 처음 열기 표시를 맡는다
+        }
+        state.consumeLibrarySubTabRequest();
+      });
+    }
 
     // ⚠️ 이 탭은 main.dart 에서 SingleChildScrollView 로 감싸여 있다.
     //    그래서 TabBarView 나 세로 Expanded 처럼 '높이가 정해져야' 하는 위젯을
@@ -155,13 +186,21 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
           tabs: const [
             Tab(text: "와일드카드"),
             Tab(text: "프롬프트 사전"),
+            Tab(text: "조건부 트리거"),
           ],
         ),
         const SizedBox(height: 8),
-        Offstage(offstage: page != 0, child: _buildWildcardPage(context, state)),
         Offstage(
-          offstage: page != 1,
+          offstage: page != kLibraryWildcardPage,
+          child: _buildWildcardPage(context, state),
+        ),
+        Offstage(
+          offstage: page != kLibraryDictPage,
           child: _dictVisited ? _buildPromptDictPage(context, state) : const SizedBox.shrink(),
+        ),
+        Offstage(
+          offstage: page != kLibraryTriggerPage,
+          child: _triggerVisited ? const TriggerLibraryPage() : const SizedBox.shrink(),
         ),
       ],
     );
@@ -426,6 +465,9 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
               const SizedBox(width: 6),
               Text("${list.length}개", style: const TextStyle(color: Colors.white70, fontSize: 13)),
               const Spacer(),
+              // 간단히 보기 (이름 - 분류) — 확대 입력창의 선택 창과 함께 바뀐다
+              DictCompactToggle(compact: state.promptDictCompact, onPressed: state.toggleDictCompact),
+              const SizedBox(width: 4),
               ElevatedButton.icon(
                 onPressed: () => _showDictEditor(state),
                 icon: const Icon(Icons.add, size: 18, color: Colors.white),
@@ -474,6 +516,8 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
                 style: TextStyle(color: Colors.white38, fontSize: 13, height: 1.5),
               ),
             )
+          else if (state.promptDictCompact)
+            for (final e in list) _dictCompactTile(state, e)
           else
             for (final e in list) _dictTile(state, e),
         ],
@@ -734,6 +778,20 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
     );
   }
 
+  /// 간단히 보기의 한 줄 — '이름 - 분류' (누르면 편집 · 작은 추가/복사). 줄 모양은 확대 입력창의 선택 창과 같다.
+  Widget _dictCompactTile(AppState state, PromptDictEntry e) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: DictCompactRow(
+        title: e.displayTitle,
+        category: state.dictCategoryLabel(e.categoryId),
+        onTap: () => _showDictEditor(state, editing: e),
+        onAdd: () => _appendDictEntry(state, e),
+        onCopy: () => _copyDictEntry(e),
+      ),
+    );
+  }
+
   Widget _dictActionButton(String label, IconData icon, Color color, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
@@ -854,8 +912,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
       if (!mounted) {
         return;
       }
-      state.addPromptDictEntry(entry);
-      showToast(context, "'$name' 을(를) 저장했습니다.");
+      state.addPromptDictEntry(entry); // 목록에 바로 보이므로 알리지 않는다
     } else {
       await applyLargeImage(editing.id);
       if (!mounted) {
@@ -866,8 +923,7 @@ class _WildcardTabState extends State<WildcardTab> with SingleTickerProviderStat
         ..prompt = prompt
         ..thumbnail = r.thumb
         ..categoryId = r.categoryId;
-      state.updatePromptDictEntry(editing);
-      showToast(context, "수정했습니다.");
+      state.updatePromptDictEntry(editing); // 목록에 바로 보이므로 알리지 않는다
     }
   }
 }
@@ -1008,17 +1064,16 @@ class _DictEditorDialogState extends State<_DictEditorDialog> {
   );
 
   Future<void> _pickFromGallery() async {
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+    final bytes = await pickGalleryImageBytes(
       // 크게 볼 이미지로 쓰므로 원본에 가깝게 받는다.
       //  (카메라 사진처럼 아주 큰 그림은 받아 올 때부터 줄여 메모리를 아낀다)
       maxWidth: 2048,
       maxHeight: 2048,
     );
-    if (picked == null || !mounted) {
+    if (bytes == null || !mounted) {
       return;
     }
-    await _useImage(await picked.readAsBytes());
+    await _useImage(bytes);
   }
 
   @override

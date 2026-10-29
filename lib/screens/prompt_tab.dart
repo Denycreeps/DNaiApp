@@ -4,11 +4,8 @@ import '../utils/prompt_utils.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:provider/provider.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 import 'package:archive/archive.dart';
 import '../models/app_state.dart';
@@ -23,8 +20,11 @@ import '../app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/app_toast.dart';
 import '../utils/ui_safety.dart';
+import '../utils/temp_files.dart';
+import '../widgets/export_sheet.dart'; // 내보내기 — 폴더에 저장 / 공유하기 (설정과 같은 창)
 import '../models/prompt_dict.dart';
 import '../widgets/prompt_preview_card.dart';
+import 'trigger_library.dart'; // 조건부 트리거 칸 (간단한 설명 — 누르면 라이브러리의 목록으로)
 
 // ============================================================================
 // 좁은 공간(검색창) 전용 세로형 자동완성 텍스트 필드 위젯
@@ -217,15 +217,17 @@ class _InlineAutocompleteTextFieldState extends State<_InlineAutocompleteTextFie
                       separatorBuilder: (context, index) =>
                           const Divider(height: 1, color: Colors.white12),
                       itemBuilder: (context, index) {
+                        // 그릴 때의 태그를 잡아 둔다 — 누르기 직전 제안이 바뀌면(타이핑 · 포커스 빠짐) 번호로는 다른 태그가 들어갔다
+                        final String tag = suggestions[index];
                         return InkWell(
-                          onTap: () => insertTag(suggestions[index]),
+                          onTap: () => insertTag(tag),
                           child: Padding(
                             // 세로 여백을 살짝 줄여 같은 높이에 한 줄이라도 더 담는다
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                             child: Text(
-                              PromptUtils.displayTag(suggestions[index]),
+                              PromptUtils.displayTag(tag),
                               style: TextStyle(
-                                color: widget.state.isE621Tag(suggestions[index])
+                                color: widget.state.isE621Tag(tag)
                                     ? const Color(0xFF3B9EFF)
                                     : Colors.white,
                                 fontSize: 14,
@@ -410,7 +412,6 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                             _reorderPreset(consumerState, selectedCategory, oldIndex, newIndex);
                           },
                           itemBuilder: (context, index) {
-                            final originalIndex = filtered[index].key;
                             final preset = filtered[index].value;
                             return Container(
                               key: ValueKey(preset),
@@ -707,14 +708,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                     Center(
                                                       child: GestureDetector(
                                                         onTap: () async {
-                                                          final picker = ImagePicker();
-                                                          final picked = await picker.pickImage(
-                                                            source: ImageSource.gallery,
+                                                          final bytes = await pickGalleryImageBytes(
                                                             maxWidth: 200,
                                                           );
-                                                          if (picked != null) {
-                                                            final bytes = await picked
-                                                                .readAsBytes();
+                                                          if (bytes != null) {
                                                             // 100px 썸네일로 변환
                                                             final decoded = img.decodeImage(bytes);
                                                             if (decoded != null) {
@@ -919,7 +916,6 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         if (category == 'etc') {
                                           // 기타: 어떤 항목을 불러올지 선택
                                           _showPresetApplyDialog(
-                                            context,
                                             modalContext,
                                             consumerState,
                                             preset,
@@ -927,8 +923,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         } else {
                                           // 단일 카테고리: 바로 적용
                                           _applyPreset(consumerState, preset, preset.savedFields);
-                                          Navigator.pop(modalContext);
-                                          showToast(context, "'${preset.name}' 프리셋을 불러왔습니다.");
+                                          Navigator.pop(modalContext); // 칸이 바뀌어 보이므로 알리지 않는다
                                         }
                                       },
                                       style: OutlinedButton.styleFrom(
@@ -952,7 +947,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                         iconSize: 20,
                                         icon: const Icon(Icons.delete, color: Colors.redAccent),
                                         onPressed: () {
-                                          consumerState.presets.removeAt(originalIndex);
+                                          // 번호가 아니라 그 프리셋으로 (NaiPreset 은 == 를 바꾸지 않아 같은 객체를 찾는다)
+                                          consumerState.presets.remove(preset);
                                           consumerState.saveAndRefresh();
                                         },
                                       ),
@@ -1153,7 +1149,6 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
 
   // 기타 프리셋 적용 시 항목 선택 다이얼로그
   void _showPresetApplyDialog(
-    BuildContext outerContext,
     BuildContext modalContext,
     AppState state,
     NaiPreset preset,
@@ -1276,8 +1271,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                   if (selected.isNotEmpty) {
                     _applyPreset(state, preset, selected);
                     Navigator.pop(ctx);
-                    Navigator.pop(modalContext);
-                    showToast(outerContext, "'${preset.name}' 프리셋을 불러왔습니다.");
+                    Navigator.pop(modalContext); // 칸이 바뀌어 보이므로 알리지 않는다
                   }
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: AppColors.accent),
@@ -1418,10 +1412,22 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         return;
       }
 
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/DNaiApp_Precise_${_fileTimestamp()}.zip');
-      await file.writeAsBytes(zipData);
-      await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+      // 폴더에 저장 / 공유하기 (설정 내보내기와 같은 창 · 같은 폴더 — export_sheet.dart)
+      //  zip 은 위에서 다 만들었다 — 고르는 동안 목록이 바뀌어도 누른 때의 목록이 나간다
+      final target = await pickExportTarget(parentContext, state, title: "Precise Reference 내보내기");
+      if (target == null) {
+        return;
+      }
+      final msg = await exportToTarget(
+        state,
+        target,
+        'DNaiApp_Precise_${_fileTimestamp()}.zip',
+        Uint8List.fromList(zipData),
+        mimeType: 'application/zip',
+      );
+      if (msg != null && parentContext.mounted) {
+        showToast(parentContext, msg, length: ToastLength.long);
+      }
     } catch (e) {
       if (parentContext.mounted) {
         showToast(parentContext, "내보내기 실패");
@@ -1434,6 +1440,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     BuildContext parentContext,
     AppState state,
     StateSetter setDialogState,
+    BuildContext dialogCtx, // 고르는 사이 목록 창이 닫혔으면 setDialogState 를 부르면 안 된다
   ) async {
     final result = await FilePicker.platform.pickFiles(type: FileType.any);
     if (result == null || result.files.isEmpty) {
@@ -1485,7 +1492,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       }
 
       final added = state.addPreciseFromImport(items);
-      setDialogState(() {});
+      // 파일 고르는 사이 창을 닫았으면 그 창의 setState 는 에러 → '불러오기 실패' 로 잘못 뜬다 (저장은 이미 됨)
+      if (dialogCtx.mounted) {
+        setDialogState(() {});
+      }
       if (parentContext.mounted) {
         showToast(parentContext, added > 0 ? "$added개의 Reference를 불러왔습니다." : "불러올 이미지가 없습니다.");
       }
@@ -1493,6 +1503,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
       if (parentContext.mounted) {
         showToast(parentContext, "불러오기 실패");
       }
+    } finally {
+      await clearPickedFiles(); // file_picker 가 캐시에 만든 복사본 — 다 읽었으니 치운다
     }
   }
 
@@ -1502,25 +1514,43 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
 
     Future<void> doExport(List<int> indices) async {
       try {
-        final dir = await getTemporaryDirectory();
+        // 내용을 먼저 만든다 — 아래 고르는 창(await)이 떠 있는 동안 목록이 바뀌어도
+        //  번호로 다시 읽지 않아 고른 vibe 그대로 나간다 (DEVNOTES 5)
         final ts = _fileTimestamp();
+        final String fileName;
+        final String jsonStr;
         if (indices.length == 1) {
-          final jsonStr = state.exportVibeToNaiv4(state.vibeTransfers[indices[0]]);
-          final file = File('${dir.path}/DNaiApp_Vibe_$ts.naiv4vibe');
-          await file.writeAsString(jsonStr);
-          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+          fileName = 'DNaiApp_Vibe_$ts.naiv4vibe';
+          jsonStr = state.exportVibeToNaiv4(state.vibeTransfers[indices[0]]);
         } else {
           final vibes = indices
               .map((i) => jsonDecode(state.exportVibeToNaiv4(state.vibeTransfers[i])))
               .toList();
-          final jsonStr = jsonEncode({
+          fileName = 'DNaiApp_Vibe_$ts.naiv4vibebundle';
+          jsonStr = jsonEncode({
             "identifier": "novelai-vibe-transfer-bundle",
             "version": 1,
             "vibes": vibes,
           });
-          final file = File('${dir.path}/DNaiApp_Vibe_$ts.naiv4vibebundle');
-          await file.writeAsString(jsonStr);
-          await SharePlus.instance.share(ShareParams(files: [XFile(file.path)]));
+        }
+        // 폴더에 저장 / 공유하기 (설정 내보내기와 같은 창 · 같은 폴더 — export_sheet.dart)
+        if (!parentContext.mounted) {
+          return;
+        }
+        final target = await pickExportTarget(parentContext, state, title: "Vibe 내보내기");
+        if (target == null) {
+          return;
+        }
+        final msg = await exportToTarget(
+          state,
+          target,
+          fileName,
+          utf8.encode(jsonStr),
+          // 안드로이드가 모르는 확장자 — json 으로 쓰면 이름 끝에 .json 이 붙는다
+          mimeType: 'application/octet-stream',
+        );
+        if (msg != null && parentContext.mounted) {
+          showToast(parentContext, msg, length: ToastLength.long);
         }
       } catch (e) {
         if (parentContext.mounted) {
@@ -1730,12 +1760,14 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 if (idx < state.vibeTransfers.length) {
                                   final vibe = state.vibeTransfers[idx];
                                   final isEnabled = (vibe['enabled'] as bool?) ?? true;
+                                  // 열기 · 눈 · ✕ 는 번호가 아니라 이 vibe(Map) 로 (DEVNOTES 5)
                                   return GestureDetector(
                                     onTap: () => _showVibeSettingsDialog(
                                       parentContext,
                                       state,
-                                      idx,
+                                      vibe,
                                       setDialogState,
+                                      ctx,
                                     ),
                                     child: Container(
                                       decoration: BoxDecoration(
@@ -1782,10 +1814,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                   left: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
-                                                      setDialogState(
-                                                        () => state.vibeTransfers[idx]['enabled'] =
-                                                            !isEnabled,
-                                                      );
+                                                      setDialogState(() => vibe['enabled'] = !isEnabled);
                                                       state.refreshUI();
                                                       state.saveReferencesToLocal();
                                                     },
@@ -1812,9 +1841,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                   right: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
-                                                      setDialogState(
-                                                        () => state.vibeTransfers.removeAt(idx),
-                                                      );
+                                                      setDialogState(() => state.vibeTransfers.remove(vibe));
                                                       state.refreshUI();
                                                       state.saveReferencesToLocal();
                                                     },
@@ -1862,24 +1889,29 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                   // 추가 버튼
                                   return GestureDetector(
                                     onTap: () async {
-                                      final picker = ImagePicker();
-                                      final picked = await picker.pickImage(
-                                        source: ImageSource.gallery,
-                                      );
-                                      if (picked != null) {
-                                        final bytes = await picked.readAsBytes();
-                                        final base64Img = _resizeVibeImage(bytes);
-                                        setDialogState(() {
-                                          state.vibeTransfers.add({
-                                            'image': base64Img,
-                                            'strength': 0.6,
-                                            'infoExtracted': 1.0,
-                                            'enabled': true,
-                                          });
-                                        });
-                                        state.refreshUI();
-                                        state.saveReferencesToLocal();
+                                      final bytes = await pickGalleryImageBytes();
+                                      if (bytes == null) {
+                                        return;
                                       }
+                                      // 고르는 사이 '불러오기' 로 9개가 찼을 수 있다 (그리드는 9칸까지만 보인다)
+                                      if (state.vibeTransfers.length >= 9) {
+                                        if (parentContext.mounted) {
+                                          showToast(parentContext, "Vibe 는 9개까지예요");
+                                        }
+                                        return;
+                                      }
+                                      state.vibeTransfers.add({
+                                        'image': _resizeVibeImage(bytes),
+                                        'strength': 0.6,
+                                        'infoExtracted': 1.0,
+                                        'enabled': true,
+                                      });
+                                      // 고르는 사이 창을 닫았으면 다시 그릴 창이 없다 — 그래도 저장은 한다
+                                      if (ctx.mounted) {
+                                        setDialogState(() {});
+                                      }
+                                      state.refreshUI();
+                                      state.saveReferencesToLocal();
                                     },
                                     child: Container(
                                       decoration: BoxDecoration(
@@ -1944,7 +1976,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                       final file = File(result.files.single.path!);
                                       final jsonStr = await file.readAsString();
                                       final added = state.importVibeFromNaiv4(jsonStr);
-                                      setDialogState(() {});
+                                      // 파일 고르는 사이 창을 닫았으면 setState 가 에러 → '실패' 로 잘못 뜬다
+                                      if (ctx.mounted) {
+                                        setDialogState(() {});
+                                      }
                                       if (parentContext.mounted) {
                                         showToast(
                                           parentContext,
@@ -1959,6 +1994,8 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                       if (parentContext.mounted) {
                                         showToast(parentContext, "불러오기 실패");
                                       }
+                                    } finally {
+                                      await clearPickedFiles(); // 고른 파일의 캐시 복사본 치우기
                                     }
                                   },
                                   icon: const Icon(Icons.download, size: 16),
@@ -2003,12 +2040,14 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                       }[ref['type']] ??
                                       '캐릭터';
                                   final isEnabled = (ref['enabled'] as bool?) ?? true;
+                                  // 열기 · 눈 · ✕ 는 번호가 아니라 이 ref(Map) 로 (DEVNOTES 5)
                                   return GestureDetector(
                                     onTap: () => _showPreciseSettingsDialog(
                                       parentContext,
                                       state,
-                                      idx,
+                                      ref,
                                       setDialogState,
+                                      ctx,
                                     ),
                                     child: Container(
                                       decoration: BoxDecoration(
@@ -2055,10 +2094,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                   left: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
-                                                      setDialogState(
-                                                        () => state.preciseRefs[idx]['enabled'] =
-                                                            !isEnabled,
-                                                      );
+                                                      setDialogState(() => ref['enabled'] = !isEnabled);
                                                       state.refreshUI();
                                                       state.saveReferencesToLocal();
                                                     },
@@ -2085,9 +2121,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                                   right: 4,
                                                   child: GestureDetector(
                                                     onTap: () {
-                                                      setDialogState(
-                                                        () => state.preciseRefs.removeAt(idx),
-                                                      );
+                                                      setDialogState(() => state.preciseRefs.remove(ref));
                                                       state.refreshUI();
                                                       state.saveReferencesToLocal();
                                                     },
@@ -2139,25 +2173,30 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 } else {
                                   return GestureDetector(
                                     onTap: () async {
-                                      final picker = ImagePicker();
-                                      final picked = await picker.pickImage(
-                                        source: ImageSource.gallery,
-                                      );
-                                      if (picked != null) {
-                                        final bytes = await picked.readAsBytes();
-                                        final base64Img = _resizePrecise(bytes);
-                                        setDialogState(() {
-                                          state.preciseRefs.add({
-                                            'image': base64Img,
-                                            'type': 'character',
-                                            'strength': 1.0,
-                                            'fidelity': 0.5,
-                                            'enabled': true,
-                                          });
-                                        });
-                                        state.refreshUI();
-                                        state.saveReferencesToLocal();
+                                      final bytes = await pickGalleryImageBytes();
+                                      if (bytes == null) {
+                                        return;
                                       }
+                                      // 고르는 사이 '불러오기' 로 9개가 찼을 수 있다 (그리드는 9칸까지만 보인다)
+                                      if (state.preciseRefs.length >= 9) {
+                                        if (parentContext.mounted) {
+                                          showToast(parentContext, "Reference 는 9개까지예요");
+                                        }
+                                        return;
+                                      }
+                                      state.preciseRefs.add({
+                                        'image': _resizePrecise(bytes),
+                                        'type': 'character',
+                                        'strength': 1.0,
+                                        'fidelity': 0.5,
+                                        'enabled': true,
+                                      });
+                                      // 고르는 사이 창을 닫았으면 다시 그릴 창이 없다 — 그래도 저장은 한다
+                                      if (ctx.mounted) {
+                                        setDialogState(() {});
+                                      }
+                                      state.refreshUI();
+                                      state.saveReferencesToLocal();
                                     },
                                     child: Container(
                                       decoration: BoxDecoration(
@@ -2212,7 +2251,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                               Expanded(
                                 child: OutlinedButton.icon(
                                   onPressed: () {
-                                    _importPrecise(parentContext, state, setDialogState);
+                                    _importPrecise(parentContext, state, setDialogState, ctx);
                                   },
                                   icon: const Icon(Icons.download, size: 16),
                                   label: const Text("불러오기", style: TextStyle(fontSize: 12)),
@@ -2411,15 +2450,20 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  // Precise Reference 한 장의 설정 — 번호가 아니라 그 ref(Map) 로 연다.
+  //  ⚠️ 예전엔 번호로 열어, 그림을 고르는 사이 창을 닫고 다른 칸을 지우면 고른 그림이 옆 칸에 들어갔다 (DEVNOTES 5).
+  //  [parentCtx] 는 그리드 창 — 닫혔으면 다시 그리지 않는다 (닫힌 창에 setState 하면 오류로 저장까지 건너뛴다).
   void _showPreciseSettingsDialog(
     BuildContext context,
     AppState state,
-    int idx,
+    Map<String, dynamic> ref,
     StateSetter setParentState,
+    BuildContext parentCtx,
   ) {
-    String type = (state.preciseRefs[idx]['type'] as String?) ?? 'character';
-    double strength = (state.preciseRefs[idx]['strength'] ?? 1.0).toDouble();
-    double fidelity = (state.preciseRefs[idx]['fidelity'] ?? 0.5).toDouble();
+    final int shownNo = state.preciseRefs.indexOf(ref) + 1; // 제목에만 (여는 순간의 자리)
+    String type = (ref['type'] as String?) ?? 'character';
+    double strength = (ref['strength'] ?? 1.0).toDouble();
+    double fidelity = (ref['fidelity'] ?? 0.5).toDouble();
 
     showDialog(
       context: context,
@@ -2428,7 +2472,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text(
-            "Reference ${idx + 1} 설정",
+            "Reference $shownNo 설정",
             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
           ),
           content: SingleChildScrollView(
@@ -2440,21 +2484,25 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 Center(
                   child: GestureDetector(
                     onTap: () async {
-                      final picker = ImagePicker();
-                      final picked = await picker.pickImage(source: ImageSource.gallery);
-                      if (picked != null) {
-                        final bytes = await picked.readAsBytes();
-                        state.preciseRefs[idx]['image'] = _resizePrecise(bytes);
-                        setDialogState(() {});
-                        setParentState(() {});
-                        state.refreshUI();
-                        state.saveReferencesToLocal();
+                      final bytes = await pickGalleryImageBytes();
+                      // 고르는 사이 이 칸이 지워졌으면 그만둔다
+                      if (bytes == null || !state.preciseRefs.contains(ref)) {
+                        return;
                       }
+                      ref['image'] = _resizePrecise(bytes);
+                      if (ctx.mounted) {
+                        setDialogState(() {});
+                      }
+                      if (parentCtx.mounted) {
+                        setParentState(() {});
+                      }
+                      state.refreshUI();
+                      state.saveReferencesToLocal();
                     },
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
                       child: Image.memory(
-                        base64Decode(state.preciseRefs[idx]['image']),
+                        base64Decode(ref['image']),
                         height: 80,
                         width: 80,
                         fit: BoxFit.cover,
@@ -2590,12 +2638,17 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             ),
             ElevatedButton(
               onPressed: () {
-                state.preciseRefs[idx]['type'] = type;
-                state.preciseRefs[idx]['strength'] = strength;
-                state.preciseRefs[idx]['fidelity'] = fidelity;
-                setParentState(() {});
-                state.refreshUI();
-                state.saveReferencesToLocal();
+                // 그 사이 지워진 칸이면 고칠 것이 없다
+                if (state.preciseRefs.contains(ref)) {
+                  ref['type'] = type;
+                  ref['strength'] = strength;
+                  ref['fidelity'] = fidelity;
+                  if (parentCtx.mounted) {
+                    setParentState(() {});
+                  }
+                  state.refreshUI();
+                  state.saveReferencesToLocal();
+                }
                 Navigator.pop(ctx);
               },
               style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
@@ -2610,14 +2663,20 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     );
   }
 
+  // Vibe 한 장의 설정 — 번호가 아니라 그 vibe(Map) 로 연다 (위 Precise 설정 창과 같은 까닭).
+  //  그림을 바꾸면 새 Map 으로 바꿔 끼운다 — 생성이 이 vibe 를 인코딩하던 중이면 끝난 인코딩이 '옛 Map' 에 적혀,
+  //  새 그림에 옛 그림의 인코딩이 붙지 않게 (인코딩 캐시는 그림을 따지지 않고 정보추출 값 · 모델만 본다).
   void _showVibeSettingsDialog(
     BuildContext context,
     AppState state,
-    int idx,
+    Map<String, dynamic> vibeAtOpen,
     StateSetter setParentState,
+    BuildContext parentCtx,
   ) {
-    double strength = (state.vibeTransfers[idx]['strength'] ?? 0.6).toDouble();
-    double infoExtracted = (state.vibeTransfers[idx]['infoExtracted'] ?? 1.0).toDouble();
+    Map<String, dynamic> vibe = vibeAtOpen; // 그림을 바꾸면 새 Map 이 된다
+    final int shownNo = state.vibeTransfers.indexOf(vibeAtOpen) + 1; // 제목에만 (여는 순간의 자리)
+    double strength = (vibe['strength'] ?? 0.6).toDouble();
+    double infoExtracted = (vibe['infoExtracted'] ?? 1.0).toDouble();
 
     showDialog(
       context: context,
@@ -2626,7 +2685,7 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Text(
-            "Vibe ${idx + 1} 설정",
+            "Vibe $shownNo 설정",
             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
           ),
           content: Column(
@@ -2635,25 +2694,36 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               // 이미지 변경
               GestureDetector(
                 onTap: () async {
-                  final picker = ImagePicker();
-                  final picked = await picker.pickImage(source: ImageSource.gallery);
-                  if (picked != null) {
-                    final bytes = await picked.readAsBytes();
-                    state.vibeTransfers[idx]['image'] = _resizeVibeImage(bytes);
-                    // 이미지 변경 시 인코딩 캐시 무효화
-                    state.vibeTransfers[idx].remove('_encoded');
-                    state.vibeTransfers[idx].remove('_encodedInfoExt');
-                    state.vibeTransfers[idx].remove('_encodedModel');
-                    setDialogState(() {});
-                    setParentState(() {});
-                    state.refreshUI();
-                    state.saveReferencesToLocal();
+                  final bytes = await pickGalleryImageBytes();
+                  if (bytes == null) {
+                    return;
                   }
+                  // 고르는 사이 이 vibe 가 지워졌으면 그만둔다 (번호로 하면 옆 vibe 에 들어갔다)
+                  final int i = state.vibeTransfers.indexOf(vibe);
+                  if (i < 0) {
+                    return;
+                  }
+                  // 새 Map 으로 바꿔 끼운다 (인코딩 캐시는 빼고) — 위 설명
+                  final Map<String, dynamic> next = Map<String, dynamic>.of(vibe)
+                    ..remove('_encoded')
+                    ..remove('_encodedInfoExt')
+                    ..remove('_encodedModel');
+                  next['image'] = _resizeVibeImage(bytes);
+                  state.vibeTransfers[i] = next;
+                  vibe = next;
+                  if (ctx.mounted) {
+                    setDialogState(() {});
+                  }
+                  if (parentCtx.mounted) {
+                    setParentState(() {});
+                  }
+                  state.refreshUI();
+                  state.saveReferencesToLocal();
                 },
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: Image.memory(
-                    base64Decode(state.vibeTransfers[idx]['image']),
+                    base64Decode(vibe['image']),
                     height: 80,
                     width: 80,
                     fit: BoxFit.cover,
@@ -2728,18 +2798,23 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             ),
             ElevatedButton(
               onPressed: () {
-                // 정보추출 값이 바뀌면 인코딩 캐시 무효화 (재인코딩 필요)
-                final oldInfoExt = (state.vibeTransfers[idx]['infoExtracted'] as double?) ?? 1.0;
-                if (oldInfoExt != infoExtracted) {
-                  state.vibeTransfers[idx].remove('_encoded');
-                  state.vibeTransfers[idx].remove('_encodedInfoExt');
-                  state.vibeTransfers[idx].remove('_encodedModel');
+                // 그 사이 지워진 vibe 면 고칠 것이 없다
+                if (state.vibeTransfers.contains(vibe)) {
+                  // 정보추출 값이 바뀌면 인코딩 캐시 무효화 (재인코딩 필요)
+                  final oldInfoExt = (vibe['infoExtracted'] as double?) ?? 1.0;
+                  if (oldInfoExt != infoExtracted) {
+                    vibe.remove('_encoded');
+                    vibe.remove('_encodedInfoExt');
+                    vibe.remove('_encodedModel');
+                  }
+                  vibe['strength'] = strength;
+                  vibe['infoExtracted'] = infoExtracted;
+                  if (parentCtx.mounted) {
+                    setParentState(() {});
+                  }
+                  state.refreshUI();
+                  state.saveReferencesToLocal();
                 }
-                state.vibeTransfers[idx]['strength'] = strength;
-                state.vibeTransfers[idx]['infoExtracted'] = infoExtracted;
-                setParentState(() {});
-                state.refreshUI();
-                state.saveReferencesToLocal();
                 Navigator.pop(ctx);
               },
               style: ElevatedButton.styleFrom(backgroundColor: AppColors.purple),
@@ -2909,7 +2984,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             const SizedBox(width: 8),
             Expanded(
               child: Text(
-                title,
+                // Medium effort 는 부정 프롬프트가 공식 고정값(Heavy)이라 여기 쓴 글은 보내지 않는다 — 제목에 알린다
+                sectionId == 'negative' && state.effortMediumActive ? "$title · Medium 고정" : title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
               ),
             ),
@@ -2918,23 +2996,6 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
             if (sectionId == 'positive' || sectionId == 'negative')
               _presetChip(state, sectionId == 'positive', color),
             if (sectionId == 'positive' || sectionId == 'negative') const SizedBox(width: 6),
-            // 가중치 규칙만: 이름 옆 ON/OFF (접혔을 때도 보임)
-            if (sectionId == 'weightRules')
-              SizedBox(
-                height: 24,
-                child: FittedBox(
-                  fit: BoxFit.fitHeight,
-                  child: Switch(
-                    value: state.weightRulesEnabled,
-                    activeThumbColor: color,
-                    onChanged: (v) {
-                      state.weightRulesEnabled = v;
-                      state.saveAndRefresh();
-                    },
-                  ),
-                ),
-              ),
-            if (sectionId == 'weightRules') const SizedBox(width: 4),
             // 드래그 핸들 (접혔을 때만 표시, 잡고 드래그로 순서 변경)
             if (isCollapsed)
               ReorderableDragStartListener(
@@ -3093,207 +3154,9 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
           title: "개별 제거 프롬프트",
         );
       case 'conditional':
-        return Column(
-          children: [
-            _buildPromptCardBody(
-              context,
-              state,
-              color: AppColors.pink,
-              controller: state.conditionalRuleController,
-              hint: "# 주석을 적을 수 있습니다\n(e|q):*skirt=*skirt, pants\n(cat*):cat*^dog*",
-              icon: Icons.bolt,
-              title: "조건부 트리거 작성 (줄바꿈 구분)",
-            ),
-            const SizedBox(height: 12),
-            // 작동 시점 선택 버튼
-            Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () {
-                      state.conditionalTriggerMode = "random";
-                      state.saveAndRefresh();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(
-                        color: state.conditionalTriggerMode == "random"
-                            ? AppColors.pink.withValues(alpha: 0.2)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: state.conditionalTriggerMode == "random"
-                              ? AppColors.pink
-                              : Colors.white24,
-                          width: state.conditionalTriggerMode == "random" ? 1.5 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.casino_outlined,
-                            size: 16,
-                            color: state.conditionalTriggerMode == "random"
-                                ? AppColors.pink
-                                : Colors.white54,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            "랜덤 프롬프트 생성 시",
-                            style: TextStyle(
-                              color: state.conditionalTriggerMode == "random"
-                                  ? AppColors.pink
-                                  : Colors.white54,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: GestureDetector(
-                    onTap: () {
-                      state.conditionalTriggerMode = "generate";
-                      state.saveAndRefresh();
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(
-                        color: state.conditionalTriggerMode == "generate"
-                            ? AppColors.pink.withValues(alpha: 0.2)
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: state.conditionalTriggerMode == "generate"
-                              ? AppColors.pink
-                              : Colors.white24,
-                          width: state.conditionalTriggerMode == "generate" ? 1.5 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.image_outlined,
-                            size: 16,
-                            color: state.conditionalTriggerMode == "generate"
-                                ? AppColors.pink
-                                : Colors.white54,
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            "이미지 생성 시",
-                            style: TextStyle(
-                              color: state.conditionalTriggerMode == "generate"
-                                  ? AppColors.pink
-                                  : Colors.white54,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.pink.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.pink.withValues(alpha: 0.3)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 탭하면 가이드를 접었다 펼 수 있다 (상태는 저장됨)
-                  GestureDetector(
-                    onTap: () {
-                      state.conditionalGuideCollapsed = !state.conditionalGuideCollapsed;
-                      state.saveAndRefresh();
-                    },
-                    behavior: HitTestBehavior.opaque,
-                    child: Row(
-                      children: [
-                        const Text(
-                          "💡 문법 가이드",
-                          style: TextStyle(
-                            color: AppColors.pink,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
-                        ),
-                        const Spacer(),
-                        Icon(
-                          state.conditionalGuideCollapsed ? Icons.expand_more : Icons.expand_less,
-                          color: AppColors.pink,
-                          size: 18,
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (!state.conditionalGuideCollapsed) ...const [
-                    SizedBox(height: 8),
-                    Text(
-                      "(조건):A=B → 조건 만족시 A를 B로 덮어쓰기 교체",
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    Text(
-                      "(!조건):A=B → 조건을 만족하지 않을시 A를 B로 교체",
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    Text(
-                      "(조건):prefix=B → 긍정 프롬프트 맨 앞에 B 추가",
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    Text(
-                      "(조건):suffix=B → 긍정 프롬프트 맨 뒤에 B 추가",
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      "*조건식에 g, s, q, e 를 쓰면 해당 연령 등급을 인식합니다.",
-                      style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                    ),
-                    Text(
-                      "*조건식에는 *, &, |, ! 기호를 섞어 쓸 수 있습니다.",
-                      style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                    ),
-                    Text(
-                      "*맨 앞에 #을 붙이면 주석으로 처리되어 실행되지 않습니다.",
-                      style: TextStyle(color: Colors.yellowAccent, fontSize: 11),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      "*는 위치에 따라 의미가 다릅니다.\n  skirt* → skirt로 시작하는 프롬프트\n  *skirt → skirt로 끝나는 프롬프트\n  *skirt* → skirt를 포함하는 프롬프트",
-                      style: TextStyle(color: Colors.cyanAccent, fontSize: 11),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ],
-        );
-      case 'weightRules':
-        // 다른 프롬프트 창과 완전히 동일한 카드/입력 경험
-        return _buildPromptCardBody(
-          context,
-          state,
-          color: const Color(0xFF84CC16),
-          controller: state.weightRulesController,
-          hint: "sleeping=0.5, smile=1.3, #무시할내용",
-          icon: Icons.tune,
-          title: "가중치 규칙 (콤마/줄바꿈 구분)",
-        );
+        // 규칙 목록 · 편집 · 작동 시점은 라이브러리 탭의 '조건부 트리거' 쪽에 있다 (screens/trigger_library.dart).
+        //  여기는 간단한 설명뿐 — 누르면 그 쪽으로 간다.
+        return TriggerSummaryCard(state: state);
       default:
         return const SizedBox.shrink();
     }
@@ -3355,43 +3218,29 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                                 const TextStyle(color: Colors.white, height: 1.5, fontSize: 14),
                               ),
                             )
-                          : (controller is WeightRulesController
+                          : (WeightHighlightController.highlightEnabled
                                 ? RichText(
                                     maxLines: 4,
                                     overflow: TextOverflow.ellipsis,
-                                    text: WeightRulesController.buildRulesSpan(
+                                    text: WeightHighlightController.buildWeightSpan(
                                       controller.text,
                                       const TextStyle(
                                         color: Colors.white,
                                         height: 1.5,
                                         fontSize: 14,
                                       ),
-                                      state.weightRulesEnabled,
                                     ),
                                   )
-                                : (WeightHighlightController.highlightEnabled
-                                      ? RichText(
-                                          maxLines: 4,
-                                          overflow: TextOverflow.ellipsis,
-                                          text: WeightHighlightController.buildWeightSpan(
-                                            controller.text,
-                                            const TextStyle(
-                                              color: Colors.white,
-                                              height: 1.5,
-                                              fontSize: 14,
-                                            ),
-                                          ),
-                                        )
-                                      : Text(
-                                          controller.text,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            height: 1.5,
-                                            fontSize: 14,
-                                          ),
-                                          maxLines: 4,
-                                          overflow: TextOverflow.ellipsis,
-                                        )))),
+                                : Text(
+                                    controller.text,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      height: 1.5,
+                                      fontSize: 14,
+                                    ),
+                                    maxLines: 4,
+                                    overflow: TextOverflow.ellipsis,
+                                  ))),
               ),
               const SizedBox(width: 8),
               Icon(Icons.edit, color: color, size: 16),
@@ -3402,25 +3251,10 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     );
   }
 
-  // 회복까지 남은 시간을 짧게 (예: 3분, 1시간 12분)
-  String _formatRecoverTime(int sec) {
-    if (sec < 60) {
-      return "+1% 곧";
-    }
-    final m = sec ~/ 60;
-    if (m < 60) {
-      return "+1% $m분";
-    }
-    final h = m ~/ 60;
-    final rm = m % 60;
-    return rm == 0 ? "+1% $h시간" : "+1% $h시간 $rm분";
-  }
-
   // V5 사용 한도 게이지.
   //  V5는 시간당 회복되는 사용 한도가 있어 남은 양을 보여준다.
   //  토큰 게이지 바로 아래에 같은 모양으로 두되, 색을 달리해 구분한다.
-  //  ⚠️ 조회 API가 아직 공개되지 않아 지금은 "확인중"만 표시한다.
-  //     AppState.v5LimitPercent 에 값이 들어오면 자동으로 %와 바가 채워진다.
+  //  값은 /user/subscription 의 usage (AppState.v5LimitPercent · v5ExtraPercent) — 조회 전엔 "확인중".
   Widget _buildV5LimitGauge(AppState state) {
     // V5가 아닌 모델에서는 표시하지 않는다
     if (state.selectedModel != NaiModels.v5Full) {
@@ -3428,17 +3262,21 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     }
     final pct = state.v5LimitPercent;
     final known = pct != null;
-    // percent는 100을 넘을 수 있다(여유분). 바는 100 기준으로 채운다.
-    final ratio = known ? (pct / 100).clamp(0.0, 1.0) : 0.0;
+    // 부스트(공식 'Extra Usage') — 기본 한도와 따로 온다. 기본을 다 쓰면 이걸 쓰므로 '쓸 수 있는 양' 은 둘을 더한 것.
+    //  ⚠️ 예전엔 기본만 보여 줘서, 0% 인데 부스트가 남아 있어도 0% 로만 보였다.
+    final double extra = state.v5ExtraPercent;
+    final double total = known ? pct + extra : 0;
+    // percent는 100을 넘을 수 있다(여유분). 바는 100 기준으로 채운다 (부스트까지 더한 양).
+    final ratio = known ? (total / 100).clamp(0.0, 1.0) : 0.0;
     final exhausted = state.v5LimitNegative;
     // 남을수록 파랑, 부족할수록 붉게 (토큰 게이지와 색 계열을 다르게 해 구분)
     final color = !known
         ? Colors.white24
         : exhausted
         ? const Color(0xFFFF1744)
-        : pct <= 10
+        : total <= 10
         ? const Color(0xFFFF1744)
-        : pct <= 30
+        : total <= 30
         ? Colors.orangeAccent
         : AppColors.blue;
     return Padding(
@@ -3452,17 +3290,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 ? "V5 limit 확인중"
                 : exhausted
                 ? "V5 limit 소진 (Anlas 소모)"
+                : extra > 0
+                ? "V5 limit ${pct.toStringAsFixed(0)}% · 부스트 ${extra.toStringAsFixed(0)}%"
                 : "V5 limit ${pct.toStringAsFixed(0)}%",
             style: TextStyle(color: color, fontSize: 11),
           ),
-          // 다음 1% 회복까지 남은 시간 (여유가 적을 때만 보여준다)
-          if (known && !exhausted && pct < 100 && state.v5LimitNextSec > 0) ...[
-            const SizedBox(width: 6),
-            Text(
-              _formatRecoverTime(state.v5LimitNextSec),
-              style: const TextStyle(color: Colors.white38, fontSize: 10),
-            ),
-          ],
+          // (다음 1% 회복까지 남은 시간은 뺐다 — 조회한 순간 값이라 화면에서 줄어들지 않아 오해만 샀다)
           const SizedBox(width: 8),
           Expanded(
             child: ClipRRect(
@@ -3797,20 +3630,26 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
   }
 
   // ON/OFF 토글 아이콘 (랜덤 잠금 / 자동 저장) — 정사각 버튼과 같은 크기
+  //  [locked] 면 아이콘 오른쪽 아래에 작은 자물쇠 (자동 저장 잠금). [onLongPress] 는 꾹 누르기.
   Widget _toggleIcon({
     required IconData icon,
     required String tooltip,
     required bool active,
     required Color color,
     required VoidCallback onTap,
+    VoidCallback? onLongPress,
+    bool locked = false,
   }) {
     return Tooltip(
-      message: "$tooltip ${active ? 'ON' : 'OFF'}",
+      message: "$tooltip ${active ? 'ON' : 'OFF'}${locked ? ' (잠김)' : ''}",
+      // 꾹 누르기를 쓰는 버튼은 툴팁이 꾹 누르기를 가로채지 않게 (마우스를 올렸을 때만 뜬다)
+      triggerMode: onLongPress != null ? TooltipTriggerMode.manual : null,
       child: Material(
         color: active ? color.withValues(alpha: 0.18) : AppColors.surface,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
           borderRadius: BorderRadius.circular(10),
           splashColor: color.withValues(alpha: 0.3),
           highlightColor: color.withValues(alpha: 0.15),
@@ -3823,23 +3662,85 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: active ? color : Colors.white12),
             ),
-            child: Icon(icon, color: active ? color : Colors.white24, size: 18),
+            // 버튼 칸 전체를 채워야 자물쇠가 버튼 모서리에 붙는다 (안 채우면 아이콘 크기만 해서 가운데에 겹친다)
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(child: Icon(icon, color: active ? color : Colors.white24, size: 18)),
+                // 잠금 표시 — 자식 수를 바꾸지 않게 늘 두고 보이기만 바꾼다 (DEVNOTES 2)
+                Positioned(
+                  right: 3,
+                  bottom: 2,
+                  child: Opacity(
+                    opacity: locked ? 1 : 0,
+                    child: Icon(Icons.lock, size: 11, color: active ? color : Colors.white70),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
+  // 자동 저장 버튼 꾹 누르기 — 잠겨 있으면 풀지, 아니면 잠글지 묻는다.
+  //  잠그면 눌러도 ON/OFF 가 안 바뀐다 (실수로 꺼 둔 채 생성하지 않게).
+  Future<void> _askAutoSaveLock(BuildContext context, AppState state) async {
+    final bool lock = !state.autoSaveLocked; // 물어보는 방향 — 창이 떠 있는 사이 바뀌어도 이 방향으로
+    final bool ok = await showConfirmDialog(
+      context,
+      title: lock ? "자동 저장 잠금" : "자동 저장 잠금 해제",
+      message: lock ? "지금 상태(${state.isAutoSave ? 'ON' : 'OFF'})로 잠글까요?" : "잠금을 풀까요?",
+      confirmLabel: lock ? "잠그기" : "잠금 해제",
+      icon: lock ? Icons.lock : Icons.lock_open,
+      iconColor: AppColors.teal,
+      destructive: false,
+      confirmColor: AppColors.teal,
+    );
+    if (!ok || !mounted) {
+      return;
+    }
+    state.autoSaveLocked = lock;
+    state.saveAndRefresh();
+  }
+
   // 생성 버튼을 눌렀을 때의 처리.
   //  build 안에 78줄이 들어 있어 화면을 그릴 때마다 다시 만들어졌다.
-  Future<void> _onGeneratePressed(BuildContext context, AppState state) async {
+  //  [samples] 가 2 이상이면 생성 버튼을 꾹 눌러 고른 '한 번에 여러 장' (_showMultiSampleSheet) —
+  //  연속 생성 설정과 무관하게 요청 한 번으로 그 장수를 만든다. 비용은 고르는 창에 이미 보였으므로 다시 묻지 않는다.
+  Future<void> _onGeneratePressed(BuildContext context, AppState state, {int samples = 1}) async {
     // API 연결 확인 먼저
     if (!state.isApiConnected) {
       showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
       return;
     }
+    final bool multi = samples > 1;
+    // 자동 저장이 꺼진 채 연속 생성(2장 이상 · 무한) — 설정에서 켰을 때만 한 번 묻는다 (기본 꺼짐)
+    //  한 장 생성은 묻지 않는다 (반복 설정이 있어도 한 장만 만든다 — _runBatchLoop)
+    final bool isBatch = !multi && (state.batchCount > 1 || state.batchCount == 0);
+    if (state.warnBatchWithoutAutoSave && !state.isAutoSave && isBatch) {
+      final bool go = await showConfirmDialog(
+        context,
+        title: "연속 생성 이미지 경고",
+        message: "자동 저장이 꺼져있습니다. 그래도 생성할까요?",
+        confirmLabel: "그대로 생성",
+        icon: Icons.save_outlined,
+        iconColor: AppColors.amber,
+        destructive: false,
+        confirmColor: AppColors.purple,
+      );
+      if (!go || !context.mounted) {
+        return;
+      }
+    }
+    // 저장 폴더가 없으면 고르게 한다 (안 고르면 생성하지 않는다 — AppState.ensureSaveFolder)
+    if (!await state.ensureSaveFolder(context) || !context.mounted) {
+      return;
+    }
     final int anlas = state.anlasFor(AnlasJob.generate);
-    if (anlas != 0) {
+    // 확인 창을 껐으면(설정 — skipAnlasConfirm) 묻지 않는다 — 생성 버튼의 빨간 테두리가 대신 알린다
+    if (!multi && anlas != 0 && !state.skipAnlasConfirm) {
       final batchInfo = state.batchCount > 1
           ? "\n${state.batchCount}회 연속 생성합니다."
           : state.batchCount == 0
@@ -3861,7 +3762,81 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
     if (!context.mounted) {
       return;
     }
-    state.handleBatchGenerate(context, widget.onScrollToHistoryEnd ?? () {});
+    state.handleBatchGenerate(context, widget.onScrollToHistoryEnd ?? () {}, samples: samples);
+  }
+
+  // 생성 버튼 꾹 — 한 번에 2 · 3 · 4장 (공식의 '이미지 수', n_samples).
+  //  누른 그때만 그 장수로 만든다 (설정으로 남지 않는다). 결과는 한 장씩 히스토리에 들어간다.
+  //  ⚠️ 한 번에 여러 장은 Opus 무료가 아니다 — 공식 설명상 무료는 '한 번에 한 장' 일 때만. 그래서 장마다 비용을 보여 준다.
+  //     (공식 웹은 보통 · 큰 크기에서 4장까지 — 그보다 큰 판은 서버가 거절할 수 있고, 그 오류가 이미지 자리에 뜬다)
+  Future<void> _showMultiSampleSheet(BuildContext context, AppState state) async {
+    if (!state.isApiConnected) {
+      showToast(context, "설정 탭에서 API 키를 먼저 연결해주세요.");
+      return;
+    }
+    final int? picked = await showModalBottomSheet<int>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 18, 20, 4),
+              child: Row(
+                children: [
+                  Icon(Icons.burst_mode_outlined, color: AppColors.purple, size: 20),
+                  SizedBox(width: 8),
+                  Text(
+                    "한 번에 여러 장 생성",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  "누르면 바로 시작해요. 무료 생성이 아니라 Anlas가 들어요.",
+                  style: TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ),
+            ),
+            for (final int n in const [2, 3, 4])
+              ListTile(
+                leading: Text(
+                  "$n장",
+                  style: const TextStyle(
+                    color: AppColors.purple,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                title: Text(
+                  AppState.anlasText(state.anlasForSamples(n)),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+                trailing: const Icon(Icons.auto_awesome, color: Colors.white38, size: 18),
+                onTap: () => Navigator.pop(sheetCtx, n),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (picked == null || !context.mounted) {
+      return;
+    }
+    await _onGeneratePressed(context, state, samples: picked);
   }
 
   // 윗줄 도구 버튼
@@ -3921,10 +3896,16 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
               tooltip: "자동 저장",
               active: state.isAutoSave,
               color: AppColors.teal,
+              locked: state.autoSaveLocked,
               onTap: () {
+                // 잠겨 있으면 바꾸지 않는다 (자물쇠가 보이니 따로 알리지 않는다)
+                if (state.autoSaveLocked) {
+                  return;
+                }
                 state.isAutoSave = !state.isAutoSave;
                 state.saveAndRefresh();
               },
+              onLongPress: () => _askAutoSaveLock(context, state),
             ),
           ],
         ),
@@ -3966,6 +3947,16 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                         state.handleNextPrompt();
                       }
                     : null,
+                // 꾹 — 바로 앞에 불렀던 프롬프트로 한 칸 돌아간다 (남은 수 +1, AppState.handlePrevPrompt)
+                onLongPress: canChangePrompt
+                    ? () {
+                        if (state.handlePrevPrompt()) {
+                          setState(() => _nextPromptFx++);
+                        } else {
+                          showToast(context, "더 앞의 프롬프트가 없어요.");
+                        }
+                      }
+                    : null,
                 style: OutlinedButton.styleFrom(
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -3996,6 +3987,13 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
   // 아랫줄 도구 버튼 (프리셋 · 생성 등)
   //  build 안에 215줄이 들어 있어 화면을 그릴 때마다 다시 만들어졌다.
   Widget _buildToolRowBottom(BuildContext context, AppState state) {
+    // 생성 · 인페인트 · 업스케일 중 하나라도 도는 중 — 생성 버튼이 '정지' (연속 생성) 또는 잠김
+    final bool busy =
+        state.isLoading ||
+        state.isGenerateBusy ||
+        state.isBatchMode ||
+        state.isInpaintLoading ||
+        state.isUpscaleLoading;
     return Row(
       children: [
         // 왼쪽 그룹: 화면이 좁으면 줄어들고, 오른쪽 두 열은 항상 붙어있게
@@ -4135,41 +4133,30 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
         ),
         const SizedBox(width: 8),
         // E열: 남는 공간을 전부 차지 (왼쪽이 모두 고정이라 겹칠 일 없음)
+        //  꾹 누르면 한 번에 2 · 3 · 4장 (_showMultiSampleSheet) — 도는 중엔 꾹 눌러도 아무것도 하지 않는다
+        //  Anlas 확인 창을 껐으면 Anlas 가 드는 생성에 빨간 테두리 (AppState.anlasMarked)
         Flexible(
           fit: FlexFit.tight,
           child: ElevatedButton.icon(
-            onPressed:
-                (state.isLoading ||
-                    state.isGenerateBusy ||
-                    state.isBatchMode ||
-                    state.isInpaintLoading ||
-                    state.isUpscaleLoading)
+            onPressed: busy
                 ? () {
                     if (state.isBatchMode) {
                       state.cancelBatch();
                     }
                   }
                 : () => _onGeneratePressed(context, state),
+            onLongPress: busy ? null : () => _showMultiSampleSheet(context, state),
             style: ElevatedButton.styleFrom(
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               minimumSize: const Size(0, 42), // 윗줄 '다음' 버튼과 같은 높이
               padding: const EdgeInsets.symmetric(horizontal: 8),
-              backgroundColor:
-                  (state.isLoading ||
-                      state.isGenerateBusy ||
-                      state.isBatchMode ||
-                      state.isInpaintLoading ||
-                      state.isUpscaleLoading)
-                  ? Colors.grey[700]
-                  : AppColors.purple,
+              backgroundColor: busy ? Colors.grey[700] : AppColors.purple,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+              side: !busy && state.anlasMarked(state.anlasFor(AnlasJob.generate))
+                  ? const BorderSide(color: AppColors.red, width: 2.5)
+                  : null,
             ),
-            icon:
-                (state.isLoading ||
-                    state.isGenerateBusy ||
-                    state.isBatchMode ||
-                    state.isInpaintLoading ||
-                    state.isUpscaleLoading)
+            icon: busy
                 ? const SizedBox(
                     width: 16,
                     height: 16,
@@ -4322,37 +4309,45 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                     _buildSimpleCheck(context, state, "Q", state.ratingQ, (v) => state.ratingQ = v),
                     _buildSimpleCheck(context, state, "S", state.ratingS, (v) => state.ratingS = v),
                     _buildSimpleCheck(context, state, "G", state.ratingG, (v) => state.ratingG = v),
-                    const Spacer(),
-                    ElevatedButton(
-                      onPressed: state.isGelbooruLoading
-                          ? null
-                          : () => state.handleGelbooruSearch(context),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.surfaceButton,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                        // 기본 좌우 패딩(24)과 최소폭(88)이 커서 글씨 공간을 잡아먹는다.
-                        // 좌우 여백을 줄여 "태그 확인 1200/3200" 같은 긴 문구도 들어가게.
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                        minimumSize: const Size(0, 36),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      ),
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown, // 길면 글씨만 줄어듦 (버튼 크기는 그대로)
-                        child: Text(
-                          state.isGelbooruLoading
-                              ? (state.gelbooruSearchStage.isNotEmpty
-                                    // 페이지 수신 완료 후: 분류/필터/캐시 등 현재 단계 표시
-                                    ? state.gelbooruSearchStage
-                                    : (state.gelbooruSearchTotal > 0
-                                          // 페이지 수신 중: 완료/전체 페이지 + 지금까지 찾은 개수
-                                          //  (찾은 개수는 예전엔 '다음 (P : N)' 에 띄웠는데, 이제 그 버튼은
-                                          //   검색 중에도 예전 목록으로 동작하므로 숫자를 여기로 옮겼다)
-                                          ? "검색 중 ${state.gelbooruSearchDone}/${state.gelbooruSearchTotal}"
-                                                "${state.gelbooruSearchFound > 0 ? ' · ${state.gelbooruSearchFound}개' : ''}"
-                                          : "검색 중"))
-                              : "검  색", // 유휴 시엔 글자 사이를 띄워 버튼이 너무 작지 않게
-                          maxLines: 1,
-                          style: const TextStyle(color: Colors.white),
+                    // 남은 폭 안에서 오른쪽에 붙인다.
+                    //  ⚠️ 예전엔 Spacer + 버튼이라 버튼이 폭 제한 없이 글자만큼 늘어났다 — 그러면 안의
+                    //     FittedBox 가 줄일 기준이 없어서, 검색 양이 많을 때 '검색 중 n/n · n개' 가 길어지며
+                    //     화면 밖으로 넘쳤다. 이제 남은 폭을 넘으면 글씨가 줄어든다.
+                    Expanded(
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: ElevatedButton(
+                          onPressed: state.isGelbooruLoading
+                              ? null
+                              : () => state.handleGelbooruSearch(context),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.surfaceButton,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            // 기본 좌우 패딩(24)과 최소폭(88)이 커서 글씨 공간을 잡아먹는다.
+                            // 좌우 여백을 줄여 "태그 확인 1200/3200" 같은 긴 문구도 들어가게.
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            minimumSize: const Size(0, 36),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown, // 길면 글씨만 줄어듦 (버튼 크기는 그대로)
+                            child: Text(
+                              state.isGelbooruLoading
+                                  ? (state.gelbooruSearchStage.isNotEmpty
+                                        // 페이지 수신 완료 후: 분류/필터/캐시 등 현재 단계 표시
+                                        ? state.gelbooruSearchStage
+                                        : (state.gelbooruSearchTotal > 0
+                                              // 페이지 수신 중: 완료/전체 페이지 + 지금까지 찾은 개수
+                                              //  (찾은 개수는 예전엔 '다음 (P : N)' 에 띄웠는데, 이제 그 버튼은
+                                              //   검색 중에도 예전 목록으로 동작하므로 숫자를 여기로 옮겼다)
+                                              ? "검색 중 ${state.gelbooruSearchDone}/${state.gelbooruSearchTotal}"
+                                                    "${state.gelbooruSearchFound > 0 ? ' · ${state.gelbooruSearchFound}개' : ''}"
+                                              : "검색 중"))
+                                  : "검  색", // 유휴 시엔 글자 사이를 띄워 버튼이 너무 작지 않게
+                              maxLines: 1,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -4384,9 +4379,12 @@ class _PromptTabState extends State<PromptTab> with AutomaticKeepAliveClientMixi
                 },
                 children: [
                   for (int idx = 0; idx < state.promptSectionOrder.length; idx++)
-                    // 설정에서 숨긴 섹션은 자리만 차지하지 않게 비워둔다.
-                    // (키와 인덱스는 유지해야 드래그 순서 변경이 깨지지 않음)
-                    if (state.hiddenPromptSections.contains(state.promptSectionOrder[idx]))
+                    // 설정에서 숨긴 섹션 · 모르는 섹션은 자리만 차지하지 않게 비워둔다.
+                    // (키와 인덱스는 유지해야 드래그 순서 변경이 깨지지 않음 — 칸을 빼면 번호가 밀린다)
+                    //  모르는 섹션: 저장된 순서는 읽을 때 정리되지만(_mergeSectionOrder), 혹시 남아도
+                    //  머리줄의 _sectionMeta[...]! 에서 멈추지 않게 (3.14.0 에 weightRules 를 뺐다)
+                    if (state.hiddenPromptSections.contains(state.promptSectionOrder[idx]) ||
+                        !_sectionMeta.containsKey(state.promptSectionOrder[idx]))
                       SizedBox.shrink(key: ValueKey(state.promptSectionOrder[idx]))
                     else
                       Padding(
@@ -4529,7 +4527,6 @@ const Map<String, Map<String, dynamic>> _sectionMeta = {
   'removeChips': {'title': '태그 제거', 'icon': Icons.auto_fix_high, 'color': AppColors.purple},
   'customRemove': {'title': '개별 제거 프롬프트', 'icon': Icons.delete_outline, 'color': Color(0xFF9E9E9E)},
   'conditional': {'title': '조건부 트리거', 'icon': Icons.bolt, 'color': AppColors.pink},
-  'weightRules': {'title': '가중치 규칙', 'icon': Icons.tune, 'color': Color(0xFF84CC16)},
 };
 
 // ============================================================================

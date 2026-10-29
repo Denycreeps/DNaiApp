@@ -167,12 +167,16 @@ class SplitImageStore {
         await d.create(recursive: true);
       }
       // ① 아직 안 쓴 그림
+      //  ⚠️ '들어 있다'(_onDisk · isStored) 는 아래 목록까지 쓴 뒤에야 적는다.
+      //     다른 보관함은 isStored 를 보고 자기 사본을 지운다 — 그림 파일만 쓰고 목록을 못 쓴 채 꺼지면
+      //     다음에 목록에 없는 파일로 치워져, 즐겨찾기가 양쪽에서 다 사라질 수 있었다.
+      final List<String> written = [];
       for (final it in items) {
         if (_onDisk.contains(it.id)) {
           continue;
         }
         await _writeAtomic(_imageFile(d, it.id), it.bytes);
-        _onDisk.add(it.id);
+        written.add(it.id);
       }
       // ② 목록 — 여기서 '확정'
       await _writeAtomic(
@@ -183,6 +187,7 @@ class SplitImageStore {
           ]),
         ),
       );
+      _onDisk.addAll(written); // 목록까지 썼다 — 이제 '들어 있다'
       // ③ 목록에 없는 파일 (지운 것·밀려난 것·다른 보관함으로 옮긴 것·남은 임시 파일)
       final keep = {for (final it in items) it.id};
       for (final f in d.listSync().whereType<File>()) {

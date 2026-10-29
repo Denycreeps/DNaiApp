@@ -3,7 +3,6 @@
 // 프롬프트 입력창의 구문 강조 컨트롤러 모음.
 //  app_state.dart가 7500줄을 넘어 성격별로 나눴다.
 //  · SyntaxHighlightController — {a|b} 같은 문법 강조
-//  · WeightRulesController     — 가중치 규칙 입력창 강조
 //  · WeightHighlightController — 프롬프트의 숫자:: 가중치 강조
 import 'package:flutter/material.dart';
 import '../app_theme.dart';
@@ -74,64 +73,6 @@ class SyntaxHighlightController extends TextEditingController {
 }
 
 // NovelAI 가중치 문법(숫자::프롬프트 ::) 색상 하이라이트 컨트롤러
-// 가중치 규칙 입력창 전용 강조
-//  - 규칙이 꺼져 있으면 전체를 흐리게 (꺼진 상태가 한눈에 보이도록)
-//  - '#'부터 콤마/줄바꿈 전까지는 주석이므로 회색 처리
-class WeightRulesController extends TextEditingController {
-  WeightRulesController({super.text});
-
-  // AppState의 weightRulesEnabled와 동기화되는 현재 상태
-  static bool rulesEnabled = false;
-
-  @override
-  TextSpan buildTextSpan({
-    required BuildContext context,
-    TextStyle? style,
-    required bool withComposing,
-  }) {
-    return buildRulesSpan(text, style, rulesEnabled);
-  }
-
-  // 카드 미리보기에서도 같은 음영을 쓰기 위한 static 헬퍼
-  static TextSpan buildRulesSpan(String text, TextStyle? style, bool enabled) {
-    if (!enabled) {
-      // 꺼짐: 전체를 흐린 회색으로
-      return TextSpan(
-        text: text,
-        style: style?.copyWith(color: Colors.white30),
-      );
-    }
-    final List<TextSpan> spans = [];
-    int i = 0;
-    while (i < text.length) {
-      final hash = text.indexOf('#', i);
-      if (hash == -1) {
-        spans.add(TextSpan(text: text.substring(i), style: style));
-        break;
-      }
-      if (hash > i) {
-        spans.add(TextSpan(text: text.substring(i, hash), style: style));
-      }
-      // '#'부터 콤마/줄바꿈 직전까지가 주석 범위
-      int end = text.length;
-      for (int j = hash; j < text.length; j++) {
-        if (text[j] == ',' || text[j] == '\n') {
-          end = j;
-          break;
-        }
-      }
-      spans.add(
-        TextSpan(
-          text: text.substring(hash, end),
-          style: style?.copyWith(color: Colors.grey, fontStyle: FontStyle.italic),
-        ),
-      );
-      i = end;
-    }
-    return TextSpan(style: style, children: spans);
-  }
-}
-
 class WeightHighlightController extends TextEditingController {
   WeightHighlightController({super.text});
 

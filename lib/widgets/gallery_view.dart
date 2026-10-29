@@ -1,10 +1,16 @@
+import 'dart:async'; // Timer · unawaited (검색 화면 갱신 모으기)
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui; // 이미지 헤더만 읽어 해상도를 얻는다
 import 'package:flutter/material.dart';
 import '../models/app_state.dart';
 import '../models/app_tabs.dart';
+import '../models/drag_select.dart'; // 꾹 누른 채 끌어서 여러 장 고르기 (칸 찾기 · 범위 · 저절로 굴리기)
+import '../models/history_search.dart'; // 검색 규칙 (히스토리 검색과 같다)
 import '../models/image_metadata.dart';
+import '../utils/gallery_search_index.dart'; // 검색: 그림 정보 부분 읽기 · 색인
+import '../utils/ui_safety.dart'; // hideKeyboardIfShown (DEVNOTES 4)
+import 'tag_search_field.dart';
 import 'preset_save_dialog.dart';
 import '../models/nai_character.dart';
 import 'detail_settings_modal.dart';
@@ -22,6 +28,8 @@ import '../utils/image_codec.dart'; // 그림 확장자 목록 (앱 전체 공�
 // - 상단 breadcrumb 경로 (각 칩 탭으로 상위 점프)
 // - 위치 선택 (앱 폴더 / 커스텀 저장 경로, 권한 불필요)
 // - 이미지 뷰어 좌우 스와이프로 이전/다음
+// - 검색 (히스토리탭 갤러리 줄의 🔍): 지금 폴더와 그 아래 폴더 전부에서 그림 정보의 프롬프트로 찾는다
+//   (저장 폴더(SAF)만 · 휴지통 제외). 아래 '검색' 부분 참고.
 
 // 폴더 1개의 미리보기 정보 (썸네일 + 장수)
 // ══════════════════════════════════════════════════════════════════════
@@ -79,13 +87,25 @@ class _FolderInfo {
   });
 }
 
+/// 검색이 훑은 그림 한 장 — 든 폴더(ref.parentUri)를 들고 다닌다 (결과는 폴더가 섞여 있다).
+class _ScanItem {
+  _ScanItem(this.ref);
+  final SafImageRef ref;
+
+  /// 찾을 글 (history_search.dart 의 historySearchText) — null 이면 아직 안 읽음, '' 이면 그림 정보 없음
+  String? text;
+}
+
 class GalleryView extends StatefulWidget {
   final AppState state;
 
   /// 이미지 하나를 '히스토리 목록에 추가' 한 뒤 불린다 — 히스토리탭이 목록 모드로 바꿔 보여 준다.
   final VoidCallback? onAddedToHistory;
 
-  const GalleryView({super.key, required this.state, this.onAddedToHistory});
+  /// 검색칸이 열려 있는지 알려 줄 곳 (히스토리탭 🔍 의 색). 이 갤러리가 열고 닫을 때 적는다.
+  final ValueNotifier<bool>? searchOpen;
+
+  const GalleryView({super.key, required this.state, this.onAddedToHistory, this.searchOpen});
 
   @override
   State<GalleryView> createState() => GalleryViewState();
@@ -102,6 +122,8 @@ class GalleryViewState extends State<GalleryView> {
   //  ⚠️ 예전엔 _selectMode/_selected 와 _selectMode/_selected 두 벌이었다.
   bool _selectMode = false;
   final Set<String> _selected = {};
+  // 고른 그림을 지우는 중 — 여러 폴더면 몇 초 걸리는데, 그동안 [삭제] 를 또 누르면 같은 그림을 두 번 보내게 된다
+  bool _deletingSelected = false;
 
   // SAF 모드 (저장 폴더가 SAF일 때 폴더 탐색)
   bool _safMode = false;
@@ -136,11 +158,64 @@ class GalleryViewState extends State<GalleryView> {
   Map<String, int> _trashDeletedAt = {}; // 휴지통 그림 이름 → 버린 시각(ms) — 남은 날 표시용
 
   // 이동 대기 상태: 값이 있으면 "이동 모드" — 갤러리를 돌아다니다 원하는 폴더에서 확정
-  List<({String uri, String name})>? _pendingMoveRefs; // 이동할 파일들 (null이면 이동 모드 아님)
-  String? _pendingMoveFromParent; // 이동할 파일들의 원본 폴더 URI
+  //  그림마다 지금 든 폴더를 들고 있다 — 검색 결과에서 고르면 폴더가 섞인다 (옮길 때 그림마다 원래 폴더를 넘긴다).
+  //  ⚠️ 예전엔 '원래 폴더' 하나(_pendingMoveFromParent)만 들고 있어서 검색 결과에선 이동을 막아 두었다.
+  List<SafSourceRef>? _pendingMoveRefs; // 이동할 파일들 (null이면 이동 모드 아님)
 
   // SAF 그리드 스크롤 컨트롤러 (자동 새로고침 시 위치 복원용)
   final ScrollController _safGridScroll = ScrollController();
+  // 파일 모드 그리드 — 끌어서 고를 때 손가락 아래 칸을 찾으려면 스크롤 위치가 필요하다
+  final ScrollController _ioGridScroll = ScrollController();
+  ScrollController get _gridScroll => _safMode ? _safGridScroll : _ioGridScroll;
+
+  // 그리드 모양 — GridView 와 끌어서 고르기(_gridIndexAtGlobal)가 같은 값을 쓴다
+  static const double _kGridPad = 8;
+  static const double _kGridGap = 6;
+
+  // ── 꾹 누른 채 끌어서 여러 장 고르기 (models/drag_select.dart) ──
+  //  꾹 누르면 그 칸부터 고르기 시작 · 떼지 않고 끌면 지나간 범위를 한 번에 고른다
+  //  (처음 칸이 이미 골라져 있었으면 반대로 푼다). 위 · 아래 끝으로 끌면 저절로 굴러간다.
+  //  꾹 누르기는 칸이 아니라 그리드 전체가 받는다 — 칸이 받으면, 굴러가다 그 칸이 화면 밖으로 사라질 때
+  //  (칸 위젯이 치워지며) 끌기가 그 자리에서 끊긴다.
+  //  ⚠️ 꾹 누른 곳은 칸 번호가 아니라 '그림' 에 묶는다 (DEVNOTES 5). 끄는 도중에도 목록이 바뀐다 —
+  //     검색 결과가 0.25초마다 차오르며 사이사이에 끼어들고, 자동 새로고침이 새 그림을 넣는다.
+  //     예전엔 번호로 들고 있어서, 그 사이 칸이 밀리면 누르지 않은 옆 그림부터 골라졌다.
+  final GlobalKey _gridKey = GlobalKey();
+  String? _dragAnchorId; // 꾹 누른 그림 (id) — null 이면 끌고 있지 않다
+  int _dragAnchorHint = -1; // 그 그림이 있던 칸 번호 — 먼저 여기를 본다 (목록이 그대로면 바로 맞는다)
+  int _dragLast = -1; // 마지막으로 반영한 칸 (손가락 아래)
+  bool _dragAdds = true; // 고르기(true) · 풀기(false)
+  Set<String> _dragBase = const {}; // 끌기 전에 골라 둔 것 — 범위를 줄이면 원래대로
+  Offset? _dragPoint; // 마지막 손가락 위치 (전역 좌표)
+  Timer? _dragScrollTimer; // 위 · 아래 끝에서 저절로 굴리기
+
+  // ── 검색 (🔍) ──
+  //  · 지금 보는 폴더(_scanRoot)와 그 아래 폴더 전부를 훑어(_startScan) 그림마다 찾을 글을 얻는다.
+  //    그림 정보는 파일의 그 부분만 읽고, 읽은 것은 색인에 남겨 다음엔 새 그림만 읽는다 (gallery_search_index.dart).
+  //  · 검색어가 있으면 폴더 칸을 숨기고 맞는 그림만 한 그리드에 — 폴더가 섞인다.
+  //    그래서 그림마다 든 폴더(SafImageRef.parentUri)를 들고 다닌다 (휴지통이 원래 폴더를 알아야 한다).
+  //  · 크게 보기 · 꾹 눌러 여러 장 고르기 · 휴지통으로(지우기)까지 (2단계).
+  //    지울 땐 그림마다 든 폴더를 넘긴다 (_safSelectedWithDir → trashSafImages — 되돌릴 때 그 폴더로).
+  //    고르기는 지금 결과에 묶인다 — 검색어를 바꾸거나 닫으면 끝난다 (안 보이는 그림이 같이 지워지지 않게).
+  //  · 이동도 된다 (3단계) — 고른 그림을 그림마다 든 폴더와 함께 이동 대기에 올리고(_safMoveRefs) 검색칸은 닫는다.
+  //    옮길 곳은 폴더를 돌아다니며 고르는 방식이라 검색 화면에선 고를 수 없다.
+  bool _searchOpen = false;
+  final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
+  HistoryQuery _searchQuery = parseHistoryQuery('');
+  String? _scanRoot; // 이 폴더 아래를 훑었다 (또는 훑는 중) — null 이면 아직
+  List<_ScanItem> _scanItems = []; // 훑은 그림 전부 (정렬됨)
+  List<_ScanItem> _searchResults = []; // 그 가운데 검색어에 맞는 것 (그리드가 그린다)
+  bool _scanning = false; // 훑는 중 (목록 조회 · 새 그림 읽기)
+  bool _scanListed = false; // 그림 목록을 다 받았는지 (아니면 진행 막대가 '폴더 훑는 중')
+  int _scanNewlyRead = 0; // 이번에 새로 읽은 장수 (끝난 뒤 표시)
+  double _scanSeconds = 0; // 이번 훑기에 걸린 시간 (끝난 뒤 표시)
+  int _scanGen = 0; // 훑기 번호 — 새로 훑거나 닫으면 올린다 (옛 훑기는 이걸 보고 스스로 멈춘다)
+  Timer? _scanTick; // 화면 갱신을 모아서 (한 장 읽을 때마다 다시 그리지 않게)
+  bool _searchTouchedFiles = false; // 검색 중에 그림을 지웠다 — 닫을 때 폴더 칸(장수 · 미리보기)을 다시 읽는다
+
+  /// 검색어가 있어 결과를 보이는 중 (폴더 대신)
+  bool get _searching => _searchOpen && !isEmptyQuery(_searchQuery);
 
   @override
   void initState() {
@@ -159,6 +234,15 @@ class GalleryViewState extends State<GalleryView> {
     }
     widget.state.removeListener(_onAppStateChanged);
     _safGridScroll.dispose();
+    _ioGridScroll.dispose();
+    _dragScrollTimer?.cancel();
+    // 검색 — 읽던 것을 멈추고(읽은 데까지는 색인에 남긴다) 정리한다
+    _scanGen++;
+    _scanTick?.cancel();
+    unawaited(GallerySearchIndex.saveShared());
+    _searchController.dispose();
+    final FocusNode focus = _searchFocus;
+    WidgetsBinding.instance.addPostFrameCallback((_) => focus.dispose()); // 한 프레임 뒤에 (DEVNOTES 4)
     super.dispose();
   }
 
@@ -213,11 +297,14 @@ class GalleryViewState extends State<GalleryView> {
   ///  ⚠️ 이게 없으면 갤러리를 켜 둔 채 설정에서 폴더를 바꿨을 때 옛 폴더가 계속 보인다
   ///     (히스토리 탭은 살아 있는 채로 남아 갤러리를 새로 만들지 않는다).
   void _reopenForNewSafRoot() {
+    // 검색은 닫는다 — 옛 저장 폴더의 결과다
+    if (_searchOpen) {
+      _closeSearch();
+    }
     // 선택·이동 대기는 옛 폴더의 파일이라 버린다
     _selectMode = false;
     _selected.clear();
     _pendingMoveRefs = null;
-    _pendingMoveFromParent = null;
     _safStack.clear();
     _safDirUri = null;
     _safFolderPreview.clear();
@@ -289,7 +376,8 @@ class GalleryViewState extends State<GalleryView> {
       //  하위 폴더는 생성 중에 바뀌지 않으므로 다시 조회할 이유가 없다.
       //  (전체 조회는 하위 폴더 수만큼 SAF 호출이 늘어 체감이 크게 느려진다)
       await _refreshSafImagesOnly();
-      if (mounted && prevOffset > 0) {
+      // 검색 결과를 보는 중이면 스크롤을 맞추지 않는다 — 그리드에 있는 건 폴더 목록이 아니라 결과다
+      if (mounted && prevOffset > 0 && !_searching) {
         // ⚠️ setState 직후에는 아직 새 목록이 그려지지 않아 maxScrollExtent가 옛 값이다.
         //    한 프레임 뒤에 복원해야 늘어난 목록 기준으로 정확히 맞는다.
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -335,6 +423,11 @@ class GalleryViewState extends State<GalleryView> {
     // 1. 선택 모드면 해제 우선
     if (_selectMode) {
       _exitSelect();
+      return true;
+    }
+    // 검색칸이 열려 있으면 닫는다 (검색어도 지운다)
+    if (_searchOpen) {
+      _closeSearch(reload: true);
       return true;
     }
     // 휴지통을 보는 중이면 나간다 (지금 저장 중인 폴더로)
@@ -493,6 +586,9 @@ class GalleryViewState extends State<GalleryView> {
     setState(() {
       if (_safMode) {
         _sortSafLists();
+        // 검색 결과도 같은 순서로
+        _sortByName(_scanItems, (s) => s.ref.name);
+        _recomputeSearchResults();
       } else {
         _sortLists(_folders, _images);
       }
@@ -516,11 +612,13 @@ class GalleryViewState extends State<GalleryView> {
   //  silent: true 면 로딩 스피너를 띄우지 않는다.
   //    자동 갱신 때 그리드가 사라졌다 나타나면 ScrollController가 분리되어
   //    스크롤 위치를 완전히 잃어버린다(맨 위로 튐).
+  //  stillWanted: 다 읽은 뒤 이게 false 면 버린다 (조용히 다시 읽는 사이 사용자가 다른 폴더로 갔을 때).
   Future<void> _loadSafDir(
     String uri,
     String name, {
     bool push = false,
     bool silent = false,
+    bool Function()? stillWanted,
   }) async {
     if (!silent) {
       setState(() => _loading = true);
@@ -530,7 +628,7 @@ class GalleryViewState extends State<GalleryView> {
       _safStack.add((uri: cur, name: _safDirName));
     }
     final res = await widget.state.listSafDirDetailed(uri);
-    if (!mounted) {
+    if (!mounted || !(stillWanted?.call() ?? true)) {
       return;
     }
     // 목록 조회에서 딸려온 미리보기 refs를 사전 시딩 → 폴더별 재조회 생략
@@ -565,13 +663,20 @@ class GalleryViewState extends State<GalleryView> {
       _safImages = res.images;
       _sortSafLists();
       _loading = false;
-      _selectMode = false;
-      _selected.clear();
+      // 검색 결과에서 고르던 것은 그대로 — 결과는 이 폴더 목록과 따로다
+      //  (자동 새로고침이 고르기 시작과 엇갈려 같은 폴더를 다시 읽어도 사라지지 않게.
+      //   다른 폴더로 갔으면 아래 _ensureScan 이 새로 훑으며 끝낸다 — _startScan)
+      if (!_searching) {
+        _selectMode = false;
+        _selected.clear();
+      }
     });
     // 휴지통은 기억하지 않는다 — 다시 열었을 때 휴지통이 '보통 폴더'처럼 열리면 안 된다
     if (!_trashMode) {
       _persistSafBrowse();
     }
+    // 검색칸이 열린 채 다른 폴더로 갔으면 그 폴더 아래를 새로 훑는다 (같은 폴더면 아무것도 안 한다)
+    _ensureScan();
   }
 
   // 현재 탐색 위치를 앱 상태에 기억 (탭/모드 전환 후 복원용)
@@ -617,8 +722,14 @@ class GalleryViewState extends State<GalleryView> {
         imageCount: imgs.length,
         previews: previews,
       );
-      // 이 폴더의 미리보기만 새로 시딩 (다른 폴더 캐시는 유지)
-      _safFolderPreview[folderUri] = previews;
+      // 이 폴더의 미리보기만 새로 시딩 (다른 폴더 캐시는 유지).
+      //  바로 든 그림이 없으면 시딩하지 않는다 — 비워 두면 하위 폴더 그림으로 미리보기를 찾는다 (_loadFolderPreviews).
+      //  ⚠️ 빈 목록을 넣으면 '미리보기 없음' 으로 굳어 하위 폴더에 그림이 있어도 빈 칸이 된다.
+      if (previews.isEmpty) {
+        _safFolderPreview.remove(folderUri);
+      } else {
+        _safFolderPreview[folderUri] = previews;
+      }
       _safPreviewFutures.remove(folderUri);
     });
   }
@@ -642,6 +753,7 @@ class GalleryViewState extends State<GalleryView> {
     setState(() {
       _safImages = imgs;
       _sortSafLists();
+      _redoDrag();
     });
   }
 
@@ -674,9 +786,11 @@ class GalleryViewState extends State<GalleryView> {
     if (!mounted) {
       return;
     }
+    // 고르기를 막 시작했을 수 있다 — 갱신은 고르기 중이 아닐 때 시작하지만 목록을 받는 사이 꾹 누를 수 있다
     setState(() {
       _safImages = imgs;
       _sortSafLists();
+      _redoDrag();
     });
   }
 
@@ -684,7 +798,12 @@ class GalleryViewState extends State<GalleryView> {
   //  keepThumbs: 진행 중인 썸네일 로딩을 유지할지.
   //    자동 새로고침(생성 중)에는 true — 매번 버리면 로딩이 끝나지 않는다.
   //    당겨서 새로고침 등 사용자가 명시적으로 요청하면 false로 전부 다시 읽는다.
-  Future<void> _reloadSafDir({bool keepThumbs = false, bool silent = false}) async {
+  //    stillWanted: _loadSafDir 와 같다 (다 읽은 뒤 false 면 버린다).
+  Future<void> _reloadSafDir({
+    bool keepThumbs = false,
+    bool silent = false,
+    bool Function()? stillWanted,
+  }) async {
     // 폴더 미리보기는 내용이 바뀌었을 수 있으니 갱신
     _safFolderPreview.clear();
     _safPreviewFutures.clear();
@@ -693,10 +812,21 @@ class GalleryViewState extends State<GalleryView> {
     }
     final d = _safDirUri;
     if (d != null) {
-      await _loadSafDir(d, _safDirName, silent: silent);
+      await _loadSafDir(d, _safDirName, silent: silent, stillWanted: stillWanted);
     } else {
       await _loadSafRootDir();
     }
+  }
+
+  // SAF 새로고침 (위쪽 줄 버튼 · 당겨서) — 검색 결과를 보는 중이면 폴더 대신 다시 훑는다
+  //  (그 사이 생긴 그림도 결과에 들어오게 — 진행은 검색 줄에 보인다)
+  Future<void> _refreshSaf() async {
+    if (_searching) {
+      _scanRoot = null;
+      _ensureScan();
+      return;
+    }
+    await _reloadSafDir();
   }
 
   // IO 모드 현재 디렉토리 새로고침 (당겨서 새로고침용)
@@ -748,7 +878,7 @@ class GalleryViewState extends State<GalleryView> {
         final bytes = await widget.state.readSafThumb(ref.uri);
         if (bytes != null) {
           _safThumbCache[ref.uri] = bytes;
-          _trimSafBytesCache(_safThumbCache, max: 400);
+          _trimOldest(_safThumbCache, max: 400);
           out.add(bytes);
         }
       }
@@ -881,6 +1011,10 @@ class GalleryViewState extends State<GalleryView> {
                   loc,
                   onOpen: () {
                     Navigator.pop(ctx);
+                    // 검색은 저장 폴더(SAF)에서만 — 앱 폴더로 가면 닫는다
+                    if (_searchOpen) {
+                      _closeSearch();
+                    }
                     setState(() {
                       _safMode = false; // IO 위치 선택 시 SAF 모드 해제
                       _trashMode = false;
@@ -1083,9 +1217,10 @@ class GalleryViewState extends State<GalleryView> {
     //  ⚠️ 예전엔 _buildSafView 가 이 뼈대를 통째로 따로 갖고 있어, 아래 시스템 바 여백 같은
     //     수정이 SAF 쪽에만 들어가 있었다.
     final bool saf = _safMode;
-    final int folderCount = saf ? _safFolders.length : _folders.length;
-    final int imageCount = saf ? _safImages.length : _images.length;
-    final int total = folderCount + imageCount;
+    // 검색어가 있으면 폴더 대신 결과 (폴더 칸은 숨긴다 — 결과는 아래 폴더들의 그림이 섞여 있다)
+    final bool searching = _gridSearching;
+    final int folderCount = _gridFolderCount;
+    final int total = folderCount + _gridImageCount;
     // 제스처 네비게이션 바 등 하단 시스템 UI 높이만큼 여백 확보 (마지막 줄이 가리지 않게)
     final double bottomInset = MediaQuery.of(context).viewPadding.bottom;
     return Column(
@@ -1097,6 +1232,8 @@ class GalleryViewState extends State<GalleryView> {
           child: _selectMode ? _buildSelectionToolbar() : (saf ? _safPathBar(total) : _ioPathBar()),
         ),
         const Divider(height: 1, color: Colors.white12),
+        // 검색칸 (🔍 로 열었을 때)
+        if (saf && _searchOpen) _buildSearchArea(),
         Expanded(
           child: _loading
               ? Center(child: CircularProgressIndicator(color: AppColors.accent))
@@ -1108,46 +1245,79 @@ class GalleryViewState extends State<GalleryView> {
                     if (_selectMode || _loading) {
                       return;
                     }
-                    await (saf ? _reloadSafDir() : _reloadIoDir());
+                    await (saf ? _refreshSaf() : _reloadIoDir());
                   },
                   child: total == 0
                       // 빈 폴더여도 당겨서 새로고침 가능하도록 스크롤 가능한 뷰로 감쌈
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
-                          children: const [
-                            SizedBox(height: 120),
+                          children: [
+                            const SizedBox(height: 120),
                             Center(
                               child: Text(
-                                "이 폴더는 비어있어요",
-                                style: TextStyle(color: Colors.white38, fontSize: 14),
+                                !searching
+                                    ? "이 폴더는 비어있어요"
+                                    : (_scanning ? "찾는 중…" : "맞는 그림이 없어요"),
+                                style: const TextStyle(color: Colors.white38, fontSize: 14),
                               ),
                             ),
                           ],
                         )
-                      : GridView.builder(
-                          // SAF 는 자동 새로고침 뒤 스크롤 위치를 되돌리려고 컨트롤러를 쓴다
-                          controller: saf ? _safGridScroll : null,
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: EdgeInsets.fromLTRB(8, 8, 8, 8 + bottomInset),
-                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                            crossAxisCount: columns,
-                            crossAxisSpacing: 6,
-                            mainAxisSpacing: 6,
-                            childAspectRatio: 1,
+                      // 꾹 누른 채 끌어서 여러 장 고르기 — 칸이 아니라 그리드가 받는다 (_dragAnchorId 설명)
+                      : GestureDetector(
+                          key: _gridKey,
+                          onLongPressStart: _onGridLongPressStart,
+                          onLongPressMoveUpdate: _onGridLongPressMove,
+                          onLongPressEnd: (_) => _onGridLongPressEnd(),
+                          // ⚠️ 끄는 도중 손가락을 시스템이 가져가면(홈 · 알림창 · 전화 · 화면 꺼짐) '끝' 이 아니라 '취소' 가 온다.
+                          //  예전엔 취소를 안 받아 끌기가 끝나지 않았다 — 손가락이 위 · 아래 끝에 있었으면
+                          //  저절로 굴리기가 계속 돌며 목록 끝까지 다 골라 버렸다 (그대로 지우기 · 이동을 누를 수 있었다).
+                          onLongPressCancel: _onGridLongPressEnd,
+                          // 손가락 취소를 한 번 더 받는다 — 꾹 누르기 인식기가 사라지거나 취소를 못 넘겨도 끌기가 남지 않게
+                          child: Listener(
+                            onPointerCancel: (_) => _onGridLongPressEnd(),
+                            child: GridView.builder(
+                              // SAF 는 자동 새로고침 뒤 스크롤 위치를 되돌리려고, 파일은 끌어서 고르기에 컨트롤러를 쓴다
+                              controller: saf ? _safGridScroll : _ioGridScroll,
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              padding: EdgeInsets.fromLTRB(
+                                _kGridPad,
+                                _kGridPad,
+                                _kGridPad,
+                                _kGridPad + bottomInset,
+                              ),
+                              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: columns,
+                                crossAxisSpacing: _kGridGap,
+                                mainAxisSpacing: _kGridGap,
+                                childAspectRatio: 1,
+                              ),
+                              itemCount: total,
+                              itemBuilder: (ctx, index) {
+                                // 폴더 먼저, 그 다음 이미지
+                                if (index < folderCount) {
+                                  return saf
+                                      ? _buildSafFolderTile(_safFolders[index], columns)
+                                      : _buildFolderTile(_folders[index], columns);
+                                }
+                                final imgIndex = index - folderCount;
+                                if (searching) {
+                                  final _ScanItem r = _searchResults[imgIndex];
+                                  // 꾹 누르면 고르기 — 폴더 보기와 같다 (한 장 메뉴는 고른 뒤 ⓘ · 크게 보기에서 꾹)
+                                  return _buildSafImageTile(
+                                    (uri: r.ref.uri, name: r.ref.name),
+                                    onOpen: () => _openSearchViewer(r),
+                                  );
+                                }
+                                if (saf) {
+                                  // 누른 '그림' 으로 연다 — 번호는 자동 새로고침으로 밀릴 수 있다 (_openSafViewer)
+                                  final ({String uri, String name}) it = _safImages[imgIndex];
+                                  return _buildSafImageTile(it, onOpen: () => _openSafViewer(it));
+                                }
+                                return _buildImageTile(_images[imgIndex], imgIndex);
+                              },
+                            ),
                           ),
-                          itemCount: total,
-                          itemBuilder: (ctx, index) {
-                            // 폴더 먼저, 그 다음 이미지
-                            if (index < folderCount) {
-                              return saf
-                                  ? _buildSafFolderTile(_safFolders[index], columns)
-                                  : _buildFolderTile(_folders[index], columns);
-                            }
-                            final imgIndex = index - folderCount;
-                            return saf
-                                ? _buildSafImageTile(_safImages[imgIndex], imgIndex)
-                                : _buildImageTile(_images[imgIndex], imgIndex);
-                          },
                         ),
                 ),
         ),
@@ -1233,7 +1403,7 @@ class GalleryViewState extends State<GalleryView> {
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 36),
           icon: const Icon(Icons.refresh, size: 18, color: Colors.white70),
-          onPressed: _reloadSafDir,
+          onPressed: _refreshSaf,
         ),
         Text("$total", style: const TextStyle(color: Colors.white38, fontSize: 12)),
         const SizedBox(width: 8),
@@ -1280,6 +1450,337 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
+  // ============================================================================
+  // 검색 (🔍) — 위 '검색' 필드 설명 참고
+  // ============================================================================
+
+  /// 🔍 (히스토리탭 갤러리 줄) — 검색칸을 열고 닫는다. 닫으면 검색어도 지운다.
+  void toggleSearch() => _searchOpen ? _closeSearch(reload: true) : _openSearch();
+
+  void _openSearch() {
+    // 폴더를 여는 중이면 (휴지통을 여는 중일 수도 있다) 끝난 뒤에
+    if (_loading) {
+      _showBriefSnack("폴더를 여는 중이에요 — 잠시 뒤에 다시 눌러 주세요");
+      return;
+    }
+    if (!_safMode || _trashMode) {
+      _showBriefSnack(_trashMode ? "휴지통에서는 찾을 수 없어요" : "저장 폴더(SAF)에서만 찾을 수 있어요");
+      return;
+    }
+    // 이동 대기는 '고른 폴더에서 여기로' 를 기다리는 중이라 검색 화면과 섞이면 꼬인다
+    if (_pendingMoveRefs != null) {
+      _showBriefSnack("이동을 먼저 끝내 주세요");
+      return;
+    }
+    setState(() {
+      _searchOpen = true;
+      _selectMode = false; // 폴더에서 고르던 것은 버린다 (검색 결과와 섞이지 않게)
+      _selected.clear();
+    });
+    widget.searchOpen?.value = true;
+    // 칸이 그려진 뒤 커서를 둔다 — 막 생긴 칸으로 포커스를 '넣는' 것이라 DEVNOTES 4 와 부딪히지 않는다
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchOpen && !_searchFocus.hasFocus) {
+        _searchFocus.requestFocus();
+      }
+    });
+    // 치는 동안 미리 훑어 둔다 (검색어를 다 치기 전에 결과가 준비되게)
+    _ensureScan();
+  }
+
+  /// 검색칸을 닫는다 (검색어 · 결과도 버린다).
+  ///  [reload] — 검색 결과에서 그림을 지웠으면 지금 폴더를 조용히 다시 읽는다 (폴더 칸의 장수 · 미리보기가 낡았다).
+  ///  ⚠️ 닫은 뒤 바로 다른 폴더를 여는 곳(저장 폴더 바뀜 · 휴지통 · 앱 폴더 · 이동)은 false —
+  ///     옛 폴더 다시 읽기가 새 폴더 열기보다 늦게 끝나면 옛 폴더가 덮어쓴다.
+  void _closeSearch({bool reload = false}) {
+    hideKeyboardIfShown(_searchFocus); // 칸이 사라지기 전에 키보드부터 (포커스는 건드리지 않는다)
+    _scanGen++; // 읽던 것을 멈춘다 (읽은 데까지는 색인에 남는다)
+    _scanTick?.cancel();
+    if (_searching) {
+      _jumpGridTop(); // 결과의 스크롤 자리가 폴더 보기에 남지 않게
+    }
+    if (_searchTouchedFiles && reload) {
+      // 다 읽기 전에 사용자가 다른 폴더를 열면 버린다 (늦게 끝난 옛 폴더가 새 폴더를 덮지 않게)
+      final String? here = _safDirUri;
+      unawaited(
+        _reloadSafDir(
+          keepThumbs: true,
+          silent: true,
+          stillWanted: () => _safDirUri == here && !_loading && !_selectMode,
+        ),
+      );
+    }
+    _searchTouchedFiles = false;
+    setState(() {
+      // 결과에서 고르던 것은 같이 끝낸다 (검색어가 비어 폴더를 보며 고르던 것은 그대로 — 그리드가 같다)
+      if (_searching) {
+        _selectMode = false;
+        _selected.clear();
+      }
+      _searchOpen = false;
+      _searchController.clear();
+      _searchQuery = parseHistoryQuery('');
+      _scanRoot = null;
+      _scanItems = [];
+      _searchResults = [];
+      _scanning = false;
+    });
+    widget.searchOpen?.value = false;
+    unawaited(GallerySearchIndex.saveShared());
+  }
+
+  void _onSearchChanged(String text) {
+    final bool wasSearching = _searching;
+    setState(() {
+      _searchQuery = parseHistoryQuery(text);
+      _recomputeSearchResults();
+      // 결과의 검색어가 바뀌면 보이는 그림이 바뀐다 — 고르기를 끝낸다 (안 보이게 된 그림이 같이 지워지지 않게).
+      //  폴더 보기 ↔ 결과 보기가 바뀔 때도 (고른 것의 출처가 달라진다). 빈 채로 남으면(폴더 보기 그대로) 둔다.
+      if (_selectMode && (wasSearching || _searching)) {
+        _selectMode = false;
+        _selected.clear();
+      }
+    });
+    // 폴더 보기 ↔ 결과 보기가 바뀌면 맨 위부터 (폴더 보기의 스크롤 자리가 결과에 남지 않게)
+    if (wasSearching != _searching) {
+      _jumpGridTop();
+    }
+  }
+
+  void _jumpGridTop() {
+    if (_safGridScroll.hasClients) {
+      _safGridScroll.jumpTo(0);
+    }
+  }
+
+  // 결과 다시 고르기 — 찾을 글을 아는 그림 가운데 검색어에 맞는 것 (_scanItems 순서 그대로)
+  void _recomputeSearchResults() {
+    if (!_searching) {
+      _searchResults = [];
+      return;
+    }
+    _searchResults = [
+      for (final s in _scanItems)
+        if (s.text != null && historyMatches(s.text!, _searchQuery)) s,
+    ];
+  }
+
+  /// 검색칸이 열려 있고 지금 폴더를 아직 안 훑었으면 훑기 시작 (폴더를 옮기면 그 폴더 아래로 새로)
+  void _ensureScan() {
+    if (!_searchOpen || !_safMode || _trashMode) {
+      return;
+    }
+    final String? root = _safDirUri ?? _rootUri;
+    if (root == null || root == _scanRoot) {
+      return;
+    }
+    unawaited(_startScan(root));
+  }
+
+  /// [root] 아래 그림을 전부 훑는다 — 목록 받기 → 색인에 있는 건 바로, 없는 건 그림 정보 부분만 읽기.
+  ///  읽는 동안에도 찾은 그림이 결과에 바로바로 들어온다. 새로 훑거나 닫으면 스스로 멈춘다 (_scanGen).
+  Future<void> _startScan(String root) async {
+    final int gen = ++_scanGen;
+    bool stale() => !mounted || gen != _scanGen;
+    _scanTick?.cancel();
+    setState(() {
+      if (_searching) {
+        _selectMode = false; // 결과를 처음부터 다시 모은다 — 고르던 것은 끝 (검색 중 다른 폴더로 갔을 때 — _loadSafDir)
+        _selected.clear();
+      }
+      _scanRoot = root;
+      _scanItems = [];
+      _searchResults = [];
+      _scanning = true;
+      _scanListed = false;
+      _scanNewlyRead = 0;
+    });
+    try {
+      await _scan(root, stale);
+    } catch (e, st) {
+      // 생각지 못한 오류 — '훑는 중' 에 멈춰 있지 않게 끝낸다 (당겨서 다시 훑을 수 있다)
+      debugPrint('갤러리 검색 훑기 오류: $e\n$st');
+      if (!stale()) {
+        _scanTick?.cancel();
+        setState(() => _scanning = false);
+      }
+    }
+  }
+
+  Future<void> _scan(String root, bool Function() stale) async {
+    final watch = Stopwatch()..start();
+    final GallerySearchIndex index = await GallerySearchIndex.shared();
+    final List<SafImageRef> refs = await widget.state.listSafImagesDeep(root, isCancelled: stale);
+    if (stale()) {
+      return;
+    }
+    final items = [for (final r in refs) _ScanItem(r)];
+    _sortByName(items, (s) => s.ref.name);
+    final pending = <_ScanItem>[];
+    for (final s in items) {
+      final String? text = index.lookup(s.ref.uri, s.ref.modified);
+      if (text == null) {
+        pending.add(s);
+      } else {
+        s.text = text;
+      }
+    }
+    setState(() {
+      _scanItems = items;
+      _scanListed = true;
+      _recomputeSearchResults();
+      _redoDrag();
+    });
+
+    // 새 그림만 읽는다 — 네 개씩 겹쳐서 (SAF 읽기는 I/O 대기라 겹치면 빠르다)
+    int next = 0;
+    final saveWatch = Stopwatch()..start();
+    Future<void> worker() async {
+      while (!stale() && next < pending.length) {
+        final _ScanItem s = pending[next++];
+        final SearchMetaResult res = await readSearchMetadata(
+          (start, count) => widget.state.readSafRange(s.ref.uri, start, count),
+        );
+        final String text = historySearchText(res.meta);
+        // 읽지 못했으면 색인에 넣지 않는다 (다음에 다시 읽어 본다). 이번 결과에선 '정보 없음' 으로.
+        if (res.ok) {
+          index.put(s.ref.uri, s.ref.modified, text);
+          // 오래 걸리는 첫 훑기 도중 앱이 꺼져도 읽은 것이 남게 30초마다 저장한다
+          //  (저장은 색인 전체를 다시 굽는다 — 장수로 세면 큰 색인에서 너무 자주 굽는다)
+          if (saveWatch.elapsed.inSeconds >= 30) {
+            saveWatch.reset();
+            unawaited(GallerySearchIndex.saveShared());
+          }
+        }
+        if (stale()) {
+          return;
+        }
+        s.text = text;
+        _scanNewlyRead++;
+        _scheduleScanTick();
+      }
+    }
+
+    await Future.wait([for (int i = 0; i < 4; i++) worker()]);
+    unawaited(GallerySearchIndex.saveShared());
+    if (stale()) {
+      return;
+    }
+    watch.stop();
+    _scanTick?.cancel();
+    setState(() {
+      _scanning = false;
+      _scanSeconds = watch.elapsedMilliseconds / 1000;
+      _recomputeSearchResults();
+      _redoDrag();
+    });
+  }
+
+  // 읽는 동안 화면은 0.25초에 한 번만 다시 그린다 (한 장마다 그리면 수천 번이다)
+  void _scheduleScanTick() {
+    if (_scanTick?.isActive ?? false) {
+      return;
+    }
+    _scanTick = Timer(const Duration(milliseconds: 250), () {
+      if (mounted && _searchOpen) {
+        setState(() {
+          _recomputeSearchResults();
+          _redoDrag(); // 끄는 중이면 새로 끼어든 결과까지 범위를 다시 맞춘다
+        });
+      }
+    });
+  }
+
+  /// 검색칸 + 진행 · 결과 줄
+  Widget _buildSearchArea() {
+    final bool searching = _searching;
+    final String folder = _safDirName.isNotEmpty ? _safDirName : (_rootName ?? "저장 폴더");
+    final int total = _scanItems.length;
+    // 찾을 글을 아는 장수 (색인 + 새로 읽은 것) — 목록에서 센다 (도중에 지워도 어긋나지 않게)
+    final int known = _scanning ? _scanItems.where((s) => s.text != null).length : total;
+    final String status;
+    if (_scanning && !_scanListed) {
+      status = "'$folder' 아래 폴더를 훑는 중…";
+    } else if (_scanning) {
+      status = "그림 정보 읽는 중 $known/$total"
+          "${searching ? ' · 찾은 그림 ${_searchResults.length}장' : ''}";
+    } else if (searching) {
+      status = "$total장 중 ${_searchResults.length}장"
+          "${_scanNewlyRead > 0 ? ' · 새로 읽은 $_scanNewlyRead장 ${_scanSeconds.toStringAsFixed(1)}초' : ''}";
+    } else {
+      status = "'$folder' 아래 $total장에서 찾아요";
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TagSearchField(
+            controller: _searchController,
+            focusNode: _searchFocus,
+            active: searching,
+            onChanged: _onSearchChanged,
+            onSearchKey: () => hideKeyboardIfShown(_searchFocus),
+            onClear: () {
+              _searchController.clear();
+              _onSearchChanged('');
+            },
+          ),
+          const SizedBox(height: 6),
+          Text(
+            status,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+          // 진행 막대 — 자리를 늘 두고 보이기만 바꾼다 (끝날 때 그리드가 위아래로 들썩이지 않게)
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 2,
+            child: Visibility(
+              visible: _scanning,
+              maintainSize: true,
+              maintainAnimation: true,
+              maintainState: true,
+              child: LinearProgressIndicator(
+                value: _scanListed && total > 0 ? known / total : null,
+                backgroundColor: Colors.white10,
+                color: AppColors.accent,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 검색 결과 한 장의 공용 어댑터 — 지우거나 옮길 땐 그 그림이 든 폴더를 쓴다 (결과는 폴더가 섞여 있다).
+  GalleryItem _searchItem(_ScanItem s, [VoidCallback? closeViewer]) => _safItem(
+    (uri: s.ref.uri, name: s.ref.name),
+    closeViewer: closeViewer,
+    fromDirUri: s.ref.parentUri,
+  );
+
+  /// 검색 결과 크게 보기 — 누른 '그림' 으로 연다 (번호는 읽는 동안 밀릴 수 있다 — DEVNOTES 5).
+  ///  여는 순간의 결과로 고정한다 (보는 동안 결과가 늘어도 엉뚱한 그림이 안 나오게).
+  void _openSearchViewer(_ScanItem item) {
+    final List<_ScanItem> shown = List.of(_searchResults);
+    final int start = shown.indexOf(item);
+    if (start < 0) {
+      return; // 그 사이 지워졌다
+    }
+    _trimViewerFutures();
+    _openViewer(
+      countNow: () => shown.length,
+      start: start,
+      nameOf: (i) => shown[i].ref.name,
+      pageOf: (i) => _safViewerPageFor(shown[i].ref.uri),
+      bytesOf: (i) => _viewerBytes(shown[i].ref.uri),
+      itemOf: (i, close) => _searchItem(shown[i], close),
+    );
+  }
+
   // 외부(history_tab)에서 폴더 위치 선택을 호출할 수 있게 공개 메서드
   void openLocationPicker() => _showLocationPicker();
 
@@ -1306,12 +1807,13 @@ class GalleryViewState extends State<GalleryView> {
   // 이동 대기 하단 바: 현재 폴더로 이동 확정 / 취소
   Widget _buildMoveBar(double bottomInset) {
     final refs = _pendingMoveRefs;
-    final from = _pendingMoveFromParent;
     if (refs == null) {
       return const SizedBox.shrink();
     }
     final here = _safDirUri ?? _rootUri;
-    final bool sameFolder = here != null && here == from;
+    // 여기로 옮길 수 있는 장수 — 이미 여기 있는 그림은 빼고 센다 (다 여기 있으면 '다른 폴더로')
+    final int movable = here == null ? 0 : _pendingMoveInto(here).length;
+    final bool sameFolder = here != null && movable == 0;
     // 폴더 로딩 중엔 현재 위치 판정이 부정확 → 버튼 비활성화 (전환 중 오클릭 방지)
     final bool canMoveHere = !sameFolder && !_loading;
     final String hereName = _safDirName.isNotEmpty
@@ -1331,7 +1833,9 @@ class GalleryViewState extends State<GalleryView> {
             child: Text(
               sameFolder
                   ? "${refs.length}장 이동 중 · 다른 폴더로 이동하세요"
-                  : "${refs.length}장을 '$hereName'(으)로",
+                  : movable < refs.length
+                  ? "$movable장을 '$hereName'(으)로 · ${refs.length - movable}장은 이미 여기"
+                  : "$movable장을 '$hereName'(으)로",
               style: const TextStyle(color: Colors.white, fontSize: 13),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -1371,7 +1875,7 @@ class GalleryViewState extends State<GalleryView> {
       columns: columns,
       onTap: () => _loadSafDir(folder.uri, folder.name, push: true),
       preview: FutureBuilder<List<Uint8List>>(
-        future: _safPreviewFutures.putIfAbsent(folder.uri, () => _loadFolderPreviews(folder.uri)),
+        future: _folderPreviewFuture(folder.uri),
         builder: (ctx, snap) {
           if (snap.connectionState != ConnectionState.done) {
             return Container(color: Colors.white10);
@@ -1456,21 +1960,18 @@ class GalleryViewState extends State<GalleryView> {
   );
 
   // SAF 이미지 칸 — 그림만 SAF 썸네일에서 읽고(캐시·메모이즈), 나머지는 _imageTile
-  Widget _buildSafImageTile(({String uri, String name}) item, int index) {
+  Widget _buildSafImageTile(({String uri, String name}) item, {required VoidCallback onOpen}) {
     final cached = _safThumbCache[item.uri];
     Widget memory(Uint8List bytes) =>
         Image.memory(bytes, fit: BoxFit.cover, cacheWidth: 300, gaplessPlayback: true);
     return _imageTile(
       id: item.uri,
-      onOpen: () => _openSafViewer(index),
+      onOpen: onOpen,
       badge: _trashMode ? _trashBadge(item.name) : null,
       image: cached != null
           ? memory(cached)
           : FutureBuilder<Uint8List?>(
-              future: _safThumbFutures.putIfAbsent(
-                item.uri,
-                () => widget.state.readSafThumb(item.uri),
-              ),
+              future: _thumbFuture(item.uri),
               builder: (ctx, snap) {
                 if (snap.connectionState != ConnectionState.done) {
                   return Container(color: Colors.white10);
@@ -1480,7 +1981,7 @@ class GalleryViewState extends State<GalleryView> {
                   return _brokenImage;
                 }
                 _safThumbCache[item.uri] = bytes;
-                _trimSafBytesCache(_safThumbCache, max: 400);
+                _trimOldest(_safThumbCache, max: 400);
                 return memory(bytes);
               },
             ),
@@ -1550,15 +2051,18 @@ class GalleryViewState extends State<GalleryView> {
     final bytes = await widget.state.readSafImage(uri);
     if (bytes != null) {
       _safBytesCache[uri] = bytes;
-      _trimSafBytesCache(_safBytesCache, max: 20); // 원본은 커서 소량만 메모리 유지
+      _trimOldest(_safBytesCache, max: 20); // 원본은 커서 소량만 메모리 유지
     }
     return bytes;
   }
 
-  Widget _safViewerPage(int i) {
-    final item = _safImages[i];
+  /// 뷰어가 쓰는 원본 바이트 — 화면에 띄우려고 읽는 것과 같은 Future 라 두 번 읽지 않는다
+  Future<Uint8List?> _viewerBytes(String uri) =>
+      _safViewerFutures.putIfAbsent(uri, () => _loadFullSafBytes(uri));
+
+  Widget _safViewerPageFor(String uri) {
     return FutureBuilder<Uint8List?>(
-      future: _safViewerFutures.putIfAbsent(item.uri, () => _loadFullSafBytes(item.uri)),
+      future: _viewerBytes(uri),
       builder: (ctx, snap) {
         if (snap.connectionState != ConnectionState.done) {
           return Center(child: CircularProgressIndicator(color: AppColors.accent));
@@ -1576,22 +2080,44 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  // SAF 이미지 뷰어
-  void _openSafViewer(int index) {
+  /// 그리드 칸의 썸네일 Future (메모 — 다시 그릴 때마다 새로 읽지 않게).
+  ///  오래 안 본 것부터 버린다 — 화면에 보이는 칸은 그릴 때마다 '방금 씀' 이 되어 남는다 (_lruMemo).
+  Future<Uint8List?> _thumbFuture(String uri) =>
+      _lruMemo(_safThumbFutures, uri, () => widget.state.readSafThumb(uri), max: 600);
+
+  /// 폴더 칸의 미리보기(최대 4장) Future (메모 — 깜빡임 방지).
+  ///  하위 폴더로 들어가도 비우지 않아서, 폴더를 많이 돌아다니면 다 읽은 Future 가 섬네일을 붙든 채 쌓였다.
+  ///  → [_thumbFuture] 처럼 오래 안 본 것부터 버린다 (버린 칸은 다시 보일 때 디스크 섬네일 캐시에서 금방 읽는다).
+  ///  ⚠️ 상한은 '한 번에 그려 둘 수 있는 칸 수' 보다 넉넉히 — 8열이면 화면 + 미리 그려 두는 칸이 200개 가까이 된다.
+  Future<List<Uint8List>> _folderPreviewFuture(String uri) =>
+      _lruMemo(_safPreviewFutures, uri, () => _loadFolderPreviews(uri), max: 240);
+
+  // 뷰어를 열 때 — 다 읽은 원본 Future 가 원본 바이트를 계속 붙들지 않게 가끔 비운다
+  void _trimViewerFutures() {
     if (_safViewerFutures.length > 12) {
-      _safViewerFutures.clear(); // 완료된 Future가 원본 바이트를 계속 붙들지 않게 주기 정리
+      _safViewerFutures.clear();
     }
+  }
+
+  // SAF 이미지 뷰어 — 누른 '그림' 으로 열고, 여는 순간의 목록으로 고정한다 (검색 결과 뷰어와 같다).
+  //  ⚠️ 예전엔 지금 목록(_safImages)을 번호로 읽었다. 보는 사이 생성된 그림이 저장되면 자동 새로고침이 목록을 바꿔
+  //     (이름 내림차순이면 새 그림이 맨 앞에 들어와 번호가 하나씩 밀린다) 꾹 메뉴의 이동 · 삭제가 옆 파일에 걸렸다 (DEVNOTES 5).
+  //  고정해도 괜찮다 — 뷰어에서 지우거나 옮기면 뷰어를 닫는다 (_confirmDeleteSafImage · 이동하기 · 휴지통).
+  void _openSafViewer(({String uri, String name}) item) {
+    final List<({String uri, String name})> shown = List.of(_safImages);
+    final int start = shown.indexWhere((e) => e.uri == item.uri);
+    if (start < 0) {
+      return; // 그 사이 목록에서 빠졌다
+    }
+    _trimViewerFutures();
     _openViewer(
-      countNow: () => _safImages.length,
-      start: index,
-      nameOf: (i) => _safImages[i].name,
-      pageOf: _safViewerPage,
+      countNow: () => shown.length,
+      start: start,
+      nameOf: (i) => shown[i].name,
+      pageOf: (i) => _safViewerPageFor(shown[i].uri),
       // 화면에 띄우려고 읽는 바이트를 그대로 쓴다 (같은 Future 라 두 번 읽지 않는다)
-      bytesOf: (i) {
-        final uri = _safImages[i].uri;
-        return _safViewerFutures.putIfAbsent(uri, () => _loadFullSafBytes(uri));
-      },
-      itemOf: (i, close) => _safItem(_safImages[i], close),
+      bytesOf: (i) => _viewerBytes(shown[i].uri),
+      itemOf: (i, close) => _safItem(shown[i], closeViewer: close),
     );
   }
 
@@ -1599,14 +2125,45 @@ class GalleryViewState extends State<GalleryView> {
   ///  ⚠️ 예전엔 이 다섯 줄이 삭제·선택 삭제·이동 세 곳에 복사돼 있었다.
   void _forgetSafImage(String uri) {
     _safImages.removeWhere((e) => e.uri == uri);
+    // 검색 결과 · 색인에서도 (지운 그림이 결과에 남지 않게)
+    if (_searchOpen) {
+      _searchTouchedFiles = true;
+    }
+    _scanItems.removeWhere((s) => s.ref.uri == uri);
+    _searchResults.removeWhere((s) => s.ref.uri == uri);
+    GallerySearchIndex.loaded?.remove(uri);
     _safBytesCache.remove(uri);
     _safThumbCache.remove(uri);
     _safThumbFutures.remove(uri);
     _safViewerFutures.remove(uri);
   }
 
+  // 고른 그림 (지금 폴더 _safImages 기준) — 폴더 보기의 이동 · 지우기 · ⓘ, 휴지통 보기에서 쓴다.
+  //  ⚠️ 검색 결과에 쓰지 않는다 — 지금 폴더에 바로 든 그림만 잡혀 일부만 처리된다 (_searchSelected)
   List<({String uri, String name})> _safSelectedRefs() {
     return _safImages.where((e) => _selected.contains(e.uri)).toList();
+  }
+
+  // 검색 결과에서 고른 그림 — 보이는 결과 순서대로
+  List<_ScanItem> _searchSelected() => [
+    for (final s in _searchResults)
+      if (_selected.contains(s.ref.uri)) s,
+  ];
+
+  /// 고른 그림을 든 폴더와 함께 (지우기 · 휴지통 · 이동용).
+  ///  검색 결과는 폴더가 섞여 있어 그림마다 자기 폴더, 폴더 보기면 다 지금 폴더.
+  ///  ⚠️ 휴지통은 이 폴더를 적어 두었다가 되돌릴 때 그리로 돌려놓고, 이동은 옮길 때 원래 폴더로 넘긴다
+  ///     — 지금 폴더로 뭉뚱그리면 엉뚱한 곳으로 가거나 옮기기가 실패한다.
+  List<SafSourceRef> _safSelectedWithDir() {
+    if (_searching) {
+      return [
+        for (final s in _searchSelected())
+          (uri: s.ref.uri, name: s.ref.name, fromDirUri: s.ref.parentUri),
+      ];
+    }
+    // 폴더를 모르면 '' — 그땐 저장 폴더도 없어 휴지통 없이 바로 지우고, 이동은 그만둔다 (둘 다 root 가 있어야 한다)
+    final String here = _safDirUri ?? _rootUri ?? '';
+    return [for (final r in _safSelectedRefs()) (uri: r.uri, name: r.name, fromDirUri: here)];
   }
 
   // 선택 모드 상단 툴바 공통 (IO/SAF): [취소] [n장 선택됨] … [ⓘ] [이동] [삭제]
@@ -1801,8 +2358,10 @@ class GalleryViewState extends State<GalleryView> {
     );
   }
 
-  /// 선택된 항목들 (지금 모드의 폴더 목록 기준)
-  List<GalleryItem> _selectedItems() => _safMode
+  /// 선택된 항목들 (지금 보이는 목록 기준 — 검색 결과 / SAF 폴더 / 앱 폴더)
+  List<GalleryItem> _selectedItems() => _searching
+      ? _searchSelected().map(_searchItem).toList()
+      : _safMode
       ? _safSelectedRefs().map(_safItem).toList()
       : _selectedFiles().map(_fileItem).toList();
 
@@ -1966,10 +2525,13 @@ class GalleryViewState extends State<GalleryView> {
       if (bytes == null || !mounted) {
         return;
       }
-      final meta = extractNovelAIMetadata(bytes);
+      // 글자 칸이 지워진 그림(사이트를 거친 것)은 알파 채널까지 본다 — 기다리는 사이 화면이 닫혔으면 그만
+      final meta = await readNovelAIMetadata(bytes);
+      if (!mounted) {
+        return;
+      }
       widget.state.sendToI2i(bytes, meta);
-      widget.state.navigateToTab(AppTab.i2i);
-      showToast(context, "이미지를 i2i 탭으로 보냈습니다! 👉");
+      widget.state.navigateToTab(AppTab.i2i); // 탭이 바뀌어 보이므로 따로 알리지 않는다
     } catch (e) {
       debugPrint("i2i 전송 실패: $e");
     }
@@ -1978,7 +2540,12 @@ class GalleryViewState extends State<GalleryView> {
   // ── GalleryItem 팩토리 ──
   // SAF 항목 / 파일 항목을 공용 어댑터로 감싼다.
   // closeViewer: 뷰어에서 열었다면 삭제 후 뷰어도 닫아야 한다
-  GalleryItem _safItem(({String uri, String name}) item, [VoidCallback? closeViewer]) {
+  //  [fromDirUri] 는 그림이 든 폴더 (검색 결과 — 없으면 지금 보는 폴더). 지우기 · 옮기기가 쓴다.
+  GalleryItem _safItem(
+    ({String uri, String name}) item, {
+    VoidCallback? closeViewer,
+    String? fromDirUri,
+  }) {
     if (_trashMode) {
       // 휴지통의 그림: 되돌리기·영구 삭제만 (이동·다른 작업 없음)
       return GalleryItem(
@@ -1991,8 +2558,11 @@ class GalleryViewState extends State<GalleryView> {
     return GalleryItem(
       name: item.name,
       readBytes: () => widget.state.readSafImage(item.uri),
-      onDelete: () async => _confirmDeleteSafImage(item, closeViewer),
-      onMove: () => _safMoveRefs([item]),
+      onDelete: () async => _confirmDeleteSafImage(item, closeViewer, fromDirUri),
+      // 누르는 순간의 폴더 — 폴더 보기면 지금 폴더 (모르면 '' — 그땐 저장 폴더도 없어 _safMoveRefs 가 그만둔다)
+      onMove: () => _safMoveRefs([
+        (uri: item.uri, name: item.name, fromDirUri: fromDirUri ?? _safDirUri ?? _rootUri ?? ''),
+      ]),
     );
   }
 
@@ -2011,7 +2581,10 @@ class GalleryViewState extends State<GalleryView> {
       if (bytes == null || !mounted) {
         return;
       }
-      final meta = extractNovelAIMetadata(bytes);
+      final meta = await readNovelAIMetadata(bytes); // 알파 채널까지 (사이트를 거친 그림)
+      if (!mounted) {
+        return;
+      }
       if (meta == null) {
         showToast(context, "이 이미지에는 저장된 프롬프트 데이터가 없습니다.");
         return;
@@ -2054,7 +2627,10 @@ class GalleryViewState extends State<GalleryView> {
       if (bytes == null || !mounted) {
         return;
       }
-      final meta = extractNovelAIMetadata(bytes);
+      final meta = await readNovelAIMetadata(bytes); // 알파 채널까지 (사이트를 거친 그림)
+      if (!mounted) {
+        return;
+      }
       if (meta == null) {
         showToast(context, "이 이미지에서 프롬프트 정보를 찾지 못했습니다.");
         return;
@@ -2072,7 +2648,10 @@ class GalleryViewState extends State<GalleryView> {
       if (bytes == null || !mounted) {
         return;
       }
-      final meta = extractNovelAIMetadata(bytes);
+      final meta = await readNovelAIMetadata(bytes); // 알파 채널까지 (사이트를 거친 그림)
+      if (!mounted) {
+        return;
+      }
       final text = buildExifSummary(meta);
       showDialog(
         context: context,
@@ -2114,9 +2693,13 @@ class GalleryViewState extends State<GalleryView> {
     }
   }
 
+  // 한 장 지우기 (설정에 따라 휴지통으로).
+  //  [fromDirUri] 는 그림이 든 폴더 — 없으면 지금 보는 폴더 (검색 결과는 폴더가 섞여 있어 그림마다 넘긴다).
+  //  휴지통이 이 폴더를 적어 두었다가 되돌릴 때 그리로 돌려놓는다.
   Future<void> _confirmDeleteSafImage(
     ({String uri, String name}) item, [
     VoidCallback? onDeleted,
+    String? fromDirUri,
   ]) async {
     // 설정이 켜져 있으면 휴지통으로 (_deleteSelected 와 같은 규칙)
     final String? root = _rootUri;
@@ -2135,11 +2718,9 @@ class GalleryViewState extends State<GalleryView> {
     }
     // root 는 toTrash 안에서 이미 null 이 아님이 확인된다 (Dart 가 toTrash 를 통해 알아본다)
     final bool ok = toTrash
-        ? (await widget.state.trashSafImages(
-            [item],
-            fromDirUri: _safDirUri ?? root,
-            rootUri: root,
-          )).isNotEmpty
+        ? (await widget.state.trashSafImages([
+            (uri: item.uri, name: item.name, fromDirUri: fromDirUri ?? _safDirUri ?? root),
+          ], rootUri: root)).isNotEmpty
         : await widget.state.deleteSafImage(item.uri);
     if (!mounted) {
       return;
@@ -2158,17 +2739,17 @@ class GalleryViewState extends State<GalleryView> {
   // ===== SAF 이미지 이동 (인플레이스 방식) =====
   // 이동할 파일들을 "대기 상태"에 올려두고, 갤러리를 평소처럼 탐색하다
   // 원하는 폴더에서 하단 바의 "여기로 이동"으로 확정한다.
-  void _safMoveRefs(List<({String uri, String name})> refs) {
-    if (refs.isEmpty) {
+  //  [refs] 는 그림마다 지금 든 폴더와 함께 (검색 결과는 폴더가 섞여 있다 — _safSelectedWithDir · _safItem).
+  void _safMoveRefs(List<SafSourceRef> refs) {
+    if (refs.isEmpty || _rootUri == null) {
       return;
     }
-    final rootUri = _rootUri;
-    if (rootUri == null) {
-      return;
+    // 이동은 폴더를 돌아다니며 고르는 방식이라 검색칸을 닫고 시작한다 — 검색한 폴더(지금 폴더)에서 고르기 시작
+    if (_searchOpen) {
+      _closeSearch();
     }
     setState(() {
       _pendingMoveRefs = List.of(refs);
-      _pendingMoveFromParent = _safDirUri ?? rootUri;
       // 선택모드는 종료 (이동 모드로 전환)
       _selectMode = false;
       _selected.clear();
@@ -2182,11 +2763,14 @@ class GalleryViewState extends State<GalleryView> {
 
   // 이동 대기 취소
   void _cancelPendingMove() {
-    setState(() {
-      _pendingMoveRefs = null;
-      _pendingMoveFromParent = null;
-    });
+    setState(() => _pendingMoveRefs = null);
   }
+
+  /// 이동 대기 가운데 [dirUri] 로 옮길 것 — 이미 그 폴더에 있는 그림은 뺀다 (검색 결과에서 고르면 섞여 있을 수 있다)
+  List<SafSourceRef> _pendingMoveInto(String dirUri) => [
+    for (final r in _pendingMoveRefs ?? const <SafSourceRef>[])
+      if (r.fromDirUri != dirUri) r,
+  ];
 
   // ===== 휴지통 보기 =====
 
@@ -2196,6 +2780,10 @@ class GalleryViewState extends State<GalleryView> {
     final String? root = widget.state.safSlotUris[slot];
     if (root == null) {
       return;
+    }
+    // 휴지통에서는 찾지 않는다 — 검색은 닫는다
+    if (_searchOpen) {
+      _closeSearch();
     }
     setState(() {
       _loading = true;
@@ -2355,36 +2943,34 @@ class GalleryViewState extends State<GalleryView> {
 
   // 현재 보고 있는 폴더로 이동 확정
   Future<void> _confirmPendingMoveHere() async {
-    final refs = _pendingMoveRefs;
-    final from = _pendingMoveFromParent;
-    if (refs == null || from == null) {
-      return;
-    }
     final toParent = _safDirUri ?? _rootUri;
-    if (toParent == null) {
+    if (_pendingMoveRefs == null || toParent == null) {
       return;
     }
-    if (toParent == from) {
+    // 이미 여기 있는 그림은 그대로 둔다 (검색 결과에서 고르면 몇 장은 이 폴더 것일 수 있다)
+    final refs = _pendingMoveInto(toParent);
+    if (refs.isEmpty) {
       _showBriefSnack("같은 폴더예요");
       return;
     }
-    await _executeSafMove(refs, from, toParent);
-    if (!mounted) {
-      return;
-    }
+    // 옮기기 전에 이동 대기를 끝낸다 — 다른 저장 폴더로 옮기면(복사 후 삭제) 몇 초 걸리는데,
+    //  그동안 [여기로 이동] 을 또 누르면 같은 그림을 한 번 더 복사해 '이름 (1).png' 가 생긴다
     _cancelPendingMove();
+    await _executeSafMove(refs, toParent);
   }
 
   // 실제 이동 실행 + 캐시 정리 + 새로고침
-  Future<void> _executeSafMove(
-    List<({String uri, String name})> refs,
-    String fromParent,
-    String toParent,
-  ) async {
+  //  그림마다 원래 폴더(fromDirUri)에서 옮긴다 — 검색 결과에서 고르면 여러 폴더에서 온다.
+  Future<void> _executeSafMove(List<SafSourceRef> refs, String toParent) async {
     int moved = 0;
     for (final ref in refs) {
       // 이름도 넘긴다 — 다른 저장 폴더 칸으로 갈 땐 복사 후 삭제로 옮긴다 (moveSafImage)
-      final newUri = await widget.state.moveSafImage(ref.uri, fromParent, toParent, name: ref.name);
+      final newUri = await widget.state.moveSafImage(
+        ref.uri,
+        ref.fromDirUri,
+        toParent,
+        name: ref.name,
+      );
       if (newUri != null) {
         moved++;
         // 이동된 파일은 목록/캐시에서 제거 (더 이상 원본 폴더에 없음)
@@ -2400,7 +2986,7 @@ class GalleryViewState extends State<GalleryView> {
       return;
     }
 
-    // 이동은 '두 폴더'를 바꾼다. 양쪽을 모두 챙겨야 한다.
+    // 이동은 '두 폴더'(검색 결과에서 고르면 원래 폴더가 여럿)를 바꾼다. 양쪽을 모두 챙겨야 한다.
     //  ⚠️ 예전에는 대상 폴더 타일만 갱신해서 이런 문제가 있었다.
     //     · 대상 폴더를 보고 있으면 옮긴 이미지가 안 보였다 (목록을 안 읽음)
     //     · 위로 올라가면 두 폴더의 썸네일이 옛 그림 그대로였다
@@ -2421,11 +3007,18 @@ class GalleryViewState extends State<GalleryView> {
       }
     }
 
-    // ② 폴더 타일의 개수·미리보기를 양쪽 다 갱신한다.
+    // ② 폴더 칸의 개수·미리보기를 갱신한다 — 바뀐 폴더 자신이거나 그 위 폴더인 칸 전부.
+    //    (검색 결과는 깊은 하위 폴더에서 오기도 한다 — 그림이 없는 칸은 하위 폴더 그림으로 미리보기를 만든다)
     //    미리보기 캐시를 먼저 비워야 새 그림을 읽는다.
-    for (final uri in {fromParent, toParent}) {
+    final Set<String> changed = {for (final r in refs) r.fromDirUri, toParent};
+    final List<String> tiles = [
+      for (final f in _safFolders)
+        if (changed.any((c) => _isSameOrDescendant(c, f.uri))) f.uri,
+    ];
+    for (final uri in tiles) {
       _safFolderPreview.remove(uri);
       _safPreviewFutures.remove(uri);
+      // 기다리는 사이 목록이 바뀌었을 수 있다 — 번호는 그때그때 찾는다 (DEVNOTES 5)
       final idx = _safFolders.indexWhere((f) => f.uri == uri);
       if (idx >= 0) {
         await _refreshOneSafFolder(idx, uri);
@@ -2483,9 +3076,9 @@ class GalleryViewState extends State<GalleryView> {
     Widget? badge,
   }) {
     final bool selected = _selected.contains(id);
+    // 꾹 누르기(고르기 시작 · 끌어서 여러 장)는 그리드가 받는다 — _onGridLongPressStart
     return GestureDetector(
       onTap: () => _selectMode ? _toggleSelect(id) : onOpen(),
-      onLongPress: () => _selectMode ? _toggleSelect(id) : _enterSelect(id),
       child: Stack(
         fit: StackFit.expand,
         children: [
@@ -2533,13 +3126,216 @@ class GalleryViewState extends State<GalleryView> {
   );
 
   // ── 다중 선택 (SAF·파일 공용) ── id: 파일은 경로, SAF 는 uri
-  void _enterSelect(String id) {
+
+  // 그리드 칸 수 — 화면(build)과 끌어서 고르기가 같은 값을 본다
+  bool get _gridSearching => _safMode && _searching;
+  int get _gridFolderCount =>
+      _gridSearching ? 0 : (_safMode ? _safFolders.length : _folders.length);
+  int get _gridImageCount =>
+      _gridSearching ? _searchResults.length : (_safMode ? _safImages.length : _images.length);
+
+  /// 그리드 [index] 번 칸의 그림 id (폴더 칸 · 목록 밖이면 null) — 화면(build)의 칸 순서와 같다
+  String? _gridIdAt(int index) {
+    final int i = index - _gridFolderCount;
+    if (i < 0) {
+      return null;
+    }
+    if (_gridSearching) {
+      return i < _searchResults.length ? _searchResults[i].ref.uri : null;
+    }
+    if (_safMode) {
+      return i < _safImages.length ? _safImages[i].uri : null;
+    }
+    return i < _images.length ? _images[i].path : null;
+  }
+
+  RenderBox? _gridBox() {
+    final RenderObject? ro = _gridKey.currentContext?.findRenderObject();
+    return (ro is RenderBox && ro.hasSize) ? ro : null;
+  }
+
+  /// 그림 [id] 가 지금 그리드의 몇 번째 칸인지 (없으면 -1). [hint] 칸을 먼저 본다 — 목록이 그대로면 바로 맞는다.
+  int _gridIndexOfId(String id, int hint) {
+    if (hint >= 0 && _gridIdAt(hint) == id) {
+      return hint;
+    }
+    final int i = _gridSearching
+        ? _searchResults.indexWhere((r) => r.ref.uri == id)
+        : (_safMode
+              ? _safImages.indexWhere((r) => r.uri == id)
+              : _images.indexWhere((f) => f.path == id));
+    return i < 0 ? -1 : _gridFolderCount + i;
+  }
+
+  /// 화면 위 한 점이 그리드의 몇 번째 칸인지 ([exact] — 칸 위일 때만, drag_select.dart 의 gridIndexAt)
+  int? _gridIndexAtGlobal(Offset global, {bool exact = false}) {
+    final RenderBox? box = _gridBox();
+    if (box == null) {
+      return null;
+    }
+    final Offset local = box.globalToLocal(global);
+    final ScrollController sc = _gridScroll;
+    return gridIndexAt(
+      (
+        width: box.size.width,
+        columns: widget.state.galleryColumns.clamp(1, 8),
+        padding: _kGridPad,
+        spacing: _kGridGap,
+      ),
+      local.dx,
+      local.dy,
+      sc.hasClients ? sc.offset : 0,
+      _gridFolderCount + _gridImageCount,
+      exact: exact,
+    );
+  }
+
+  // 꾹 누르기 시작 — 그림 칸이면 고르기를 시작한다 (폴더 칸 · 빈 자리는 아무것도 하지 않는다).
+  //  고르는 중이면 그 칸을 뒤집는다(예전의 꾹 누르기와 같다) — 이미 골라진 칸에서 시작하면 끌어서 '풀기'.
+  void _onGridLongPressStart(LongPressStartDetails d) {
+    if (_loading) {
+      return;
+    }
+    final int? index = _gridIndexAtGlobal(d.globalPosition, exact: true);
+    final String? id = index == null ? null : _gridIdAt(index);
+    if (index == null || id == null) {
+      return;
+    }
     setState(() {
-      _selectMode = true;
-      _selected
-        ..clear()
-        ..add(id);
+      if (!_selectMode) {
+        _selectMode = true;
+        _selected.clear();
+      }
+      _dragAdds = !_selected.contains(id);
+      _dragBase = {..._selected};
+      _dragAnchorId = id;
+      _dragAnchorHint = index;
+      _dragPoint = d.globalPosition;
+      _applyDrag(index);
     });
+  }
+
+  void _onGridLongPressMove(LongPressMoveUpdateDetails d) {
+    if (_dragAnchorId == null) {
+      return;
+    }
+    _dragPoint = d.globalPosition;
+    _dragToPoint();
+    // 위 · 아래 끝이면 저절로 굴리기 시작 (가운데로 돌아오면 _autoScrollTick 이 멈춘다)
+    if (_autoScrollStep() != 0) {
+      _dragScrollTimer ??= Timer.periodic(
+        const Duration(milliseconds: 16),
+        (_) => _autoScrollTick(),
+      );
+    }
+  }
+
+  // 손을 뗐다 · 취소됐다 (onLongPressCancel — 끌기 전에 끝난 꾹 누르기에도 온다: 그땐 할 일이 없다)
+  void _onGridLongPressEnd() {
+    _dragScrollTimer?.cancel();
+    _dragScrollTimer = null;
+    if (_dragAnchorId == null) {
+      return;
+    }
+    setState(() {
+      _clearDrag();
+      // 한 장만 눌러 풀었으면 고르기 끝 (예전의 꾹 누르기 · _toggleSelect 와 같다)
+      if (_selected.isEmpty) {
+        _selectMode = false;
+      }
+    });
+  }
+
+  /// 끌기 상태를 비운다 (setState 안에서 부른다)
+  void _clearDrag() {
+    _dragScrollTimer?.cancel();
+    _dragScrollTimer = null;
+    _dragAnchorId = null;
+    _dragAnchorHint = -1;
+    _dragPoint = null;
+    _dragLast = -1;
+    _dragBase = const {};
+  }
+
+  /// 끄는 도중 그리드 목록이 바뀌었다 (검색 결과가 차오름 · 자동 새로고침) — 손가락 아래 칸까지 다시 맞춘다.
+  ///  (setState 안에서 부른다. 목록을 바꾸는 곳 — _scheduleScanTick · _scan · _refreshSafImagesOnly · _reloadCurrentSafImages)
+  void _redoDrag() {
+    if (_dragAnchorId == null) {
+      return;
+    }
+    final Offset? p = _dragPoint;
+    final int index = (p == null ? null : _gridIndexAtGlobal(p)) ?? _dragLast;
+    if (index >= 0) {
+      _applyDrag(index);
+    }
+  }
+
+  // 손가락이 있는 칸까지 반영 — 같은 칸이면 다시 그리지 않는다
+  void _dragToPoint() {
+    final Offset? p = _dragPoint;
+    if (_dragAnchorId == null || p == null) {
+      return;
+    }
+    final int? index = _gridIndexAtGlobal(p);
+    if (index == null || index == _dragLast) {
+      return;
+    }
+    setState(() => _applyDrag(index));
+  }
+
+  // 꾹 누른 그림부터 [index] 칸까지 고르기/풀기 (setState 안에서 부른다)
+  void _applyDrag(int index) {
+    final String? anchorId = _dragAnchorId;
+    if (anchorId == null) {
+      return;
+    }
+    // 꾹 누른 그림이 지금 몇 번째 칸인지 — 그 사이 목록이 바뀌었으면 옮겨 간 자리
+    //  그림이 목록에서 빠졌거나, 다른 곳이 고르기를 끝냈으면(폴더를 다시 읽음 등) 끌기도 끝낸다
+    //  (끝난 고르기에 몰래 다시 담기면 화면엔 안 보이는데 고른 것이 남는다)
+    final int anchor = _selectMode ? _gridIndexOfId(anchorId, _dragAnchorHint) : -1;
+    if (anchor < 0) {
+      _clearDrag();
+      return;
+    }
+    _dragAnchorHint = anchor;
+    _dragLast = index;
+    final Set<String> next = dragRangeSelect(
+      base: _dragBase,
+      anchor: anchor,
+      current: index,
+      adds: _dragAdds,
+      idAt: _gridIdAt,
+    );
+    _selected
+      ..clear()
+      ..addAll(next);
+  }
+
+  /// 지금 손가락 위치에서 한 번에 굴릴 거리 (0 이면 굴리지 않는다)
+  double _autoScrollStep() {
+    final RenderBox? box = _gridBox();
+    final Offset? p = _dragPoint;
+    if (box == null || p == null) {
+      return 0;
+    }
+    return dragAutoScrollSpeed(box.globalToLocal(p).dy, box.size.height);
+  }
+
+  void _autoScrollTick() {
+    final double step = _autoScrollStep();
+    final ScrollController sc = _gridScroll;
+    if (!mounted || _dragAnchorId == null || step == 0 || !sc.hasClients) {
+      _dragScrollTimer?.cancel();
+      _dragScrollTimer = null;
+      return;
+    }
+    final ScrollPosition pos = sc.position;
+    final double target = (sc.offset + step).clamp(pos.minScrollExtent, pos.maxScrollExtent);
+    if (target == sc.offset) {
+      return; // 끝에 닿았다 — 손가락이 가운데로 오거나 떼면 멈춘다
+    }
+    sc.jumpTo(target);
+    _dragToPoint(); // 굴러간 만큼 손가락 아래 칸이 바뀐다
   }
 
   void _toggleSelect(String id) {
@@ -2580,8 +3376,8 @@ class GalleryViewState extends State<GalleryView> {
               count: _selected.length,
               onCancel: _exitSelect,
               onInfo: _showSelectionMenu,
-              // 이동은 SAF 에서만 (앱 폴더는 이동 기능이 없다)
-              onMove: _safMode ? () => _safMoveRefs(_safSelectedRefs()) : null,
+              // 이동은 SAF 에서만 (앱 폴더는 이동 기능이 없다) — 검색 결과도 그림마다 든 폴더와 함께
+              onMove: _safMode ? () => _safMoveRefs(_safSelectedWithDir()) : null,
               onDelete: _deleteSelected,
             ),
     );
@@ -2626,8 +3422,12 @@ class GalleryViewState extends State<GalleryView> {
   // 선택 이미지 삭제 (SAF·파일 공용) — 기기에서 영구 삭제
   //  ⚠️ 예전엔 두 벌이라 끝난 뒤 안내가 달랐다 (토스트 / 짧은 알림).
   Future<void> _deleteSelected() async {
+    if (_deletingSelected) {
+      return;
+    }
     final files = _safMode ? const <File>[] : _selectedFiles();
-    final refs = _safMode ? _safSelectedRefs() : const <({String uri, String name})>[];
+    // SAF 는 든 폴더와 함께 — 검색 결과는 폴더가 섞여 있다 (휴지통이 그림마다 돌려놓을 폴더를 적는다)
+    final refs = _safMode ? _safSelectedWithDir() : const <SafSourceRef>[];
     final int count = files.length + refs.length;
     if (count == 0) {
       return;
@@ -2635,57 +3435,61 @@ class GalleryViewState extends State<GalleryView> {
     // 저장 폴더(SAF)의 그림은 설정에 따라 휴지통으로 — 앱 폴더의 그림은 늘 바로 지운다
     final String? root = _rootUri;
     final bool toTrash = refs.isNotEmpty && widget.state.trashEnabled && root != null;
+    // 여러 폴더에 걸쳐 있으면 알려 준다 (검색 결과)
+    final int folderCount = refs.map((r) => r.fromDirUri).toSet().length;
+    final String what = folderCount > 1 ? "폴더 $folderCount곳의 $count장" : "$count장";
     final confirmed = await showConfirmDialog(
       context,
       title: toTrash ? "휴지통으로 보내기" : "이미지 삭제",
       message: toTrash
-          ? "$count장을 휴지통으로 보냅니다.\n${widget.state.trashKeepDays}일 뒤 자동으로 지워져요."
-          : "$count장의 이미지를 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
+          ? "$what을 휴지통으로 보냅니다.\n${widget.state.trashKeepDays}일 뒤 자동으로 지워져요."
+          : "$what을 기기에서 영구 삭제합니다.\n이 작업은 되돌릴 수 없습니다.",
       confirmLabel: toTrash ? "보내기" : "삭제",
       icon: Icons.delete_outline,
     );
-    if (!confirmed) {
+    if (!confirmed || !mounted) {
       return;
     }
-    int deleted = 0;
-    // root 는 toTrash 안에서 이미 null 이 아님이 확인된다 (Dart 가 toTrash 를 통해 알아본다)
-    if (toTrash) {
-      final done = await widget.state.trashSafImages(
-        refs,
-        fromDirUri: _safDirUri ?? root,
-        rootUri: root,
-      );
-      for (final uri in done) {
-        _forgetSafImage(uri);
-      }
-      deleted = done.length;
-    } else {
-      for (final ref in refs) {
-        if (await widget.state.deleteSafImage(ref.uri)) {
-          deleted++;
-          _forgetSafImage(ref.uri);
+    _deletingSelected = true;
+    try {
+      int deleted = 0;
+      // root 는 toTrash 안에서 이미 null 이 아님이 확인된다 (Dart 가 toTrash 를 통해 알아본다)
+      if (toTrash) {
+        final done = await widget.state.trashSafImages(refs, rootUri: root);
+        for (final uri in done) {
+          _forgetSafImage(uri);
+        }
+        deleted = done.length;
+      } else {
+        for (final ref in refs) {
+          if (await widget.state.deleteSafImage(ref.uri)) {
+            deleted++;
+            _forgetSafImage(ref.uri);
+          }
         }
       }
-    }
-    for (final f in files) {
-      try {
-        await f.delete();
-        // 히스토리의 '파일 있음' 표시가 낡지 않도록 캐시에서 지운다
-        widget.state.invalidateFileExistsCache(f.path);
-        deleted++;
-      } catch (e) {
-        debugPrint("파일 삭제 실패 (${f.path}): $e");
+      for (final f in files) {
+        try {
+          await f.delete();
+          // 히스토리의 '파일 있음' 표시가 낡지 않도록 캐시에서 지운다
+          widget.state.invalidateFileExistsCache(f.path);
+          deleted++;
+        } catch (e) {
+          debugPrint("파일 삭제 실패 (${f.path}): $e");
+        }
       }
-    }
-    if (!mounted) {
-      return;
-    }
-    _exitSelect();
-    if (files.isNotEmpty && _currentPath != null) {
-      await _loadFolder(_currentPath!);
-    }
-    if (mounted) {
-      showToast(context, toTrash ? "$deleted장을 휴지통으로 보냈습니다." : "$deleted장을 삭제했습니다.");
+      if (!mounted) {
+        return;
+      }
+      _exitSelect();
+      if (files.isNotEmpty && _currentPath != null) {
+        await _loadFolder(_currentPath!);
+      }
+      if (mounted) {
+        showToast(context, toTrash ? "$deleted장을 휴지통으로 보냈습니다." : "$deleted장을 삭제했습니다.");
+      }
+    } finally {
+      _deletingSelected = false;
     }
   }
 
@@ -2750,10 +3554,21 @@ class GalleryViewState extends State<GalleryView> {
 // 좌우 스와이프 가능한 이미지 뷰어
 // SAF 바이트 캐시 상한 관리 — 원본 전체 바이트라 무한정 쌓이면 메모리 폭발(OOM) 위험.
 // Dart Map은 삽입 순서를 유지하므로 가장 오래된 항목부터 퇴출한다.
-void _trimSafBytesCache(Map<String, Uint8List> cache, {int max = 120}) {
+//  (썸네일 Future 메모도 같은 방법으로 — 검색 결과를 오래 넘기면 다 읽은 Future 가 그림을 붙든 채 수천 개 쌓인다)
+void _trimOldest<V>(Map<String, V> cache, {int max = 120}) {
   while (cache.length > max) {
     cache.remove(cache.keys.first);
   }
+}
+
+// 메모에서 꺼내며 '방금 씀' 으로 맨 뒤로 옮기고(없으면 만든다), 넘치면 오래 안 쓴 것부터 버린다.
+//  ⚠️ putIfAbsent 만 쓰면 화면에 계속 보이는 칸도 '먼저 넣은 것' 이라 먼저 버려져,
+//     다시 그릴 때마다 새 Future → 자리 표시부터 다시 그려 깜빡이며 다시 읽는다.
+V _lruMemo<V extends Object>(Map<String, V> cache, String key, V Function() make, {required int max}) {
+  final V v = cache.remove(key) ?? make();
+  cache[key] = v;
+  _trimOldest(cache, max: max);
+  return v;
 }
 
 // IO/SAF 공용 이미지 뷰어 — 좌우 스와이프 + 상단바(파일명·순번·닫기) + 꾹 눌러 메뉴

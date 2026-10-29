@@ -9,7 +9,7 @@ enum AppTab {
   history('히스토리'),
   i2i('i2i'),
   character('캐릭터'),
-  // 와일드카드·프롬프트 사전을 함께 담는다 (화면 파일 이름은 옛 그대로 wildcard_tab.dart)
+  // 와일드카드·프롬프트 사전·조건부 트리거를 함께 담는다 (화면 파일 이름은 옛 그대로 wildcard_tab.dart)
   library('라이브러리'),
   settings('설정');
 
@@ -18,3 +18,10 @@ enum AppTab {
   /// 탭 줄에 보이는 이름
   final String label;
 }
+
+/// 라이브러리 탭 안의 쪽 번호 — 적힌 순서가 곧 화면의 순서 (AppState.wildcardSubTab 이 같은 실행 안에서 기억한다).
+///  ⚠️ 쪽을 더하면 [kLibraryPageCount] 도 늘린다 (탭 수 · 열 쪽 번호를 이 범위로 맞춘다).
+const int kLibraryWildcardPage = 0;
+const int kLibraryDictPage = 1;
+const int kLibraryTriggerPage = 2;
+const int kLibraryPageCount = 3;

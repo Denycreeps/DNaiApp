@@ -4,13 +4,15 @@
 //  app_state.dart가 커져서 성격이 뚜렷한 이 부분을 따로 뺐다.
 //  · NaiMetadata            — 생성 파라미터 모델
 //  · extractNovelAIMetadata — PNG(tEXt) / WebP(EXIF)에서 읽기
+//  · readNovelAIMetadata    — 위에서 못 찾으면 알파 채널(stealth_pngcomp)까지 — 사이트를 거친 그림용
 //  · buildExifBlock 외     — WebP에 EXIF로 심기
 //  ⚠️ AppState를 참조하지 않는다 (순환 import 방지).
 import 'dart:convert';
 import 'dart:io'; // zlib (PNG 압축 해제)
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart'; // debugPrint
+import 'package:flutter/foundation.dart'; // debugPrint · compute
+import 'package:image/image.dart' as img; // 알파 채널 읽기 (픽셀을 풀어야 한다)
 
 class NaiMetadata {
   final String positive;
@@ -171,8 +173,11 @@ String buildExifSummary(NaiMetadata? meta) {
 //   RIFF/WEBP → VP8X(플래그) → VP8L/VP8(픽셀) → EXIF(TIFF)
 //   TIFF IFD0의 0x8769(Exif SubIFD) → 0x9286(UserComment) 안에 JSON이 통째로 들어있다.
 //   UserComment는 앞 8바이트가 인코딩 표기("ASCII\0\0\0")이고 그 뒤가 본문.
-// 반환값은 PNG의 tEXt와 동일한 형태의 JSON 문자열(없으면 null).
-String? _extractWebpMetadataJson(Uint8List bytes) {
+// 반환값은 PNG 글자 청크와 같은 모양의 {키: 값} — Title · Description · Software · Source · Comment …
+//  ⚠️ 예전엔 Comment(생성 파라미터)만 돌려줘서 Source(모델 이름)가 늘 비었다. 저장할 땐 다 넣어 두고
+//     읽을 때 버린 것 — 갤러리에서 WebP 를 보면 모델이 '알 수 없음' 이었고, 그 그림을 히스토리에 넣었다가
+//     다시 생성하면 원본 모델을 몰라 지금 고른 모델로 생성됐다.
+Map<String, String>? _extractWebpTextFields(Uint8List bytes) {
   try {
     if (bytes.length < 16) {
       return null;
@@ -264,15 +269,18 @@ String? _extractWebpMetadataJson(Uint8List bytes) {
       return null;
     }
 
-    // 바깥 JSON의 Comment 안에 실제 파라미터 JSON이 들어있다
+    // 바깥 JSON의 Comment 안에 실제 파라미터 JSON이 들어있다 (나머지 칸은 PNG 글자 청크와 같은 이름)
     try {
       final outer = jsonDecode(text);
       if (outer is Map && outer['Comment'] is String) {
-        return outer['Comment'] as String;
+        return {
+          for (final e in outer.entries)
+            if (e.value is String || e.value is num) e.key.toString(): e.value.toString(),
+        };
       }
     } catch (_) {}
     // Comment 래핑이 없으면 본문 자체가 파라미터 JSON일 수 있다
-    return text.startsWith('{') ? text : null;
+    return text.startsWith('{') ? {'Comment': text} : null;
   } catch (_) {
     return null;
   }
@@ -549,9 +557,9 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
 
     // ── WebP 먼저 처리 (NAI 공식 WebP 저장 지원) ──
     // EXIF 청크에서 JSON을 꺼내 PNG와 동일한 흐름으로 합류시킨다.
-    final webpJson = _extractWebpMetadataJson(imageBytes);
-    if (webpJson != null) {
-      textChunks['Comment'] = webpJson;
+    final webpFields = _extractWebpTextFields(imageBytes);
+    if (webpFields != null) {
+      textChunks.addAll(webpFields);
       // 크기는 VP8X 청크에서 (24비트 리틀엔디안, 실제값-1로 저장됨)
       try {
         final v = ByteData.sublistView(imageBytes);
@@ -640,6 +648,149 @@ NaiMetadata? extractNovelAIMetadata(Uint8List imageBytes) {
   }
 }
 
+// ============================================================================
+// 알파 채널 속 정보 (stealth_pngcomp)
+// ============================================================================
+// NovelAI 는 같은 생성 정보를 PNG 글자 칸과 별도로 '알파(투명도) 채널 각 픽셀의 맨 끝 비트'에도 숨겨 둔다.
+//  사이트에 올렸다 받은 그림은 글자 칸이 지워져도(다시 저장) 픽셀은 그대로라 이 정보가 남는다.
+//  공식 inspect(novelai.net/inspect)가 그런 그림도 읽는 이유 — 이때 'Title' 은 안 나온다 (넣을 때 뺀다).
+//  모양 (NovelAI 공개 스크립트 novelai-image-metadata 의 nai_meta.py · nai_meta_writer.py 와 같다):
+//   · 읽는 순서: 세로줄 먼저 — x 를 바깥, y 를 안쪽으로 (왼쪽 줄 위→아래, 다음 줄 …)
+//   · 비트 8개 = 1바이트 (앞 비트가 높은 자리)
+//   · 'stealth_pngcomp'(15바이트) → 데이터 길이(비트 수, 4바이트 빅엔디안) → gzip(JSON)
+//   · JSON = PNG 글자 칸과 같은 키 {Description, Software, Source, Generation time, Comment}
+//  ⚠️ 픽셀을 모두 풀어야 해서 무겁다 — readNovelAIMetadata 가 글자 칸에서 못 찾았을 때만, 화면 밖(compute)에서 읽는다.
+//     갤러리 검색 색인처럼 파일 수천 개를 훑는 곳에서는 쓰지 않는다 (그림 정보가 없는 파일마다 통째로 풀게 된다).
+
+const String _kStealthMagic = 'stealth_pngcomp';
+
+/// 생성 정보가 하나라도 있는지.
+///  글자 칸이 없는 PNG 도 extractNovelAIMetadata 는 null 대신 크기만 든 빈 정보를 돌려준다.
+bool hasGenerationInfo(NaiMetadata? m) =>
+    m != null &&
+    (m.positive.isNotEmpty ||
+        m.negative.isNotEmpty ||
+        m.characterPrompts.isNotEmpty ||
+        m.seed != 0 ||
+        m.steps != 0);
+
+/// 알파 채널에 정보가 숨어 있을 수 있는 그림인지 — 픽셀을 풀기 전에 머리만 보고 거른다.
+///  PNG: 8비트 RGBA(색 형식 6) · 회색+알파(4).  WebP: 무손실(VP8L) 이거나 VP8X 의 알파 표시가 켜진 것.
+///  JPEG · 알파 없는 그림은 false (맨 끝 비트를 지키지 못하거나 알파가 없다).
+bool mayHoldStealthAlpha(Uint8List b) {
+  if (b.length >= 26 && b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+    // IHDR 는 늘 첫 청크: 서명 8 + 길이 4 + 'IHDR' 4 + 폭 4 + 높이 4 → [24] 비트 깊이 · [25] 색 형식
+    final int colorType = b[25];
+    return b[24] == 8 && (colorType == 6 || colorType == 4);
+  }
+  if (b.length >= 21 &&
+      String.fromCharCodes(b.sublist(0, 4)) == 'RIFF' &&
+      String.fromCharCodes(b.sublist(8, 12)) == 'WEBP') {
+    final fourcc = String.fromCharCodes(b.sublist(12, 16));
+    if (fourcc == 'VP8L') {
+      return true;
+    }
+    if (fourcc == 'VP8X') {
+      return (b[20] & 0x10) != 0; // 플래그의 알파 표시
+    }
+  }
+  return false;
+}
+
+/// 풀어 둔 그림의 알파 채널에서 정보를 꺼낸다 → PNG 글자 칸과 같은 {키: 값}. 없으면 null.
+///  필요한 비트만 읽는다 (보통 앞쪽 세로줄 십여 개 — 그림 전체를 훑지 않는다).
+Map<String, String>? readStealthAlphaFields(img.Image image) {
+  final int w = image.width;
+  final int h = image.height;
+  // 8비트 알파가 있어야 '맨 끝 비트' 가 뜻이 있다
+  if (w <= 0 || h <= 0 || !image.hasAlpha || image.format != img.Format.uint8) {
+    return null;
+  }
+  final int totalBits = w * h;
+  int bit = 0;
+  img.Pixel px = image.getPixel(0, 0); // 픽셀 하나를 돌려 쓴다 (비트마다 새로 만들지 않게)
+
+  // 다음 n 바이트 — 남은 픽셀이 모자라면 null
+  Uint8List? next(int n) {
+    if (n < 0 || bit + n * 8 > totalBits) {
+      return null;
+    }
+    final out = Uint8List(n);
+    for (int k = 0; k < n; k++) {
+      int v = 0;
+      for (int j = 0; j < 8; j++) {
+        final int x = bit ~/ h; // 세로줄 먼저 (x 바깥, y 안쪽)
+        final int y = bit % h;
+        bit++;
+        px = image.getPixel(x, y, px);
+        v = (v << 1) | (px.a.toInt() & 1);
+      }
+      out[k] = v;
+    }
+    return out;
+  }
+
+  final magic = next(_kStealthMagic.length);
+  if (magic == null || String.fromCharCodes(magic) != _kStealthMagic) {
+    return null;
+  }
+  final lenBytes = next(4);
+  if (lenBytes == null) {
+    return null;
+  }
+  final int bitLen = ByteData.sublistView(lenBytes).getUint32(0);
+  final data = next(bitLen ~/ 8);
+  if (data == null || data.isEmpty) {
+    return null;
+  }
+  final decoded = jsonDecode(utf8.decode(gzip.decode(data), allowMalformed: true));
+  if (decoded is! Map) {
+    return null;
+  }
+  // Comment 는 보통 JSON 글이지만, 객체로 들어 있어도 글로 되돌려 같은 길로 읽는다
+  return {
+    for (final e in decoded.entries)
+      if (e.value != null) e.key.toString(): e.value is String ? e.value as String : jsonEncode(e.value),
+  };
+}
+
+/// 그림 바이트를 풀어 알파 채널 정보를 꺼낸다 → [정보, 폭, 높이]. 없으면 null.
+///  compute 로 따로 돌리므로 최상위 함수 · 주고받는 값은 목록 · 지도 · 숫자만.
+List<Object>? stealthAlphaOf(Uint8List bytes) {
+  try {
+    final image = img.decodeImage(bytes);
+    if (image == null) {
+      return null;
+    }
+    final fields = readStealthAlphaFields(image);
+    if (fields == null) {
+      return null;
+    }
+    return [fields, image.width, image.height];
+  } catch (e) {
+    debugPrint("알파 채널 정보 읽기 실패: $e");
+    return null;
+  }
+}
+
+/// 그림 정보 읽기 — 사용자가 직접 여는 곳(정보 보기 · 프롬프트 불러오기 · 히스토리에 추가 · i2i 로 보내기)용.
+///  1) 글자 칸 / WebP EXIF (extractNovelAIMetadata — 빠르다)
+///  2) 거기 없고 알파가 있는 그림이면 알파 채널 (stealthAlphaOf — 화면 밖에서)
+///  둘 다 없으면 1) 의 결과(null 이거나 크기만 든 빈 정보)를 그대로 — 예전과 같다.
+Future<NaiMetadata?> readNovelAIMetadata(Uint8List bytes) async {
+  final quick = extractNovelAIMetadata(bytes);
+  if (hasGenerationInfo(quick) || !mayHoldStealthAlpha(bytes)) {
+    return quick;
+  }
+  final found = await compute(stealthAlphaOf, bytes);
+  if (found == null) {
+    return quick;
+  }
+  final fields = (found[0] as Map).cast<String, String>();
+  final meta = _buildMetadataFromChunks(fields, found[1] as int, found[2] as int, bytes);
+  return hasGenerationInfo(meta) ? meta : quick;
+}
+
 // 텍스트 청크(Comment JSON) → NaiMetadata 변환. PNG·WebP 공용.
 NaiMetadata? _buildMetadataFromChunks(
   Map<String, String> textChunks,
@@ -701,37 +852,27 @@ NaiMetadata? _buildMetadataFromChunks(
     // 캐릭터 위치(0.0~1.0). 프롬프트를 불러올 때 배치까지 되살리기 위함.
     List<List<double>> charCenters = [];
 
-    if (commentJson.containsKey('v4_prompt')) {
-      var v4 = commentJson['v4_prompt'];
-      if (v4 is Map && v4.containsKey('caption')) {
-        var cap = v4['caption'];
-        if (cap is Map && cap.containsKey('char_captions')) {
-          var chars = cap['char_captions'];
-          if (chars is List) {
-            for (var c in chars) {
-              if (c is Map) {
-                String? cText = c['char_caption']?.toString() ?? c['char_prompt']?.toString();
-                if (cText != null && cText.isNotEmpty) {
-                  charPrompts.add(cText);
-                }
-                String? cUc = c['uc']?.toString();
-                if (cUc != null && cUc.isNotEmpty) {
-                  charUCs.add(cUc);
-                }
-                // centers: [{x: 0.3, y: 0.5}] — 첫 좌표만 쓴다
-                final centers = c['centers'];
-                if (centers is List && centers.isNotEmpty && centers.first is Map) {
-                  final p = centers.first as Map;
-                  final x = p['x'];
-                  final y = p['y'];
-                  if (x is num && y is num) {
-                    charCenters.add([x.toDouble(), y.toDouble()]);
-                  }
-                }
-              }
-            }
-          }
+    // ── 캐릭터: 긍정은 v4_prompt, 부정은 v4_negative_prompt 의 char_captions 에 따로 들어 있다 ──
+    //  ⚠️ 예전엔 긍정 칸 안에서 'uc' 를 찾았다 — NovelAI 는 거기에 부정을 넣지 않아 캐릭터 부정이 늘 비었다
+    //     (정보 보기 · 프롬프트 불러오기 · 다시 생성 모두 캐릭터 부정 없이).
+    final List<_CharCaption> posChars = _charCaptionsOf(commentJson['v4_prompt']);
+    if (posChars.isNotEmpty) {
+      final List<String> negTexts = _pairCharNegatives(
+        posChars,
+        _charCaptionsOf(commentJson['v4_negative_prompt']),
+      );
+      final List<List<double>?> centers = [];
+      for (int i = 0; i < posChars.length; i++) {
+        if (posChars[i].text.isEmpty) {
+          continue; // 긍정이 빈 캐릭터는 없는 셈 (요청도 보내지 않는다)
         }
+        charPrompts.add(posChars[i].text);
+        charUCs.add(negTexts[i]);
+        centers.add(posChars[i].center);
+      }
+      // 세 목록은 번호로 짝지어 쓴다 — 위치가 일부만 빠졌으면 가운데로 채워 번호를 맞춘다
+      if (centers.any((c) => c != null)) {
+        charCenters = [for (final c in centers) c ?? const [0.5, 0.5]];
       }
     }
 
@@ -750,16 +891,16 @@ NaiMetadata? _buildMetadataFromChunks(
       }
     }
 
-    if (commentJson.containsKey('characterPrompts')) {
-      var cps = commentJson['characterPrompts'];
-      if (cps is List) {
-        for (var cp in cps) {
-          if (cp is Map) {
-            charPrompts.add(cp['prompt']?.toString() ?? '');
-            charUCs.add(cp['uc']?.toString() ?? '');
-          } else {
-            charPrompts.add(cp.toString());
-          }
+    // 다른 툴 · 옛 모양: characterPrompts [{prompt, uc}]
+    //  v4 캡션에서 이미 읽었으면 쓰지 않는다 (같은 캐릭터가 두 번 들어간다)
+    if (charPrompts.isEmpty && commentJson['characterPrompts'] is List) {
+      for (final cp in commentJson['characterPrompts'] as List) {
+        if (cp is Map) {
+          charPrompts.add(cp['prompt']?.toString() ?? '');
+          charUCs.add(cp['uc']?.toString() ?? '');
+        } else if (cp != null) {
+          charPrompts.add(cp.toString());
+          charUCs.add(''); // 번호를 맞춘다
         }
       }
     }
@@ -795,6 +936,11 @@ NaiMetadata? _buildMetadataFromChunks(
     for (var key in knownKeys) {
       extras.remove(key);
     }
+    // 캐릭터 위치를 썼는지 — v4_prompt 는 통째로 빠지므로 따로 남긴다 (다시 생성을 원본과 같게)
+    final v4p = commentJson['v4_prompt'];
+    if (v4p is Map && v4p['use_coords'] is bool) {
+      extras['use_coords'] = v4p['use_coords'];
+    }
 
     return NaiMetadata(
       positive: pos,
@@ -817,4 +963,84 @@ NaiMetadata? _buildMetadataFromChunks(
     debugPrint("메타데이터 변환 실패: $e");
     return null;
   }
+}
+
+/// v4_prompt · v4_negative_prompt 의 캐릭터 한 칸 — 글 · 첫 위치(0.0~1.0) · (아주 옛 모양의) uc
+typedef _CharCaption = ({String text, List<double>? center, String uc});
+
+// caption.char_captions 를 순서 그대로 꺼낸다. 모양이 다르면 빈 목록.
+//  모양이 틀린 칸도 빈 칸으로 넣어 번호를 지킨다 (긍정 · 부정을 번호로 짝짓기 때문).
+List<_CharCaption> _charCaptionsOf(Object? v4) {
+  final out = <_CharCaption>[];
+  if (v4 is! Map) {
+    return out;
+  }
+  final cap = v4['caption'];
+  final chars = cap is Map ? cap['char_captions'] : null;
+  if (chars is! List) {
+    return out;
+  }
+  for (final c in chars) {
+    if (c is! Map) {
+      out.add((text: '', center: null, uc: ''));
+      continue;
+    }
+    List<double>? center;
+    final centers = c['centers'];
+    if (centers is List && centers.isNotEmpty && centers.first is Map) {
+      final p = centers.first as Map;
+      final x = p['x'];
+      final y = p['y'];
+      if (x is num && y is num) {
+        center = [x.toDouble(), y.toDouble()];
+      }
+    }
+    out.add((
+      text: (c['char_caption'] ?? c['char_prompt'])?.toString() ?? '',
+      center: center,
+      uc: c['uc']?.toString() ?? '',
+    ));
+  }
+  return out;
+}
+
+// 캐릭터마다 부정을 짝지어 돌려준다 — [pos] 와 같은 길이, 모르면 빈 글자.
+//  · 칸 수가 같고 위치도 서로 맞으면 번호대로 — 공식 웹은 캐릭터마다 부정 칸을 꼭 넣는다 (이 앱도 2026-10 부터).
+//  · 아니면 위치로 — 예전 이 앱은 부정이 빈 캐릭터를 부정 목록에서 빼서 칸 수가 달랐다 (번호대로면 남의 것이 붙는다).
+//    부정 칸에도 그 캐릭터와 같은 위치가 적혀 있으니, 그 위치가 양쪽에 '하나씩만' 있으면 확실한 짝이다.
+//    같은 자리에 캐릭터가 여럿이면(배치를 안 쓴 그림 등) 누구 것인지 몰라 비워 둔다.
+List<String> _pairCharNegatives(List<_CharCaption> pos, List<_CharCaption> neg) {
+  bool same(List<double>? a, List<double>? b) =>
+      a != null && b != null && a[0] == b[0] && a[1] == b[1];
+  final result = [for (final p in pos) p.uc];
+
+  bool aligned = neg.length == pos.length;
+  for (int i = 0; aligned && i < pos.length; i++) {
+    if (pos[i].center != null && neg[i].center != null && !same(pos[i].center, neg[i].center)) {
+      aligned = false;
+    }
+  }
+  if (aligned) {
+    for (int i = 0; i < pos.length; i++) {
+      if (neg[i].text.isNotEmpty) {
+        result[i] = neg[i].text;
+      }
+    }
+    return result;
+  }
+
+  for (final n in neg) {
+    if (n.text.isEmpty || n.center == null) {
+      continue;
+    }
+    final owners = [
+      for (int i = 0; i < pos.length; i++)
+        if (same(pos[i].center, n.center)) i,
+    ];
+    final int rivals = neg.where((m) => same(m.center, n.center)).length;
+    if (owners.length == 1 && rivals == 1) {
+      result[owners.first] = n.text;
+    }
+  }
+  return result;
 }

@@ -222,10 +222,10 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
     }
     // 기본 팔레트 + 자주 쓰는 색 (둘 다 app_theme.dart 에)
     const swatches = [...AppColors.characterPalette, ...AppColors.characterExtraSwatches];
+    // 번호가 아니라 그 캐릭터를 잡아 둔다 — 창이 떠 있는 동안 목록이 바뀌어도 고른 캐릭터에 적게 (DEVNOTES 5)
+    final ch = state.characters[index];
     // 슬라이더로 미세 조정할 때 쓰는 현재 색
-    Color current = state.characters[index].colorArgb != null
-        ? Color(state.characters[index].colorArgb!)
-        : _charColor(state, index);
+    Color current = ch.colorArgb != null ? Color(ch.colorArgb!) : _charColor(state, index);
     HSVColor hsv = HSVColor.fromColor(current);
 
     showModalBottomSheet(
@@ -242,7 +242,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
               current = c;
             });
             // 반투명 값이 섞이지 않게 알파는 항상 불투명으로 저장한다
-            state.characters[index].colorArgb = c.withValues(alpha: 1.0).toARGB32();
+            ch.colorArgb = c.withValues(alpha: 1.0).toARGB32();
             state.saveAndRefresh();
             setState(() {});
           }
@@ -278,7 +278,7 @@ class _CharacterTabState extends State<CharacterTab> with AutomaticKeepAliveClie
                       // 기본값으로 되돌리기
                       TextButton(
                         onPressed: () {
-                          state.characters[index].colorArgb = null;
+                          ch.colorArgb = null;
                           state.saveAndRefresh();
                           setState(() {});
                           Navigator.pop(ctx);
